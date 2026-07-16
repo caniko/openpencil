@@ -108,6 +108,15 @@ pub struct WebCanvasState {
     /// The bound port, reported by `GET /api/mcp/server` (TS `server.get.ts`
     /// parity).
     pub(crate) port: u16,
+    /// Managed-mode per-instance auth token (see `ServeWebOptions::managed`
+    /// / `run_web_canvas`). `None` outside managed mode. Unused today —
+    /// stored for the auth/CORS check landing in a follow-up task.
+    #[allow(dead_code)]
+    pub(crate) managed_token: Option<String>,
+    /// Managed-mode `--allow-origin` allowlist. Empty outside managed mode.
+    /// Unused today — stored for the CORS check landing in a follow-up task.
+    #[allow(dead_code)]
+    pub(crate) allow_origins: Vec<String>,
 }
 
 impl WebCanvasState {
@@ -154,6 +163,8 @@ impl WebCanvasState {
             current_path,
             version: 0,
             port,
+            managed_token: None,
+            allow_origins: Vec::new(),
         }
     }
 
@@ -1110,19 +1121,44 @@ fn apply_selection_sync(body: &str, state: &mut WebCanvasState) -> WebReply {
     }
 }
 
-/// Parse the argv tail of `--serve-web <port> [doc] [--host <addr>]` (the
-/// args after `--serve-web` itself). Pure, so the flag shape is unit-testable
-/// without spawning the binary. The host defaults to loopback; `--host
-/// 0.0.0.0` is the LAN/Docker opt-in (no TLS — deploy behind a proxy for
-/// anything beyond a trusted network).
+/// Fully parsed `--serve-web` invocation, covering both the legacy
+/// positional syntax and the new `--managed` flag syntax (see
+/// [`parse_serve_web_args`]).
+pub struct ServeWebOptions {
+    pub port: u16,
+    pub path: Option<PathBuf>,
+    pub host: String,
+    /// `--managed`: the daemon was spawned by a supervising process (e.g.
+    /// the VS Code extension) that expects the handshake-JSON + stdin-EOF
+    /// lifecycle contract instead of the legacy fire-and-forget daemon.
+    pub managed: bool,
+    /// `--allow-origin <origin>` (repeatable), managed mode only. Stored for
+    /// a future CORS allowlist check — not enforced by this module yet.
+    pub allow_origins: Vec<String>,
+}
+
+/// Parse the argv tail after `--serve-web` itself. Pure, so the flag shape is
+/// unit-testable without spawning the binary. Supports two syntaxes:
+///
+/// - Legacy positional (unchanged): `<port> [doc] [--host <addr>]`.
+/// - Managed flag form: `--managed --port <n|0> [--file <path>]
+///   [--host <addr>] [--allow-origin <origin>]...` — used by supervising
+///   processes that want the handshake-JSON / stdin-EOF lifecycle contract
+///   (see [`run_web_canvas`]).
+///
+/// The host defaults to loopback; `--host 0.0.0.0` is the LAN/Docker opt-in
+/// (no TLS — deploy behind a proxy for anything beyond a trusted network).
 pub fn parse_serve_web_args<I: Iterator<Item = String>>(
     mut args: I,
-) -> Result<(u16, Option<PathBuf>, String), String> {
-    let Some(port_arg) = args.next() else {
+) -> Result<ServeWebOptions, String> {
+    let Some(first) = args.next() else {
         return Err("missing <port> arg".into());
     };
-    let Ok(port) = port_arg.parse::<u16>() else {
-        return Err(format!("<port> must be a u16, got {port_arg:?}"));
+    if first.starts_with("--") {
+        return parse_serve_web_args_managed(first, args);
+    }
+    let Ok(port) = first.parse::<u16>() else {
+        return Err(format!("<port> must be a u16, got {first:?}"));
     };
     let mut path: Option<PathBuf> = None;
     let mut host = "127.0.0.1".to_string();
@@ -1142,7 +1178,100 @@ pub fn parse_serve_web_args<I: Iterator<Item = String>>(
     if host.is_empty() {
         return Err("--host must not be empty".into());
     }
-    Ok((port, path, host))
+    Ok(ServeWebOptions {
+        port,
+        path,
+        host,
+        managed: false,
+        allow_origins: Vec::new(),
+    })
+}
+
+/// Parse the flag-style `--managed --port <n|0> [--file <path>]
+/// [--host <addr>] [--allow-origin <origin>]...` form. `first_flag` is the
+/// already-consumed first token (always `--managed` in practice, but any
+/// leading `--`-prefixed token routes here so an unknown flag reports a
+/// useful error instead of misparsing as a port).
+fn parse_serve_web_args_managed<I: Iterator<Item = String>>(
+    first_flag: String,
+    mut args: I,
+) -> Result<ServeWebOptions, String> {
+    let mut managed = false;
+    let mut port: Option<u16> = None;
+    let mut path: Option<PathBuf> = None;
+    let mut host = "127.0.0.1".to_string();
+    let mut allow_origins: Vec<String> = Vec::new();
+    let mut next_flag = Some(first_flag);
+    while let Some(arg) = next_flag.take().or_else(|| args.next()) {
+        match arg.as_str() {
+            "--managed" => managed = true,
+            "--port" => {
+                let value = args.next().ok_or("--port needs a value")?;
+                port = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| format!("--port must be a u16, got {value:?}"))?,
+                );
+            }
+            "--file" => {
+                path = Some(PathBuf::from(args.next().ok_or("--file needs a value")?));
+            }
+            "--host" => {
+                host = args.next().ok_or("--host needs a value (e.g. 0.0.0.0)")?;
+            }
+            "--allow-origin" => {
+                allow_origins.push(args.next().ok_or("--allow-origin needs a value")?);
+            }
+            other => return Err(format!("unexpected arg {other:?}")),
+        }
+    }
+    let Some(port) = port else {
+        return Err("missing --port <n>".into());
+    };
+    if host.is_empty() {
+        return Err("--host must not be empty".into());
+    }
+    Ok(ServeWebOptions {
+        port,
+        path,
+        host,
+        managed,
+        allow_origins,
+    })
+}
+
+/// Build the single-line handshake JSON printed to stdout in managed mode
+/// once the listener is bound: `{"ok":true,"port":<n>,"token":"<hex32>",
+/// "version":"<crate version>"}`. The supervising process reads exactly one
+/// line from the child's stdout to learn the actual bound port (relevant
+/// when `--port 0` requested an OS-assigned port) and the per-instance auth
+/// token.
+pub(crate) fn handshake_json(port: u16, token: &str) -> String {
+    format!(
+        r#"{{"ok":true,"port":{port},"token":"{token}","version":"{}"}}"#,
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// Generate a per-instance token for managed mode. Not a cryptographic PRNG —
+/// `RandomState`'s per-process keying plus a nanosecond timestamp and the pid
+/// give a token that's unguessable across separate daemon invocations, which
+/// is all the local-loopback handshake needs (the real access control is
+/// Task 4's origin/token check on `/mcp`).
+fn random_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let s = RandomState::new();
+    let mut h1 = s.build_hasher();
+    h1.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    let mut h2 = s.build_hasher();
+    h2.write_u64(std::process::id() as u64);
+    format!("{:016x}{:016x}", h1.finish(), h2.finish())
 }
 
 fn startup_editor_from_base_for_web_canvas(
@@ -1191,12 +1320,31 @@ pub fn startup_editor_for_web_canvas(path: Option<PathBuf>) -> Result<EditorStat
     startup_editor_for_web_canvas_with_policy(path, crate::web_credential_policy::from_env())
 }
 
-/// Run the web-canvas daemon on `host:port` (default `127.0.0.1`), backed by
-/// the document at `path` (or the starter document when `None`). Serves the
-/// static host page + bundle, the whole-document REST sync + health routes,
-/// and falls through to the JSON-RPC `/mcp` tool dispatch (applied against
-/// the in-memory document). Blocks until a token-authed shutdown request.
-pub fn run_web_canvas(path: Option<PathBuf>, port: u16, host: &str) -> Result<(), String> {
+/// Run the web-canvas daemon per `options` (host/port default `127.0.0.1`),
+/// backed by the document at `options.path` (or the starter document when
+/// `None`). Serves the static host page + bundle, the whole-document REST
+/// sync + health routes, and falls through to the JSON-RPC `/mcp` tool
+/// dispatch (applied against the in-memory document). Blocks until a
+/// token-authed shutdown request (or, in managed mode, stdin EOF).
+///
+/// Managed mode (`options.managed`) layers on the parent-death lease
+/// contract used by a supervising process (e.g. the VS Code extension):
+/// once the listener is bound, a single-line handshake JSON
+/// (`{"ok":true,"port":..,"token":..,"version":..}`) is printed to stdout so
+/// the supervisor learns the actual port (relevant for `--port 0`) and a
+/// per-instance token; a background thread then reads stdin to EOF/error and
+/// raises the same `shutdown` flag the token-authed `openpencil/shutdown`
+/// path uses, waking the accept loop by connecting back to the bound
+/// address. Non-managed mode is untouched: no token, no handshake output, no
+/// stdin thread.
+pub fn run_web_canvas(options: ServeWebOptions) -> Result<(), String> {
+    let ServeWebOptions {
+        port,
+        path,
+        host,
+        managed,
+        allow_origins,
+    } = options;
     let current_path = path.clone();
     let credential_persistence = crate::web_credential_policy::from_env();
     let mut editor = startup_editor_for_web_canvas_with_policy(path, credential_persistence)?;
@@ -1206,8 +1354,9 @@ pub fn run_web_canvas(path: Option<PathBuf>, port: u16, host: &str) -> Result<()
         crate::settings_io::save_checked,
     )?;
     let listener =
-        TcpListener::bind((host, port)).map_err(|e| format!("bind {host}:{port}: {e}"))?;
-    let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+        TcpListener::bind((host.as_str(), port)).map_err(|e| format!("bind {host}:{port}: {e}"))?;
+    let local_addr = listener.local_addr().map_err(|e| e.to_string())?;
+    let bound = local_addr.port();
     eprintln!("openpencil-desktop --serve-web: listening on {host}:{bound}");
     match crate::web_static::resolve_bundle_dir() {
         Some(dir) => eprintln!(
@@ -1235,6 +1384,36 @@ pub fn run_web_canvas(path: Option<PathBuf>, port: u16, host: &str) -> Result<()
     // raiser also pokes the listener with a throwaway connection so a blocked
     // `accept` wakes up and observes the flag.
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Managed mode only: per-instance token + handshake + parent-death
+    // lease (stdin-EOF watcher). Non-managed mode never touches this branch
+    // — it keeps the existing `OPENPENCIL_MCP_TOKEN` shutdown contract as
+    // the only lifecycle signal, byte-for-byte as before.
+    let managed_token = managed.then(random_token);
+    if let Some(token) = &managed_token {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{}", handshake_json(bound, token));
+        let _ = out.flush();
+        drop(out);
+        let shutdown_stdin = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            let mut sink = [0u8; 64];
+            let mut stdin = std::io::stdin();
+            while matches!(stdin.read(&mut sink), Ok(n) if n > 0) {}
+            shutdown_stdin.store(true, Ordering::Release);
+            // Wake the (possibly blocked) accept loop — reconnect to the
+            // bound address exactly (works for IPv6 / custom --host, unlike
+            // the loopback-only wake used by the token-authed shutdown
+            // path below).
+            let _ = std::net::TcpStream::connect(local_addr);
+        });
+    }
+    // Stash the managed token + allow-origins on the shared state for Task 4
+    // (auth/CORS enforcement) to consume later. Not read by anything yet.
+    if managed_token.is_some() || !allow_origins.is_empty() {
+        let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        guard.managed_token = managed_token;
+        guard.allow_origins = allow_origins;
+    }
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
             break;

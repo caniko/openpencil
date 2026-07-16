@@ -58,13 +58,16 @@ pub fn run_cli_if_requested() -> bool {
     }
     if first == "--serve-web" {
         // `--serve-web <port> [doc] [--host <addr>]`: doc optional (empty
-        // document otherwise); `--host` opts in to a non-loopback bind.
-        let (port, path, host) = op_host_services::web_canvas_server::parse_serve_web_args(args)
+        // document otherwise); `--host` opts in to a non-loopback bind. The
+        // desktop binary never spawns the managed (`--managed`/handshake)
+        // form itself — that's this same parser's flag syntax, used by a
+        // supervising process spawning the binary directly.
+        let options = op_host_services::web_canvas_server::parse_serve_web_args(args)
             .unwrap_or_else(|e| {
                 eprintln!("openpencil-desktop --serve-web: {e}");
                 std::process::exit(2);
             });
-        if let Err(e) = op_host_services::web_canvas_server::run_web_canvas(path, port, &host) {
+        if let Err(e) = op_host_services::web_canvas_server::run_web_canvas(options) {
             eprintln!("openpencil-desktop --serve-web: {e}");
             std::process::exit(1);
         }

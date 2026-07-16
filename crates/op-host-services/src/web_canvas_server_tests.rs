@@ -1263,41 +1263,69 @@ fn serve_one_token_authed_shutdown_signals_caller() {
 fn parse_serve_web_args_accepts_port_doc_and_host() {
     let parse = |args: &[&str]| parse_serve_web_args(args.iter().map(|s| s.to_string()));
     // Port only → loopback, empty document.
-    assert_eq!(
-        parse(&["3100"]).expect("port only"),
-        (3100, None, "127.0.0.1".to_string())
-    );
+    let o = parse(&["3100"]).expect("port only");
+    assert_eq!((o.port, o.managed), (3100, false));
+    assert_eq!(o.path, None);
+    assert_eq!(o.host, "127.0.0.1");
+    assert!(o.allow_origins.is_empty());
     // Port + doc.
-    assert_eq!(
-        parse(&["3100", "/tmp/d.op"]).expect("port+doc"),
-        (
-            3100,
-            Some(PathBuf::from("/tmp/d.op")),
-            "127.0.0.1".to_string()
-        )
-    );
+    let o = parse(&["3100", "/tmp/d.op"]).expect("port+doc");
+    assert_eq!(o.port, 3100);
+    assert_eq!(o.path.as_deref(), Some(std::path::Path::new("/tmp/d.op")));
+    assert_eq!(o.host, "127.0.0.1");
     // `--host` in both spellings, before or after the doc.
-    assert_eq!(
-        parse(&["3100", "--host", "0.0.0.0", "/tmp/d.op"]).expect("host then doc"),
-        (
-            3100,
-            Some(PathBuf::from("/tmp/d.op")),
-            "0.0.0.0".to_string()
-        )
-    );
-    assert_eq!(
-        parse(&["3100", "/tmp/d.op", "--host=0.0.0.0"]).expect("doc then host="),
-        (
-            3100,
-            Some(PathBuf::from("/tmp/d.op")),
-            "0.0.0.0".to_string()
-        )
-    );
+    let o = parse(&["3100", "--host", "0.0.0.0", "/tmp/d.op"]).expect("host then doc");
+    assert_eq!(o.port, 3100);
+    assert_eq!(o.path.as_deref(), Some(std::path::Path::new("/tmp/d.op")));
+    assert_eq!(o.host, "0.0.0.0");
+    let o = parse(&["3100", "/tmp/d.op", "--host=0.0.0.0"]).expect("doc then host=");
+    assert_eq!(o.port, 3100);
+    assert_eq!(o.path.as_deref(), Some(std::path::Path::new("/tmp/d.op")));
+    assert_eq!(o.host, "0.0.0.0");
     // Malformed shapes are rejected with a message, not silently dropped.
     assert!(parse(&[]).is_err(), "missing port");
     assert!(parse(&["nope"]).is_err(), "non-numeric port");
     assert!(parse(&["3100", "--host"]).is_err(), "--host without value");
     assert!(parse(&["3100", "a.op", "b.op"]).is_err(), "two docs");
+}
+
+#[test]
+fn parse_serve_web_args_legacy_positional_unchanged() {
+    let o = parse_serve_web_args(vec!["3100".into(), "doc.op".into()].into_iter()).unwrap();
+    assert_eq!((o.port, o.managed), (3100, false));
+    assert_eq!(o.path.as_deref(), Some(std::path::Path::new("doc.op")));
+    assert_eq!(o.host, "127.0.0.1");
+}
+
+#[test]
+fn parse_serve_web_args_managed_flag_form() {
+    let o = parse_serve_web_args(
+        vec![
+            "--managed".into(),
+            "--port".into(),
+            "0".into(),
+            "--file".into(),
+            "a.op".into(),
+            "--allow-origin".into(),
+            "vscode-webview://x".into(),
+            "--allow-origin".into(),
+            "vscode-webview://y".into(),
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    assert!(o.managed);
+    assert_eq!(o.port, 0);
+    assert_eq!(o.path.as_deref(), Some(std::path::Path::new("a.op")));
+    assert_eq!(o.allow_origins.len(), 2);
+}
+
+#[test]
+fn handshake_line_is_single_line_json() {
+    let line = handshake_json(41234, "aabbccdd00112233aabbccdd00112233");
+    assert!(!line.contains('\n'));
+    assert!(line.contains(r#""port":41234"#));
+    assert!(line.contains(r#""token":"aabbccdd00112233aabbccdd00112233""#));
 }
 
 #[test]

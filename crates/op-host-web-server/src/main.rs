@@ -26,15 +26,15 @@ fn main() {
         "--serve-web" => {
             // `--serve-web <port> [doc] [--host <addr>]`: doc optional
             // (empty document otherwise); `--host` opts in to a
-            // non-loopback bind.
-            let (port, path, host) = op_host_services::web_canvas_server::parse_serve_web_args(
-                args,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("op-host-web-server --serve-web: {e}");
-                exit(2);
-            });
-            if let Err(e) = op_host_services::web_canvas_server::run_web_canvas(path, port, &host) {
+            // non-loopback bind. The same parser also accepts the managed
+            // flag form (`--managed --port <n> ...`) for a supervising
+            // process that wants the handshake-JSON / stdin-EOF contract.
+            let options = op_host_services::web_canvas_server::parse_serve_web_args(args)
+                .unwrap_or_else(|e| {
+                    eprintln!("op-host-web-server --serve-web: {e}");
+                    exit(2);
+                });
+            if let Err(e) = op_host_services::web_canvas_server::run_web_canvas(options) {
                 eprintln!("op-host-web-server --serve-web: {e}");
                 exit(1);
             }
