@@ -289,13 +289,21 @@ fn html_escape(s: &str) -> String {
 
 /// Write a static reply with its own Content-Type (binary-safe body) — the
 /// JSON-only `write_mcp_http_response` cannot carry `application/wasm`.
+/// `cors_origin` is the precomputed `Access-Control-Allow-Origin` value
+/// (see `web_canvas_server::cors_origin_for`): `Some(origin)` echoes it,
+/// `None` omits the header — static GET routes are the auth-exempt
+/// surface, but managed mode still restricts which origins may read them.
 pub fn write_static_response<S: std::io::Write>(
     stream: &mut S,
     reply: &StaticReply,
+    cors_origin: Option<&str>,
 ) -> Result<(), String> {
+    let cors_line = cors_origin
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+        .unwrap_or_default();
     let head = format!(
         "HTTP/1.1 {}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
+         {cors_line}\
          Cache-Control: no-store, no-cache, must-revalidate\r\n\
          Pragma: no-cache\r\n\
          Content-Type: {}\r\n\
@@ -553,7 +561,7 @@ mod tests {
             body: vec![1, 2, 3],
         };
         let mut out: Vec<u8> = Vec::new();
-        write_static_response(&mut out, &reply).expect("write");
+        write_static_response(&mut out, &reply, Some("*")).expect("write");
         let text = String::from_utf8_lossy(&out);
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{text}");
         assert!(

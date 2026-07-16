@@ -148,8 +148,9 @@ pub fn stream_ai_response<W: Write>(
     out: &mut W,
     req: AiStreamRequest,
     provider: &dyn ChatProvider,
+    cors_origin: Option<&str>,
 ) -> std::io::Result<()> {
-    write_sse_headers(out)?;
+    write_sse_headers(out, cors_origin)?;
     // Expand skill NAMES → system prompt server-side (the web bundle
     // never ships the corpus). 0 budget = unlimited; the proxy trusts
     // the caller's skill list.
@@ -187,13 +188,21 @@ fn request_model_id(model: &str) -> Option<String> {
 
 /// Write the SSE header block — same shape as
 /// `web_canvas_server::serve_sse` (200 OK + `text/event-stream` +
-/// no-cache + keep-alive + permissive CORS + blank line).
-pub fn write_sse_headers<W: Write>(out: &mut W) -> std::io::Result<()> {
-    let headers = "HTTP/1.1 200 OK\r\n\
+/// no-cache + keep-alive + blank line). `cors_origin` is the precomputed
+/// `Access-Control-Allow-Origin` value (see
+/// `web_canvas_server::cors_origin_for`): `Some(origin)` echoes it,
+/// `None` omits the header (managed mode, origin not on the allowlist).
+pub fn write_sse_headers<W: Write>(out: &mut W, cors_origin: Option<&str>) -> std::io::Result<()> {
+    let cors_line = cors_origin
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+        .unwrap_or_default();
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
          Content-Type: text/event-stream\r\n\
          Cache-Control: no-cache\r\n\
          Connection: keep-alive\r\n\
-         Access-Control-Allow-Origin: *\r\n\r\n";
+         {cors_line}\r\n"
+    );
     out.write_all(headers.as_bytes())?;
     out.flush()
 }
@@ -201,8 +210,12 @@ pub fn write_sse_headers<W: Write>(out: &mut W) -> std::io::Result<()> {
 /// Write a single SSE error event (with headers) and close — used by
 /// the route when no provider could be built. `flush` after so the
 /// client sees the error before the socket drops.
-pub fn write_sse_error<W: Write>(out: &mut W, message: &str) -> std::io::Result<()> {
-    write_sse_headers(out)?;
+pub fn write_sse_error<W: Write>(
+    out: &mut W,
+    message: &str,
+    cors_origin: Option<&str>,
+) -> std::io::Result<()> {
+    write_sse_headers(out, cors_origin)?;
     out.write_all(delta_to_sse(&ChatDelta::Error(message.to_string())).as_bytes())?;
     out.flush()
 }
@@ -578,7 +591,7 @@ mod tests {
             ],
         };
         let mut out = Vec::<u8>::new();
-        stream_ai_response(&mut out, req, &provider).expect("stream");
+        stream_ai_response(&mut out, req, &provider, Some("*")).expect("stream");
         let text = String::from_utf8(out).expect("utf8");
         assert!(text.contains("Content-Type: text/event-stream"), "{text}");
         assert!(text.contains(r#"data: {"delta":"Hello"}"#), "{text}");
@@ -603,7 +616,7 @@ mod tests {
         };
         let mut out = Vec::<u8>::new();
 
-        stream_ai_response(&mut out, req, &provider).expect("stream");
+        stream_ai_response(&mut out, req, &provider, Some("*")).expect("stream");
 
         assert_eq!(
             seen_model.lock().expect("seen model lock").as_ref(),
@@ -632,7 +645,7 @@ mod tests {
             ],
         };
         let mut out = Vec::<u8>::new();
-        stream_ai_response(&mut out, req, &provider).expect("stream");
+        stream_ai_response(&mut out, req, &provider, Some("*")).expect("stream");
         let text = String::from_utf8(out).expect("utf8");
         assert!(text.contains(r#"data: {"error":"boom"}"#), "{text}");
         assert!(!text.contains("should not appear"), "{text}");
@@ -641,7 +654,7 @@ mod tests {
     #[test]
     fn write_sse_error_emits_headers_and_error() {
         let mut out = Vec::<u8>::new();
-        write_sse_error(&mut out, "no model configured").expect("write");
+        write_sse_error(&mut out, "no model configured", Some("*")).expect("write");
         let text = String::from_utf8(out).expect("utf8");
         assert!(text.contains("Content-Type: text/event-stream"), "{text}");
         assert!(

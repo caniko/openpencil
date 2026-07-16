@@ -280,6 +280,10 @@ pub struct HttpRequest {
     pub body: String,
     pub host: Option<String>,
     pub origin: Option<String>,
+    /// `X-OpenPencil-Token` header value, when present — the managed
+    /// web-canvas daemon's per-instance auth token (see
+    /// `web_canvas_server::RequestAuth`).
+    pub token: Option<String>,
 }
 
 /// Parse a capped HTTP header and then read exactly its declared body length.
@@ -354,6 +358,7 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
     };
     let host = header_value("host");
     let origin = header_value("origin");
+    let token = header_value("x-openpencil-token");
     if content_length > MAX_BODY {
         return Err(format!(
             "request body exceeds {} MiB",
@@ -382,6 +387,7 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
         body: String::from_utf8_lossy(&body).into_owned(),
         host,
         origin,
+        token,
     })
 }
 
@@ -397,11 +403,31 @@ pub fn write_mcp_http_response<S: std::io::Write>(
     status: &str,
     body: &str,
 ) -> Result<(), String> {
+    write_mcp_http_response_with_origin(stream, status, body, Some("*"))
+}
+
+/// Like [`write_mcp_http_response`], but lets the caller supply the exact
+/// `Access-Control-Allow-Origin` value to emit: `Some(origin)` echoes that
+/// literal value, `None` omits the header entirely. Used by the managed
+/// web-canvas daemon (`web_canvas_server::serve_one`), which computes the
+/// right value per-request via `cors_origin_for` against its
+/// `--allow-origin` allowlist; every other caller (the `--mcp-http`
+/// server, the legacy `--serve-web` accept-loop overflow reply) keeps the
+/// permissive `*` via `write_mcp_http_response` above, unchanged.
+pub(crate) fn write_mcp_http_response_with_origin<S: std::io::Write>(
+    stream: &mut S,
+    status: &str,
+    body: &str,
+    cors_origin: Option<&str>,
+) -> Result<(), String> {
+    let cors_line = cors_origin
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+        .unwrap_or_default();
     let http = format!(
         "HTTP/1.1 {status}\r\n\
-         Access-Control-Allow-Origin: *\r\n\
+         {cors_line}\
          Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, mcp-session-id\r\n\
+         Access-Control-Allow-Headers: Content-Type, mcp-session-id, X-OpenPencil-Token\r\n\
          Access-Control-Expose-Headers: mcp-session-id\r\n\
          mcp-session-id: openpencil\r\n\
          Cache-Control: no-store\r\n\

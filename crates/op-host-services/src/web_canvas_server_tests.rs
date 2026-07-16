@@ -396,6 +396,7 @@ fn sensitive_browser_posts_include_credentials_and_ai_routes() {
             body: String::new(),
             host: None,
             origin: None,
+            token: None,
         };
         assert!(is_sensitive_browser_post(&request), "path={path}");
     }
@@ -1079,7 +1080,7 @@ fn serve_sse_emits_initial_then_each_version_until_hub_drops() {
     tx.send(9).expect("send"); // one bump, then the sender drops → Disconnected
     drop(tx);
     let mut stream = mock_stream("");
-    serve_sse(&mut stream, rx, 7).expect("serve_sse");
+    serve_sse(&mut stream, rx, 7, Some("*")).expect("serve_sse");
     let out = String::from_utf8_lossy(&stream.output);
     assert!(out.contains("text/event-stream"), "{out}");
     assert!(out.contains(r#"data: {"version":7}"#), "{out}"); // initial sync
@@ -1339,4 +1340,45 @@ fn indicators_endpoint_serves_parseable_relay_json() {
         .expect("relay body parses back through the browser-side parser");
     // No design run in this test process — idle registry relays as such.
     assert!(!remote.run_active);
+}
+
+// --- Task 4: serve_one layer token auth + CORS allowlist ---
+
+#[test]
+fn managed_auth_gates_by_method_and_path() {
+    let auth = RequestAuth {
+        managed: true,
+        token: "tok123".into(),
+    };
+    assert!(auth.allows("GET", "/", None)); // static shell
+    assert!(auth.allows("GET", "/index.html", None));
+    assert!(auth.allows("GET", "/pkg/op_host_web.js", None));
+    assert!(auth.allows("GET", "/canvaskit/canvaskit.wasm", None)); // editor can't boot without
+    assert!(auth.allows("GET", "/assets/iconify-catalog-brands.json", None));
+    assert!(auth.allows("GET", "/smoke/step-1b.html", None));
+    assert!(auth.allows("OPTIONS", "/api/mcp/document", None)); // preflight
+    assert!(!auth.allows("POST", "/", None)); // JSON-RPC alias: privileged
+    assert!(!auth.allows("GET", "/api/mcp/events", None)); // SSE: privileged
+    assert!(!auth.allows("POST", "/mcp", Some("wrong")));
+    assert!(auth.allows("POST", "/mcp", Some("tok123")));
+}
+
+#[test]
+fn unmanaged_mode_keeps_open_behavior() {
+    let auth = RequestAuth {
+        managed: false,
+        token: String::new(),
+    };
+    assert!(auth.allows("POST", "/api/mcp/document", None));
+}
+
+#[test]
+fn cors_echoes_only_allowlisted_origin() {
+    let allow = vec!["vscode-webview://abc".to_string()];
+    assert_eq!(
+        cors_origin_for(&allow, Some("vscode-webview://abc")).as_deref(),
+        Some("vscode-webview://abc")
+    );
+    assert_eq!(cors_origin_for(&allow, Some("http://evil.local")), None);
+    assert_eq!(cors_origin_for(&allow, None), None);
 }

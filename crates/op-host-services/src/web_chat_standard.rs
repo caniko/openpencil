@@ -146,8 +146,9 @@ pub fn stream_standard_turn<W: Write>(
     req: WebStandardTurnRequest,
     state: &Mutex<WebCanvasState>,
     hub: &SseHub,
+    cors_origin: Option<&str>,
 ) -> std::io::Result<()> {
-    crate::ai_proxy::write_sse_headers(out)?;
+    crate::ai_proxy::write_sse_headers(out, cors_origin)?;
 
     let mut snapshot = match apply_request_snapshot(&req, state, hub) {
         Ok(snapshot) => snapshot,

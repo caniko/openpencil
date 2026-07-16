@@ -109,13 +109,12 @@ pub struct WebCanvasState {
     /// parity).
     pub(crate) port: u16,
     /// Managed-mode per-instance auth token (see `ServeWebOptions::managed`
-    /// / `run_web_canvas`). `None` outside managed mode. Unused today —
-    /// stored for the auth/CORS check landing in a follow-up task.
-    #[allow(dead_code)]
+    /// / `run_web_canvas`). `None` outside managed mode. Read by `serve_one`
+    /// (via `RequestAuth`) to gate every privileged request.
     pub(crate) managed_token: Option<String>,
     /// Managed-mode `--allow-origin` allowlist. Empty outside managed mode.
-    /// Unused today — stored for the CORS check landing in a follow-up task.
-    #[allow(dead_code)]
+    /// Read by `serve_one` (via `cors_origin_for`) to decide which `Origin`
+    /// is echoed back in `Access-Control-Allow-Origin`.
     pub(crate) allow_origins: Vec<String>,
 }
 
@@ -1484,6 +1483,50 @@ where
     Ok(())
 }
 
+/// Managed-mode request gate (see `ServeWebOptions::managed` /
+/// `WebCanvasState::managed_token`). Non-managed daemons construct
+/// `RequestAuth { managed: false, .. }`, which `allows` always satisfies —
+/// the legacy fire-and-forget daemon stays byte-for-byte tokenless.
+pub(crate) struct RequestAuth {
+    pub managed: bool,
+    pub token: String,
+}
+
+impl RequestAuth {
+    /// Whether `method path` may proceed without (or with a mismatched)
+    /// `presented` token. Mirrors `web_static.rs`'s static route table
+    /// (`web_static.rs:188`): everything the static layer serves stays
+    /// tokenless — the page cannot know the token before the postMessage
+    /// bootstrap hands it over — plus `OPTIONS` preflight. Every other
+    /// request (the `POST /` JSON-RPC alias, `/mcp`, `/api/*` including the
+    /// SSE `/api/mcp/events` and AI stream endpoints) requires the exact
+    /// per-instance token.
+    pub(crate) fn allows(&self, method: &str, path: &str, presented: Option<&str>) -> bool {
+        if !self.managed {
+            return true;
+        }
+        let static_get = method.eq_ignore_ascii_case("GET")
+            && (path == "/"
+                || path == "/index.html"
+                || path.starts_with("/pkg/")
+                || path.starts_with("/smoke/")
+                || path.starts_with("/canvaskit/")
+                || path.starts_with("/assets/"));
+        let exempt = method.eq_ignore_ascii_case("OPTIONS") || static_get;
+        exempt || presented == Some(self.token.as_str())
+    }
+}
+
+/// Managed-mode CORS allowlist check: echoes `origin` back only when it
+/// exactly matches an entry in `allow`, otherwise omits the header
+/// (`None`). Unmanaged mode never calls this — it keeps the permissive
+/// `*` inline at each call site instead.
+pub(crate) fn cors_origin_for(allow: &[String], origin: Option<&str>) -> Option<String> {
+    origin
+        .filter(|o| allow.iter().any(|a| a == o))
+        .map(str::to_string)
+}
+
 /// Handle one connection. Routes: static host page + wasm bundle (`GET /`,
 /// `GET /pkg/*` via `crate::web_static`); SSE live-update stream (`GET
 /// /api/mcp/events`); REST whole-doc sync / health (`/api/*` via
@@ -1491,6 +1534,14 @@ where
 /// mutation (REST POST or a mutating tool call) bumps the version and is
 /// broadcast to SSE subscribers. The state `Mutex` is held only across the
 /// in-memory operation, never across the (long-lived) SSE wait.
+///
+/// Managed mode (`WebCanvasState::managed_token`) layers a token gate
+/// (`RequestAuth::allows`) in front of every privileged branch below —
+/// only the static GET routes and `OPTIONS` preflight stay tokenless — and
+/// an origin allowlist (`cors_origin_for`) that replaces the permissive
+/// `Access-Control-Allow-Origin: *` with an echo of the exact allowlisted
+/// `Origin` (or no header at all). Non-managed mode is untouched: `auth`
+/// always allows and `cors_origin` is always `Some("*")`.
 ///
 /// Returns `Ok(true)` when the client requested a token-authed graceful
 /// shutdown (same `openpencil/shutdown` contract as `--mcp-http`) — the
@@ -1501,15 +1552,35 @@ fn serve_one<S: Read + Write>(
     hub: &SseHub,
 ) -> Result<bool, String> {
     let req = crate::mcp_serve::read_http_request(stream)?;
+    let (auth, allow_origins) = {
+        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        let auth = RequestAuth {
+            managed: guard.managed_token.is_some(),
+            token: guard.managed_token.clone().unwrap_or_default(),
+        };
+        (auth, guard.allow_origins.clone())
+    };
+    let cors_origin: Option<String> = if auth.managed {
+        cors_origin_for(&allow_origins, req.origin.as_deref())
+    } else {
+        Some("*".to_string())
+    };
+    let cors_origin = cors_origin.as_deref();
     if req.method == "OPTIONS" {
-        return crate::mcp_serve::write_mcp_http_response(stream, "204 No Content", "")
-            .map(|()| false);
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "204 No Content",
+            "",
+            cors_origin,
+        )
+        .map(|()| false);
     }
     if is_sensitive_browser_post(&req) && !credential_request_origin_allowed(&req) {
-        return crate::mcp_serve::write_mcp_http_response(
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "403 Forbidden",
             &crate::mcp_serve::rest_error_body("cross-origin sensitive request is forbidden"),
+            cors_origin,
         )
         .map(|()| false);
     }
@@ -1520,8 +1591,23 @@ fn serve_one<S: Read + Write>(
         if let Some(reply) =
             crate::web_static::handle_static_request(&req.path, bundle_dir.as_deref())
         {
-            return crate::web_static::write_static_response(stream, &reply).map(|()| false);
+            return crate::web_static::write_static_response(stream, &reply, cors_origin)
+                .map(|()| false);
         }
+    }
+    // Managed-mode token gate: everything below this point is a privileged
+    // branch (SSE, AI streams, `/mcp`, `/api/*`, the `POST /` JSON-RPC
+    // alias) — the static GET routes above and the `OPTIONS` preflight
+    // already returned. Unmanaged mode's `allows` always returns true, so
+    // this is a no-op there.
+    if !auth.allows(&req.method, &req.path, req.token.as_deref()) {
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "401 Unauthorized",
+            r#"{"ok":false,"error":"unauthorized"}"#,
+            cors_origin,
+        )
+        .map(|()| false);
     }
     // SSE live-update stream: the browser shell subscribes and re-syncs whenever
     // the document version advances. Subscribe BEFORE reading the current
@@ -1530,7 +1616,7 @@ fn serve_one<S: Read + Write>(
     if req.method == "GET" && req.path == "/api/mcp/events" {
         let rx = hub.subscribe();
         let current = state.lock().unwrap_or_else(|p| p.into_inner()).version;
-        return serve_sse(stream, rx, current).map(|()| false);
+        return serve_sse(stream, rx, current, cors_origin).map(|()| false);
     }
     // AI proxy stream: the browser bundle POSTs a model request and we
     // stream the provider's `ChatDelta`s back as SSE. Streaming route
@@ -1541,7 +1627,7 @@ fn serve_one<S: Read + Write>(
     // nothing borrows the editor across the stream.
     if req.method == "POST" && req.path == "/api/ai/stream" {
         let Some(ai_req) = crate::ai_proxy::parse_ai_stream_body(&req.body) else {
-            return crate::ai_proxy::write_sse_error(stream, "invalid request body")
+            return crate::ai_proxy::write_sse_error(stream, "invalid request body", cors_origin)
                 .map_err(|e| format!("ai stream error: {e}"))
                 .map(|()| false);
         };
@@ -1556,17 +1642,21 @@ fn serve_one<S: Read + Write>(
         let provider = match provider {
             Ok(Some(provider)) => provider,
             Ok(None) => {
-                return crate::ai_proxy::write_sse_error(stream, "no model configured")
-                    .map_err(|e| format!("ai stream error: {e}"))
-                    .map(|()| false);
+                return crate::ai_proxy::write_sse_error(
+                    stream,
+                    "no model configured",
+                    cors_origin,
+                )
+                .map_err(|e| format!("ai stream error: {e}"))
+                .map(|()| false);
             }
             Err(message) => {
-                return crate::ai_proxy::write_sse_error(stream, &message)
+                return crate::ai_proxy::write_sse_error(stream, &message, cors_origin)
                     .map_err(|e| format!("ai stream error: {e}"))
                     .map(|()| false);
             }
         };
-        return crate::ai_proxy::stream_ai_response(stream, ai_req, provider.as_ref())
+        return crate::ai_proxy::stream_ai_response(stream, ai_req, provider.as_ref(), cors_origin)
             .map_err(|e| format!("ai stream: {e}"))
             .map(|()| false);
     }
@@ -1576,13 +1666,19 @@ fn serve_one<S: Read + Write>(
     if req.method == "POST" && req.path == "/api/ai/standard" {
         let Some(standard_req) = crate::web_chat_standard::parse_standard_turn_body(&req.body)
         else {
-            return crate::ai_proxy::write_sse_error(stream, "invalid request body")
+            return crate::ai_proxy::write_sse_error(stream, "invalid request body", cors_origin)
                 .map_err(|e| format!("ai standard error: {e}"))
                 .map(|()| false);
         };
-        return crate::web_chat_standard::stream_standard_turn(stream, standard_req, state, hub)
-            .map_err(|e| format!("ai standard: {e}"))
-            .map(|()| false);
+        return crate::web_chat_standard::stream_standard_turn(
+            stream,
+            standard_req,
+            state,
+            hub,
+            cors_origin,
+        )
+        .map_err(|e| format!("ai standard: {e}"))
+        .map(|()| false);
     }
     // All `/api/mcp/*` REST paths go to the REST handler — including ones this
     // daemon doesn't implement yet, which it answers with 404 rather than
@@ -1615,26 +1711,33 @@ fn serve_one<S: Read + Write>(
             }
             reply
         };
-        return crate::mcp_serve::write_mcp_http_response(stream, reply.status, &reply.body)
-            .map(|()| false);
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            reply.status,
+            &reply.body,
+            cors_origin,
+        )
+        .map(|()| false);
     }
     // JSON-RPC tool dispatch is served ONLY as a POST to `/` or `/mcp`. An
     // unknown path is 404; a known path with the wrong method (e.g. `GET /mcp`)
     // is 405 — never silently dispatched as a tool call.
     let is_jsonrpc_path = req.path == "/" || req.path == "/mcp";
     if !is_jsonrpc_path {
-        return crate::mcp_serve::write_mcp_http_response(
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "404 Not Found",
             r#"{"ok":false,"error":"Not found. Use /, /pkg/*, /api/mcp/document, /api/mcp/sync-reset, /api/mcp/server, /api/mcp/events, /api/file/save, /api/export/raster, /api/export/pdf, or /mcp."}"#,
+            cors_origin,
         )
         .map(|()| false);
     }
     if req.method != "POST" {
-        return crate::mcp_serve::write_mcp_http_response(
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "405 Method Not Allowed",
             r#"{"ok":false,"error":"Method not allowed. POST a JSON-RPC message to /mcp."}"#,
+            cors_origin,
         )
         .map(|()| false);
     }
@@ -1646,10 +1749,11 @@ fn serve_one<S: Read + Write>(
         &req.body,
         &crate::mcp_serve::headless_token_from_env().unwrap_or_default(),
     ) {
-        crate::mcp_serve::write_mcp_http_response(
+        crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "200 OK",
             &crate::mcp_serve::shutdown_ok_response(&id),
+            cors_origin,
         )?;
         return Ok(true);
     }
@@ -1670,8 +1774,13 @@ fn serve_one<S: Read + Write>(
             },
         )
     } {
-        return crate::mcp_serve::write_mcp_http_response(stream, "200 OK", &response)
-            .map(|()| false);
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "200 OK",
+            &response,
+            cors_origin,
+        )
+        .map(|()| false);
     }
     // JSON-RPC `/mcp` dispatch against the in-memory document. A mutating apply
     // bumps the sync version, broadcast to SSE subscribers so the browser shell
@@ -1705,7 +1814,8 @@ fn serve_one<S: Read + Write>(
     } else {
         "200 OK"
     };
-    crate::mcp_serve::write_mcp_http_response(stream, status, &response).map(|()| false)
+    crate::mcp_serve::write_mcp_http_response_with_origin(stream, status, &response, cors_origin)
+        .map(|()| false)
 }
 
 const WEB_ALLOWED_ORIGINS_ENV: &str = "OPENPENCIL_WEB_ALLOWED_ORIGINS";
@@ -1812,12 +1922,18 @@ fn serve_sse<S: Write>(
     stream: &mut S,
     rx: Receiver<u64>,
     current_version: u64,
+    cors_origin: Option<&str>,
 ) -> Result<(), String> {
-    let headers = "HTTP/1.1 200 OK\r\n\
+    let cors_line = cors_origin
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
+        .unwrap_or_default();
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
          Content-Type: text/event-stream\r\n\
          Cache-Control: no-cache\r\n\
          Connection: keep-alive\r\n\
-         Access-Control-Allow-Origin: *\r\n\r\n";
+         {cors_line}\r\n"
+    );
     stream
         .write_all(headers.as_bytes())
         .map_err(|e| format!("sse headers: {e}"))?;
