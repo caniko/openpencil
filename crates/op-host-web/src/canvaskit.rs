@@ -995,8 +995,12 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // in the background so the icon picker / figma can resolve simple-icons.
     crate::iconify_web::fetch_brand_catalog(&inner);
     // Bidirectional live-canvas sync with the daemon (pull on version bump,
-    // push local edits + selection) — same loops the skia mount wires.
-    crate::live_sync_glue::start(&inner);
+    // push local edits + selection) — same loops the skia mount wires. The
+    // `SyncController` (gate + wire client + push single-flight) is shared
+    // with the Task 7 postMessage bridge, so both observe/mutate one instance.
+    let sync_controller: crate::live_sync_glue::SharedSync =
+        Rc::new(RefCell::new(crate::live_sync_glue::SyncController::new()));
+    crate::live_sync_glue::start(&inner, sync_controller.clone());
     // Mirror the daemon's agent-indicator registry so design runs paint
     // their agent borders / badges / reveal animations on web too.
     crate::agent_indicator_sync::start(&inner);
