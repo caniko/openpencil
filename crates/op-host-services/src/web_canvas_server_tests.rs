@@ -1209,6 +1209,120 @@ fn sync_reset_clears_web_document_and_bumps_version() {
 }
 
 #[test]
+fn second_sync_reset_is_skipped_and_mutates_nothing() {
+    let mut state = fresh_state();
+    let first = state.reset_document_guarded().unwrap();
+    assert!(!first.skipped);
+    // capture full post-reset identity: a skipped reset must not move EITHER
+    let v_before = state.document_version_for_test();
+    let doc_before = serde_json::to_string(&state.editor.doc).unwrap();
+    let second = state.reset_document_guarded().unwrap();
+    assert!(second.skipped);
+    assert_eq!(state.document_version_for_test(), v_before);
+    assert_eq!(
+        serde_json::to_string(&state.editor.doc).unwrap(),
+        doc_before
+    );
+}
+
+// A second valid body whose content DIFFERS from SYNC_BODY — rejected writes
+// are asserted against it so "replace the doc but suppress the version bump"
+// style bugs cannot pass.
+const SYNC_BODY_ALT: &str = r##"{"document":{"version":"1.0.0","children":[{"id":"n77","type":"ellipse","name":"Rejected Ellipse","x":9,"y":9,"width":30,"height":30,"fill":[{"type":"solid","color":"#abcdef"}]}]},"sourceClientId":"web"}"##;
+
+fn doc_fingerprint(state: &WebCanvasState) -> (u64, String) {
+    (
+        state.document_version_for_test(),
+        serde_json::to_string(&state.editor.doc).unwrap(),
+    )
+}
+
+#[test]
+fn failed_reset_errors_and_mutates_nothing() {
+    let mut state = fresh_state();
+    state.current_path = Some(std::path::PathBuf::from("/nonexistent/x.op"));
+    let before = doc_fingerprint(&state);
+    // the reset MUST fail here — a silent success is itself a bug:
+    assert!(state.reset_document_guarded().is_err());
+    assert!(!state.reset_consumed); // retryable
+    assert_eq!(doc_fingerprint(&state), before); // version AND bytes untouched
+}
+
+#[test]
+fn document_post_with_stale_base_version_conflicts() {
+    let mut state = fresh_state();
+    let v0 = state.document_version_for_test();
+    let ok = state.apply_document_push(SYNC_BODY, Some(v0)).unwrap();
+    assert!(ok.applied);
+    // capture BEFORE the stale attempt: a rejected write must change nothing
+    let before = doc_fingerprint(&state);
+    // stale write carries DIFFERENT bytes — proves the document didn't move
+    let stale = state.apply_document_push(SYNC_BODY_ALT, Some(v0)).unwrap();
+    assert!(!stale.applied);
+    assert_eq!(doc_fingerprint(&state), before); // no bump, no content swap
+    assert_eq!(stale.current_version, before.0);
+}
+
+#[test]
+fn document_post_without_base_version_keeps_legacy_behavior() {
+    let mut state = fresh_state();
+    assert!(state.apply_document_push(SYNC_BODY, None).unwrap().applied);
+    assert!(state.apply_document_push(SYNC_BODY, None).unwrap().applied);
+}
+
+#[test]
+fn malformed_document_push_stays_an_error() {
+    let mut state = fresh_state();
+    assert!(state.apply_document_push("{not json", None).is_err()); // still HTTP 400
+}
+
+#[test]
+fn base_version_is_extracted_from_the_request_body() {
+    let mut state = fresh_state();
+    // No override: the stale baseVersion inside the body itself must conflict.
+    let stale_in_body = SYNC_BODY.replacen(
+        r#""sourceClientId":"web""#,
+        r#""sourceClientId":"web","baseVersion":9999"#,
+        1,
+    );
+    let out = state.apply_document_push(&stale_in_body, None).unwrap();
+    assert!(!out.applied);
+}
+
+#[test]
+fn sync_reset_route_reply_is_skipped_true_on_second_call() {
+    let mut s = fresh_state();
+    let first = handle_web_canvas_request("POST", "/api/mcp/sync-reset", "", &mut s);
+    assert!(first.status.starts_with("200"), "{}", first.body);
+    assert!(!first.body.contains(r#""skipped""#), "{}", first.body);
+
+    let second = handle_web_canvas_request("POST", "/api/mcp/sync-reset", "", &mut s);
+    assert!(second.status.starts_with("200"), "{}", second.body);
+    assert!(second.body.contains(r#""skipped":true"#), "{}", second.body);
+    assert!(second.body.contains(r#""version":1"#), "{}", second.body);
+    assert_eq!(s.version, 1, "a skipped reset must not bump the version");
+}
+
+#[test]
+fn document_post_route_409s_on_stale_base_version_without_mutating() {
+    let mut s = fresh_state();
+    let body_with_base_version = SYNC_BODY.replacen(
+        r#""sourceClientId":"web""#,
+        r#""sourceClientId":"web","baseVersion":9999"#,
+        1,
+    );
+    let r = handle_web_canvas_request("POST", "/api/mcp/document", &body_with_base_version, &mut s);
+    assert!(r.status.starts_with("409"), "{}", r.body);
+    assert!(
+        r.body.contains(r#""error":"version-conflict""#),
+        "{}",
+        r.body
+    );
+    assert!(r.body.contains(r#""version":0"#), "{}", r.body);
+    assert_eq!(s.version, 0);
+}
+
+#[test]
 fn serve_one_unimplemented_api_route_is_404_not_jsonrpc() {
     // An `/api/mcp/*` route this daemon doesn't implement must 404, not
     // fall through to JSON-RPC dispatch.

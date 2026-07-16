@@ -116,6 +116,12 @@ pub struct WebCanvasState {
     /// Read by `serve_one` (via `cors_origin_for`) to decide which `Origin`
     /// is echoed back in `Access-Control-Allow-Origin`.
     pub(crate) allow_origins: Vec<String>,
+    /// Idempotence guard for `POST /api/mcp/sync-reset`: set once the FIRST
+    /// successful reset in this process's lifetime completes. A failed reset
+    /// does not set it (retryable); once set, further sync-reset calls are a
+    /// no-op `{"ok":true,"skipped":true,"version":<current>}` reply instead
+    /// of touching the document again.
+    pub(crate) reset_consumed: bool,
 }
 
 impl WebCanvasState {
@@ -164,6 +170,7 @@ impl WebCanvasState {
             port,
             managed_token: None,
             allow_origins: Vec::new(),
+            reset_consumed: false,
         }
     }
 
@@ -189,6 +196,89 @@ impl WebCanvasState {
         self.version += 1;
         Ok(self.version)
     }
+
+    /// Idempotent wrapper around [`Self::reset_document`] for
+    /// `POST /api/mcp/sync-reset`: the first SUCCESSFUL reset in this
+    /// process's lifetime consumes `reset_consumed`; every call after that
+    /// is a no-op (`skipped: true`) that neither reloads nor bumps the
+    /// version. A failed reset does NOT consume the guard — it stays
+    /// retryable, and the document/version are left exactly as
+    /// `reset_document`'s own `?`-early-return already guarantees (nothing
+    /// touched before the fallible load succeeds).
+    pub(crate) fn reset_document_guarded(&mut self) -> Result<ResetOutcome, String> {
+        if self.reset_consumed {
+            return Ok(ResetOutcome { skipped: true });
+        }
+        self.reset_document()?;
+        self.reset_consumed = true;
+        Ok(ResetOutcome { skipped: false })
+    }
+
+    /// Push a whole-document replacement (`POST /api/mcp/document` body).
+    /// Consolidates the route's former inline parse-then-replace logic into
+    /// one testable entry point. `base_version_override` is test-only — the
+    /// real route always passes `None`, in which case an optional top-level
+    /// `baseVersion` field inside `body` itself is consulted (extracted via
+    /// serde, not a hand-rolled scan). When a base version is present and
+    /// does not match the current version, the write is rejected WITHOUT
+    /// mutating anything: that's a version verdict conveyed through
+    /// `PushOutcome::applied == false`, not an `Err`. `Err` is reserved for
+    /// the existing malformed-JSON / schema-validation failures, which stay
+    /// client-fault → HTTP 400 at the route exactly as before.
+    pub(crate) fn apply_document_push(
+        &mut self,
+        body: &str,
+        base_version_override: Option<u64>,
+    ) -> Result<PushOutcome, String> {
+        let document_json = crate::mcp_serve::parse_document_sync_body(body)?;
+        let base_version = base_version_override.or_else(|| extract_base_version(body));
+        if let Some(expected) = base_version {
+            if expected != self.version {
+                return Ok(PushOutcome {
+                    applied: false,
+                    current_version: self.version,
+                });
+            }
+        }
+        // Load via the same proven path as desktop file-open. A load failure
+        // is a client fault → 400, like the TS validation 400s.
+        let loaded = op_pen_loader::load_canonical(&document_json).map_err(|e| e.to_string())?;
+        for w in &loaded.warnings {
+            eprintln!("openpencil-desktop --serve-web: schema warning: {w:?}");
+        }
+        let version = self.replace_document(loaded.value);
+        Ok(PushOutcome {
+            applied: true,
+            current_version: version,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn document_version_for_test(&self) -> u64 {
+        self.version
+    }
+}
+
+/// Outcome of [`WebCanvasState::reset_document_guarded`].
+pub(crate) struct ResetOutcome {
+    pub skipped: bool,
+}
+
+/// Outcome of [`WebCanvasState::apply_document_push`] — expresses only the
+/// version verdict (parse/schema failures are `Err`, handled separately).
+pub(crate) struct PushOutcome {
+    pub applied: bool,
+    pub current_version: u64,
+}
+
+/// Extract an optional top-level `baseVersion` from a document-sync POST
+/// body via serde — never a hand-rolled scan. Malformed JSON here simply
+/// yields `None`; `parse_document_sync_body` already owns rejecting a
+/// malformed body with the real client-facing error.
+fn extract_base_version(body: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("baseVersion").and_then(|v| v.as_u64()))
 }
 
 /// A handled reply: HTTP status line + JSON body, ready for
@@ -232,7 +322,10 @@ where
 /// routes:
 /// - `GET  /api/mcp/server`   → health `{ok:true,…}` (like `server.get.ts`)
 /// - `GET  /api/mcp/document` → `{document:<doc>,version}` (like `document.get.ts`)
-/// - `POST /api/mcp/document` → whole-doc replace → `{ok:true,version}` (like `document.post.ts`)
+/// - `POST /api/mcp/document` → whole-doc replace → `{ok:true,version}` (like
+///   `document.post.ts`); an optional top-level `baseVersion` makes the write
+///   conditional — a stale value 409s with `{ok:false,error:"version-conflict",
+///   version}` and leaves the document untouched instead of clobbering it
 /// - `GET  /api/mcp/version`  → `{version}` — Rust-only cheap change probe; the
 ///   TS stack pushes documents over SSE instead, so it never needs one. The
 ///   browser shell polls this and fetches the full document only on a bump.
@@ -273,35 +366,28 @@ pub fn handle_web_canvas_request(
                 body: crate::mcp_serve::rest_error_body(&e.to_string()),
             },
         },
-        ("POST", "/api/mcp/document") => {
-            let document_json = match crate::mcp_serve::parse_document_sync_body(body) {
-                Ok(json) => json,
-                Err(message) => {
-                    return WebReply {
-                        status: "400 Bad Request",
-                        body: crate::mcp_serve::rest_error_body(&message),
-                    };
-                }
-            };
-            // Load via the same proven path as desktop file-open. A load failure
-            // is a client fault → 400, like the TS validation 400s.
-            match op_pen_loader::load_canonical(&document_json) {
-                Ok(loaded) => {
-                    for w in &loaded.warnings {
-                        eprintln!("openpencil-desktop --serve-web: schema warning: {w:?}");
-                    }
-                    let version = state.replace_document(loaded.value);
-                    WebReply {
-                        status: "200 OK",
-                        body: crate::mcp_serve::document_sync_ok(version),
-                    }
-                }
-                Err(e) => WebReply {
-                    status: "400 Bad Request",
-                    body: crate::mcp_serve::rest_error_body(&e.to_string()),
-                },
-            }
-        }
+        ("POST", "/api/mcp/document") => match state.apply_document_push(body, None) {
+            Ok(outcome) if outcome.applied => WebReply {
+                status: "200 OK",
+                body: crate::mcp_serve::document_sync_ok(outcome.current_version),
+            },
+            Ok(outcome) => WebReply {
+                // Stale baseVersion: reject without writing, TS-style error
+                // envelope plus the current version so the caller can decide
+                // whether to refetch and retry.
+                status: "409 Conflict",
+                body: serde_json::json!({
+                    "ok": false,
+                    "error": "version-conflict",
+                    "version": outcome.current_version,
+                })
+                .to_string(),
+            },
+            Err(message) => WebReply {
+                status: "400 Bad Request",
+                body: crate::mcp_serve::rest_error_body(&message),
+            },
+        },
         ("GET", "/api/mcp/version") => WebReply {
             status: "200 OK",
             body: format!(r#"{{"version":{}}}"#, state.version),
@@ -315,10 +401,14 @@ pub fn handle_web_canvas_request(
             status: "200 OK",
             body: op_editor_core::agent_indicators::relay_json(),
         },
-        ("POST", "/api/mcp/sync-reset") => match state.reset_document() {
-            Ok(version) => WebReply {
+        ("POST", "/api/mcp/sync-reset") => match state.reset_document_guarded() {
+            Ok(outcome) if outcome.skipped => WebReply {
                 status: "200 OK",
-                body: crate::mcp_serve::document_sync_ok(version),
+                body: format!(r#"{{"ok":true,"skipped":true,"version":{}}}"#, state.version),
+            },
+            Ok(_) => WebReply {
+                status: "200 OK",
+                body: crate::mcp_serve::document_sync_ok(state.version),
             },
             Err(e) => WebReply {
                 status: "400 Bad Request",
