@@ -14,8 +14,8 @@
 //! let the observer report. Handlers DO post the direct replies `ready`,
 //! `snapshot-result`, `snapshot-conflict`, and `conflict-resolved`.
 //!
-//! Borrow discipline mirrors Task 6: a `SharedSync`/`inner` borrow is held only
-//! for the span of one synchronous decision, never across an XHR callback.
+//! Borrow discipline: a `SharedSync`/`inner` borrow is held only for the span
+//! of one synchronous decision, never across an XHR callback.
 
 use std::cell::RefCell;
 use std::rc::Rc;

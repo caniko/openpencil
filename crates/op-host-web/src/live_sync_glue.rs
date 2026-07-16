@@ -59,7 +59,7 @@ const SYNC_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Shared sync state: the gate deciding pull/push eligibility, the wire-level
 /// client (version/hash bookkeeping), and the push single-flight latch. Built
-/// once in `mount_ck` and handed to both this module's ticks and the Task 7
+/// once in `mount_ck` and handed to both this module's ticks and the
 /// postMessage bridge, so both sides observe and mutate the exact same
 /// `SyncGate` instance (a v1 defect — the bridge couldn't reach a local
 /// `WebSyncClient` — is fixed by sharing this one struct).
@@ -92,8 +92,8 @@ fn current_pair<C: RepaintContext>(b: &C) -> (u64, u64) {
 
 /// Wire the bidirectional sync loops onto the mounted shell. Called once from
 /// `mount_ck`; both intervals run for the page lifetime. `sync` is shared with
-/// the Task 7 bridge — this module only ever borrows it for the duration of a
-/// single decision, never across an await/callback boundary.
+/// the postMessage bridge — this module only ever borrows it for the duration
+/// of a single decision, never across an await/callback boundary.
 pub(crate) fn start<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>, sync: SharedSync) {
     let base = crate::daemon_base::daemon_base();
     // One document fetch / one push at a time; ticks observing an in-flight

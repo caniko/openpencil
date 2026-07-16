@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn generation_only_replacement_rebaselines_without_push() {
         // open-document with byte-identical content: generation moves, bytes
-        // match the daemon. The wiring layer (Task 6) detects the byte match via
+        // match the daemon. The wiring layer detects the byte match via
         // should_push and must re-baseline directly instead of pushing —
         // note_synced with the new pair reopens the gate:
         let mut g = SyncGate::default();

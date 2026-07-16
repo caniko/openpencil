@@ -1456,7 +1456,7 @@ fn indicators_endpoint_serves_parseable_relay_json() {
     assert!(!remote.run_active);
 }
 
-// --- Task 4: serve_one layer token auth + CORS allowlist ---
+// --- serve_one layer: managed token auth + CORS allowlist enforcement ---
 
 #[test]
 fn managed_auth_gates_by_method_and_path() {

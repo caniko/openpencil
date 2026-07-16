@@ -992,7 +992,7 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // when the read lands so their text re-shapes with the imported typeface).
     crate::web_fonts::load_imported_fonts_at_mount(&inner);
 
-    // ---- daemon bootstrap (startup order, Task 7) ----
+    // ---- daemon bootstrap: startup sequence ----
     //
     // The `SyncController` (gate + wire client + push single-flight) is shared
     // with the postMessage bridge, so both observe/mutate one instance. Build

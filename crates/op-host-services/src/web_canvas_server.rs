@@ -1221,8 +1221,9 @@ pub struct ServeWebOptions {
     /// the VS Code extension) that expects the handshake-JSON + stdin-EOF
     /// lifecycle contract instead of the legacy fire-and-forget daemon.
     pub managed: bool,
-    /// `--allow-origin <origin>` (repeatable), managed mode only. Stored for
-    /// a future CORS allowlist check — not enforced by this module yet.
+    /// `--allow-origin <origin>` (repeatable), managed mode only. Enforced by
+    /// `serve_one` via `cors_origin_for` to gate which `Origin` headers are
+    /// echoed back in `Access-Control-Allow-Origin` responses.
     pub allow_origins: Vec<String>,
 }
 
@@ -1344,9 +1345,9 @@ pub(crate) fn handshake_json(port: u16, token: &str) -> String {
 
 /// Generate a per-instance token for managed mode. Not a cryptographic PRNG —
 /// `RandomState`'s per-process keying plus a nanosecond timestamp and the pid
-/// give a token that's unguessable across separate daemon invocations, which
-/// is all the local-loopback handshake needs (the real access control is
-/// Task 4's origin/token check on `/mcp`).
+/// give a token that's unguessable across separate daemon invocations. The real
+/// access control is enforced by `serve_one` via `RequestAuth` gate on every
+/// request and `cors_origin_for` on privileged endpoints like `/mcp`.
 fn random_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
@@ -1496,8 +1497,9 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<(), String> {
             let _ = std::net::TcpStream::connect(local_addr);
         });
     }
-    // Stash the managed token + allow-origins on the shared state for Task 4
-    // (auth/CORS enforcement) to consume later. Not read by anything yet.
+    // Stash the managed token + allow-origins on the shared state. `serve_one`
+    // reads them via `RequestAuth` gate (token) and `cors_origin_for` (CORS
+    // allowlist) to enforce auth and CORS policies on all incoming requests.
     if managed_token.is_some() || !allow_origins.is_empty() {
         let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
         guard.managed_token = managed_token;

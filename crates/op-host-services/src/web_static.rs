@@ -437,8 +437,8 @@ mod tests {
         assert_eq!(reply.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(reply.body).expect("utf8");
         // The host page loads the glue and mounts the production CanvasKit
-        // shell on the canvas. The daemon sync-reset moved into the wasm mount
-        // (Task 7), so the page no longer issues it directly.
+        // shell on the canvas, which handles sync-reset internally. The page
+        // no longer issues sync-reset directly.
         assert!(body.contains("/pkg/op_host_web.js"), "{body}");
         assert!(!body.contains("fetch('/api/mcp/sync-reset'"), "{body}");
         assert!(body.contains("await mod.mount_ck('op')"), "{body}");
