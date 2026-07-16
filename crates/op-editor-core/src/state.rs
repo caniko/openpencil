@@ -77,6 +77,10 @@ pub struct EditorState {
     /// undo/restore, so an edit made after undoing past the save point
     /// can never reuse the saved revision value (false-clean guard).
     pub(crate) revision_counter: u64,
+    /// Monotonic document identity. Bumped by every `replace_document*`
+    /// (open / revert / sync replace), so `(generation, revision)` uniquely
+    /// names a state; a save-ack from a previous generation must be dropped.
+    pub(crate) document_generation: u64,
     /// Monotonic count of snapshots pushed onto `history.past`.
     /// Instance-write scopes use the delta to identify newly pushed
     /// snapshots even when the 100-entry deque evicts from the front.
@@ -149,6 +153,7 @@ impl EditorState {
             revision: 0,
             saved_revision: 0,
             revision_counter: 0,
+            document_generation: 0,
             history_push_count: 0,
             clipboard: Vec::new(),
             ui: UiDraftState::new(),
@@ -203,6 +208,7 @@ impl EditorState {
         self.revision = 0;
         self.saved_revision = 0;
         self.revision_counter = 0;
+        self.document_generation = self.document_generation.saturating_add(1);
         self.history_push_count = 0;
         self.ui = UiDraftState::new();
         self.editor_ui.clear_document_derived();
@@ -229,6 +235,7 @@ impl EditorState {
         let old_doc = std::mem::replace(&mut self.doc, doc);
         self.selection = SelectionState::empty();
         self.history_push_past(snap);
+        self.document_generation = self.document_generation.saturating_add(1);
         self.ui = UiDraftState::new();
         self.editor_ui.clear_document_derived();
         // Generation-run ownership is doc-scoped; clear on whole-doc replace.
@@ -248,15 +255,30 @@ impl EditorState {
         self.saved_revision
     }
 
+    /// Generation of the live document.
+    pub fn document_generation(&self) -> u64 {
+        self.document_generation
+    }
+
     /// True when document content changed since the last saved baseline.
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
 
+    /// Mark `revision` saved iff `generation` still names the live document.
+    pub fn mark_saved_revision_at(&mut self, generation: u64, revision: u64) -> bool {
+        if generation != self.document_generation {
+            return false;
+        }
+        self.saved_revision = revision;
+        self.editor_ui.document_dirty = self.is_dirty();
+        true
+    }
+
     /// Mark the current document revision as saved.
     pub fn mark_saved_revision(&mut self) {
-        self.saved_revision = self.revision;
-        self.sync_dirty_flag();
+        let (g, r) = (self.document_generation, self.revision);
+        let _ = self.mark_saved_revision_at(g, r);
     }
 
     /// Record a successful document-content mutation.
@@ -548,5 +570,36 @@ mod tests {
         assert!(s.ui.property_input.text().is_empty());
         assert!(s.editor_ui.hovered_layer_id.is_none());
         assert!(s.selection.is_empty());
+    }
+
+    #[test]
+    fn replace_document_bumps_generation() {
+        let mut s = EditorState::new();
+        assert_eq!(s.document_generation(), 0);
+        s.replace_document(empty_document());
+        assert_eq!(s.document_generation(), 1);
+        s.replace_document_with_undo(empty_document());
+        assert_eq!(s.document_generation(), 2);
+    }
+
+    #[test]
+    fn stale_generation_save_ack_is_rejected() {
+        let mut s = EditorState::new();
+        s.mark_document_changed(); // revision -> 1
+        let (gen0, rev0) = (s.document_generation(), s.document_revision());
+        s.replace_document(empty_document()); // generation 1, revision 0
+        assert!(!s.mark_saved_revision_at(gen0, rev0)); // delayed pre-replace ack: dropped
+        assert_eq!(s.saved_revision(), 0);
+        assert!(s.mark_saved_revision_at(s.document_generation(), s.document_revision()));
+    }
+
+    #[test]
+    fn ack_for_older_revision_does_not_mark_newer_edits_clean() {
+        let mut s = EditorState::new();
+        s.mark_document_changed(); // revision 1 — snapshot exported here
+        let snap = (s.document_generation(), s.document_revision());
+        s.mark_document_changed(); // revision 2 — user kept editing during disk write
+        assert!(s.mark_saved_revision_at(snap.0, snap.1));
+        assert!(s.is_dirty()); // revision 2 != saved 1 — still dirty, correctly
     }
 }
