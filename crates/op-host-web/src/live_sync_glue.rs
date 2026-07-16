@@ -262,27 +262,22 @@ fn apply_document_response<C: RepaintContext + 'static>(
         if let Ok(mut last_selection_key) = last_selection_key.try_borrow_mut() {
             *last_selection_key = None;
         }
+        // Commit the sync-gate baseline AFTER the apply closure has returned
+        // (its mutable borrow above is released) and using the POST-apply pair.
+        //
         // An external post-bootstrap apply (`undoable` — an AI turn or an MCP
         // client write) is an UNSAVED daemon-side edit: the tab must read dirty
         // so closing it prompts to save (spec: MCP edits mark the tab dirty).
-        // `replace_document_with_undo` leaves revision == saved_revision
-        // (falsely clean), so bump the content revision now. The bump MUST
-        // precede the `post_apply` capture below: `note_synced` then records the
-        // POST-bump pair as the gate baseline, so the very next push tick sees
-        // current == baseline (no spurious echo-push of the just-applied doc
-        // back to the daemon) while `is_dirty()` stays true (revision 1 vs
-        // saved 0). The bootstrap apply (`undoable == false`, the mount-time
-        // starter→daemon pull) skips the bump and stays clean.
-        if undoable {
-            inner_ref
-                .host_mut()
-                .editor_state_mut()
-                .mark_document_changed();
-        }
-        // Commit the sync-gate baseline AFTER the apply closure has returned
-        // (its mutable borrow above is released) and using the POST-apply
-        // pair (`replace_document` bumped generation; the dirty bump above
-        // bumped revision).
+        // That dirtiness is already established by construction:
+        // `replace_document_with_undo` runs `history_push_past`, which bumps the
+        // content revision via `mark_document_changed` — so no manual bump is
+        // needed here (it would only be a redundant second revision tick).
+        // `note_synced` records this post-bump pair as the gate baseline, so the
+        // very next push tick sees current == baseline (no spurious echo-push of
+        // the just-applied doc back to the daemon) while `is_dirty()` stays true
+        // (revision != saved 0). The bootstrap apply (`undoable == false`, the
+        // mount-time starter→daemon pull) goes through the plain
+        // `replace_document`, which resets revision to 0 and stays clean.
         let post_apply = current_pair(inner_ref);
         sync.borrow_mut()
             .gate

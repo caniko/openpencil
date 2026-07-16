@@ -594,19 +594,23 @@ mod tests {
     }
 
     #[test]
-    fn external_apply_bump_marks_dirty_while_open_stays_clean() {
-        // Locks the editor-core semantics the wasm-only live-sync glue relies
-        // on (Finding 2): an undoable external apply (AI turn / MCP client)
-        // followed by `mark_document_changed` must read dirty, while the plain
-        // open path (`replace_document`) must stay clean. The glue ordering
-        // itself is compile-gated wasm-only; this test guards the primitives.
+    fn external_apply_marks_dirty_while_open_stays_clean() {
+        // Locks the editor-core invariant the wasm-only live-sync glue relies
+        // on: an undoable external apply (AI turn / MCP client) reads dirty ON
+        // ITS OWN — `replace_document_with_undo` bumps the content revision via
+        // `history_push_past` → `mark_document_changed`, so the glue needs no
+        // manual bump — while the plain open path (`replace_document`) stays
+        // clean. Locking the invariant here means a future refactor of
+        // `history_push_past` can't silently break external-apply dirtiness.
+        // The glue ordering itself is compile-gated wasm-only; this guards the
+        // primitives it composes.
         let mut s = EditorState::new();
         s.replace_document(empty_document()); // mount-time pull: clean baseline
         assert!(!s.is_dirty());
 
-        // Undoable external apply + the glue's post-apply content bump.
+        // Undoable external apply ALONE (no manual mark_document_changed) is
+        // dirty by construction.
         s.replace_document_with_undo(empty_document());
-        s.mark_document_changed();
         assert!(s.is_dirty());
         assert_ne!(s.document_revision(), s.saved_revision());
 
