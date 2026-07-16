@@ -166,3 +166,57 @@ fn credential_status_requests_use_a_finite_timeout() {
     assert!(get_with_status.contains("xhr.set_timeout(STATUS_REQUEST_TIMEOUT_MS)"));
     assert!(post_with_status.contains("xhr.set_timeout(STATUS_REQUEST_TIMEOUT_MS)"));
 }
+
+#[test]
+fn bridge_handle_init_recovers_ready_without_emitting_it_directly() {
+    // `ready` must stay serialized after the bootstrap reset — the init handler
+    // only stores the token and fires the one-shot late-init recovery hook, so a
+    // post-timeout init still reaches `ready` (via the tokened recovery reset)
+    // without the handler emitting `ready` itself. Structural guard: the true
+    // interleaving (init landing during vs after the reset round-trip) is
+    // runtime-only and can't be exercised natively.
+    let source =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/vscode_bridge.rs"))
+            .expect("vscode_bridge source is readable");
+    let handle_init = source
+        .split("fn handle_init(")
+        .nth(1)
+        .and_then(|body| body.split("pub(crate) fn register_late_init_hook").next())
+        .expect("handle_init implementation");
+
+    assert!(
+        !handle_init.contains("emit_ready"),
+        "handle_init must not emit `ready` directly — it is serialized after the bootstrap reset"
+    );
+    assert!(
+        handle_init.contains("LATE_INIT_HOOK") && handle_init.contains(".take()"),
+        "handle_init must take() the one-shot late-init hook so a post-timeout init still reaches ready"
+    );
+}
+
+#[test]
+fn canvaskit_bootstrap_completion_rechecks_bridge_token_live() {
+    // Closes the late-init race: readiness is decided from the LIVE token at
+    // completion time, not only the `managed` flag captured before the reset was
+    // issued (a slow host's init can land anywhere in the reset's round-trip).
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/canvaskit.rs"))
+        .expect("canvaskit source is readable");
+    let managed = source
+        .find("let managed = crate::live_sync::bridge_token().is_some();")
+        .expect("bootstrap captures the pre-reset managed flag");
+    let drive = source[managed..]
+        .find("start_bootstrap_reset(base, complete, BOOTSTRAP_RESET_RETRIES);")
+        .map(|idx| managed + idx)
+        .expect("bootstrap drives the fallback reset");
+    let completion = &source[managed..drive];
+
+    assert!(
+        completion.matches("bridge_token().is_some()").count() >= 2,
+        "bootstrap completion must re-check bridge_token() LIVE, in addition to the pre-reset capture"
+    );
+    assert!(
+        completion.contains("run_late_init_recovery")
+            && completion.contains("register_late_init_hook"),
+        "both the inline and hook recovery paths must route through the shared run_late_init_recovery"
+    );
+}

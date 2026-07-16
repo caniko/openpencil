@@ -951,6 +951,26 @@ fn start_bootstrap_reset(base: String, complete: std::rc::Rc<dyn Fn()>, retries_
     }
 }
 
+/// Run the managed late-init recovery: a tokened bootstrap sync-reset whose
+/// completion emits `ready`. Shared by the two paths that recover a `ready` the
+/// fallback (unmanaged) bootstrap could not emit — the completion-time inline
+/// path (the host's `init` arrived DURING the fallback reset) and the
+/// `LATE_INIT_HOOK` path in `vscode_bridge` (it arrived AFTER completion). The
+/// reset carries the now-stored token; the daemon's Task-5 guard makes a repeat
+/// reset a no-op skip (`"ok":true` / `"skipped":true`) that still counts as
+/// completion. The inner one-shot guard means `ready` cannot double-fire across
+/// the reset's own retry.
+fn run_late_init_recovery(base: String, inner_ready: std::rc::Rc<std::cell::RefCell<CkInner>>) {
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let complete: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
+        if done.replace(true) {
+            return;
+        }
+        crate::vscode_bridge::emit_ready(&inner_ready);
+    });
+    start_bootstrap_reset(base, complete, BOOTSTRAP_RESET_RETRIES);
+}
+
 /// Mount the full editor chrome on `canvas_id`, rendered via CanvasKit on the
 /// GPU, with mouse / wheel / keyboard interactivity. Builds the shared
 /// `WidgetHost` (skia-free under this feature) and drives it through
@@ -1096,60 +1116,48 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     //    the fetch removed from index.html — but never emits `ready` (no bridge).
     {
         let base = crate::daemon_base::daemon_base();
+        // Captured before the fallback reset is issued: `true` only when the
+        // host's `init` (token) had ALREADY landed, so the fallback reset below
+        // is itself tokened and authoritative. `false` covers both a standalone
+        // tab and a managed webview whose `init` is still in flight.
         let managed = crate::live_sync::bridge_token().is_some();
         let inner_for_sync = inner.clone();
         let inner_for_ready = inner.clone();
-        let sync_for_start = sync_controller.clone();
-        // Single guarded completion: emit `ready` (managed only) with the
-        // then-current generation/revision, THEN start the ticks. Guarded so the
-        // retry path in `start_bootstrap_reset` can never double-emit or
-        // double-start.
-        let done = std::rc::Rc::new(std::cell::Cell::new(false));
-        // Late-init recovery captures (Finding 1): if we bootstrap UNMANAGED
-        // (init did not arrive before the timeout) inside a webview iframe, a
-        // slow host's `init` may still land later. The fallback completion below
-        // registers a one-shot hook (see `vscode_bridge::register_late_init_hook`)
-        // that re-runs the managed bootstrap so `ready` is still emitted.
         let inner_for_hook = inner.clone();
-        let base_for_hook = base.clone();
+        let base_for_recovery = base.clone();
+        let sync_for_start = sync_controller.clone();
+        // Single guarded completion (guarded so `start_bootstrap_reset`'s retry
+        // path can never double-emit or double-start): start the live-sync ticks,
+        // then settle `ready`. Readiness is decided from the LIVE token, NOT the
+        // `managed` flag captured before the reset was issued — a slow host's
+        // `init` can land anywhere in the reset's round-trip (up to ~30s with the
+        // XHR timeout + one retry). Three cases close the window from both sides:
+        //   * token present since capture -> the fallback reset was tokened, so
+        //     emit `ready` directly (fast path, no extra reset).
+        //   * token arrived DURING the (unmanaged) reset's round-trip -> re-run
+        //     the managed recovery inline (tokened reset -> `ready`).
+        //   * token still absent -> register the one-shot LATE_INIT_HOOK so a
+        //     later `init` runs the same recovery (see `handle_init`).
+        // The hook is registered ONLY here, after the fallback reset completed,
+        // so the recovery reset can't interleave with it; a standalone tab
+        // (`!is_iframe`) never receives an `init`, so it registers nothing.
+        let done = std::rc::Rc::new(std::cell::Cell::new(false));
         let complete: std::rc::Rc<dyn Fn()> = {
             let done = done.clone();
             std::rc::Rc::new(move || {
                 if done.replace(true) {
                     return;
                 }
+                crate::live_sync_glue::start(&inner_for_sync, sync_for_start.clone());
                 if managed {
                     crate::vscode_bridge::emit_ready(&inner_for_ready);
-                }
-                crate::live_sync_glue::start(&inner_for_sync, sync_for_start.clone());
-                // Register the late-init hook ONLY after this fallback reset has
-                // completed, so the recovery reset it triggers can't interleave
-                // with the fallback reset. Managed bootstraps already emitted
-                // `ready`, and a standalone tab (`!is_iframe`) never receives an
-                // `init`, so neither registers.
-                if !managed && is_iframe {
+                } else if crate::live_sync::bridge_token().is_some() {
+                    run_late_init_recovery(base_for_recovery.clone(), inner_for_ready.clone());
+                } else if is_iframe {
                     let inner_hook = inner_for_hook.clone();
-                    let base_hook = base_for_hook.clone();
+                    let base_hook = base_for_recovery.clone();
                     crate::vscode_bridge::register_late_init_hook(move || {
-                        // The token is now stored (set by `handle_init` before it
-                        // invoked us), so this reset carries the auth header. The
-                        // daemon's Task-5 guard makes a repeat reset a no-op skip
-                        // (`"ok":true` / `"skipped":true`), which still counts as
-                        // completion. Ticks are already running from the fallback
-                        // `start` above and pick up the token automatically.
-                        let inner_ready = inner_hook.clone();
-                        let done2 = std::rc::Rc::new(std::cell::Cell::new(false));
-                        let complete2: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
-                            if done2.replace(true) {
-                                return;
-                            }
-                            crate::vscode_bridge::emit_ready(&inner_ready);
-                        });
-                        start_bootstrap_reset(
-                            base_hook.clone(),
-                            complete2,
-                            BOOTSTRAP_RESET_RETRIES,
-                        );
+                        run_late_init_recovery(base_hook.clone(), inner_hook.clone());
                     });
                 }
             })

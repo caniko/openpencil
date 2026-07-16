@@ -230,9 +230,9 @@ fn handle_init(token: String) {
     // timeout, the fallback (unmanaged) bootstrap already ran and never emitted
     // `ready`. The one-shot hook — registered by that fallback bootstrap's
     // completion — re-runs the managed bootstrap (a tokened sync-reset, now that
-    // the token above is stored, then `emit_ready`). Take it so it fires at most
-    // once; on the normal path (init before the timeout) it is never registered,
-    // so this is a no-op.
+    // the token above is stored) so `ready` is finally emitted. Take it so it
+    // fires at most once; on the normal path (init before the timeout) it is
+    // never registered, so this is a no-op.
     let hook = LATE_INIT_HOOK.with(|h| h.borrow_mut().take());
     if let Some(hook) = hook {
         hook();
