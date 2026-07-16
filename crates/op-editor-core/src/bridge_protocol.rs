@@ -1,0 +1,202 @@
+//! `postMessage` bridge protocol codec between the VS Code extension host
+//! and the wasm-backed web editor. Inbound parsing is serde_json-based (a
+//! hand-rolled scanner is unreliable for arbitrary JSON, and foreign
+//! postMessage traffic — e.g. react-devtools — must be ignored, never
+//! treated as an error); outbound events are built with `serde_json::json!`
+//! and serialized once per call.
+//!
+//! Message `type` values — inbound: `op-bridge/init`, `op-bridge/open-document`,
+//! `op-bridge/snapshot`, `op-bridge/save-committed`, `op-bridge/resolve-conflict`;
+//! outbound: `op-bridge/ready`, `op-bridge/dirty-changed`, `op-bridge/opened`,
+//! `op-bridge/snapshot-result`, `op-bridge/snapshot-conflict`,
+//! `op-bridge/sync-conflict`, `op-bridge/conflict-resolved`. Field names are
+//! camelCase (`requestId`, `serverVersion`, `docJson`).
+
+use serde_json::Value;
+
+#[derive(Debug, PartialEq)]
+pub enum BridgeInbound {
+    Init {
+        token: String,
+    },
+    OpenDocument {
+        json: String,
+    },
+    Snapshot {
+        purpose: String,
+        request_id: String,
+    },
+    SaveCommitted {
+        generation: u64,
+        revision: u64,
+    },
+    ResolveConflict {
+        mode: ConflictMode,
+        request_id: String,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ConflictMode {
+    UseLocal,
+    AcceptRemote,
+}
+
+impl BridgeInbound {
+    /// None for non-bridge / malformed messages (foreign postMessage traffic
+    /// like react-devtools must be ignored, never an error).
+    pub fn parse(raw: &str) -> Option<Self> {
+        let value: Value = serde_json::from_str(raw).ok()?;
+        let ty = value.get("type")?.as_str()?;
+        match ty {
+            "op-bridge/init" => {
+                let token = value.get("token")?.as_str()?.to_string();
+                Some(BridgeInbound::Init { token })
+            }
+            "op-bridge/open-document" => {
+                let json = value.get("json")?.as_str()?.to_string();
+                Some(BridgeInbound::OpenDocument { json })
+            }
+            "op-bridge/snapshot" => {
+                let purpose = value.get("purpose")?.as_str()?.to_string();
+                let request_id = value.get("requestId")?.as_str()?.to_string();
+                Some(BridgeInbound::Snapshot {
+                    purpose,
+                    request_id,
+                })
+            }
+            "op-bridge/save-committed" => {
+                let generation = value.get("generation")?.as_u64()?;
+                let revision = value.get("revision")?.as_u64()?;
+                Some(BridgeInbound::SaveCommitted {
+                    generation,
+                    revision,
+                })
+            }
+            "op-bridge/resolve-conflict" => {
+                let mode = match value.get("mode")?.as_str()? {
+                    "use-local" => ConflictMode::UseLocal,
+                    "accept-remote" => ConflictMode::AcceptRemote,
+                    _ => return None,
+                };
+                let request_id = value.get("requestId")?.as_str()?.to_string();
+                Some(BridgeInbound::ResolveConflict { mode, request_id })
+            }
+            _ => None,
+        }
+    }
+}
+
+pub fn event_ready(generation: u64, revision: u64) -> String {
+    serde_json::json!({
+        "type": "op-bridge/ready",
+        "generation": generation,
+        "revision": revision,
+    })
+    .to_string()
+}
+
+pub fn event_dirty_changed(generation: u64, revision: u64, dirty: bool) -> String {
+    serde_json::json!({
+        "type": "op-bridge/dirty-changed",
+        "generation": generation,
+        "revision": revision,
+        "dirty": dirty,
+    })
+    .to_string()
+}
+
+pub fn event_opened(generation: u64) -> String {
+    serde_json::json!({
+        "type": "op-bridge/opened",
+        "generation": generation,
+    })
+    .to_string()
+}
+
+pub fn event_snapshot_result(
+    request_id: &str,
+    doc_json: &str,
+    generation: u64,
+    revision: u64,
+) -> String {
+    serde_json::json!({
+        "type": "op-bridge/snapshot-result",
+        "requestId": request_id,
+        "docJson": doc_json,
+        "generation": generation,
+        "revision": revision,
+    })
+    .to_string()
+}
+
+pub fn event_snapshot_conflict(request_id: &str, server_version: u64) -> String {
+    serde_json::json!({
+        "type": "op-bridge/snapshot-conflict",
+        "requestId": request_id,
+        "serverVersion": server_version,
+    })
+    .to_string()
+}
+
+pub fn event_sync_conflict(generation: u64, revision: u64, server_version: u64) -> String {
+    serde_json::json!({
+        "type": "op-bridge/sync-conflict",
+        "generation": generation,
+        "revision": revision,
+        "serverVersion": server_version,
+    })
+    .to_string()
+}
+
+pub fn event_conflict_resolved(request_id: &str) -> String {
+    serde_json::json!({
+        "type": "op-bridge/conflict-resolved",
+        "requestId": request_id,
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_inbound_messages() {
+        assert_eq!(
+            BridgeInbound::parse(r#"{"type":"op-bridge/init","token":"t0k"}"#),
+            Some(BridgeInbound::Init {
+                token: "t0k".into()
+            })
+        );
+        assert_eq!(
+            BridgeInbound::parse(
+                r#"{"type":"op-bridge/save-committed","generation":3,"revision":41}"#
+            ),
+            Some(BridgeInbound::SaveCommitted {
+                generation: 3,
+                revision: 41
+            })
+        );
+        assert_eq!(
+            BridgeInbound::parse(
+                r#"{"type":"op-bridge/resolve-conflict","mode":"use-local","requestId":"r1"}"#
+            ),
+            Some(BridgeInbound::ResolveConflict {
+                mode: ConflictMode::UseLocal,
+                request_id: "r1".into()
+            })
+        );
+        assert_eq!(BridgeInbound::parse(r#"{"type":"react-devtools"}"#), None);
+        assert_eq!(BridgeInbound::parse("not json"), None);
+    }
+
+    #[test]
+    fn snapshot_result_json_escapes_doc_payload() {
+        let ev = event_snapshot_result("r1", r#"{"a":"b \" c"}"#, 2, 17);
+        let v: serde_json::Value = serde_json::from_str(&ev).unwrap();
+        assert_eq!(v["type"], "op-bridge/snapshot-result");
+        assert_eq!(v["docJson"], r#"{"a":"b \" c"}"#);
+        assert_eq!(v["generation"], 2);
+    }
+}

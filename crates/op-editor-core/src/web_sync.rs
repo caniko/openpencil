@@ -61,6 +61,14 @@ impl WebSyncClient {
         self.applied_version
     }
 
+    /// Alias for [`applied_version`](Self::applied_version) in the bridge's
+    /// vocabulary — the sync-gate baseline's server-side half — for callers
+    /// that reason about "the last version this client knows about" rather
+    /// than the pull-decision path.
+    pub fn last_version(&self) -> u64 {
+        self.applied_version
+    }
+
     /// Parse a `GET /api/mcp/document` response (`{document, version}`, the
     /// daemon's shape — see `web_canvas_server::handle_web_canvas_request`) and
     /// return the document + its version IFF it is newer than the last APPLIED
@@ -139,6 +147,14 @@ impl WebSyncClient {
         format!(r#"{{"document":{doc_json}}}"#)
     }
 
+    /// Same shape as [`wrap_push_body`](Self::wrap_push_body) plus a
+    /// `baseVersion` field carrying the sync-gate baseline's server version —
+    /// the daemon's optimistic-concurrency check for a conditional push (see
+    /// [`parse_push_conflict`](Self::parse_push_conflict) for the rejection shape).
+    pub fn wrap_push_body_with_base(doc_json: &str, base_version: u64) -> String {
+        format!(r#"{{"document":{doc_json},"baseVersion":{base_version}}}"#)
+    }
+
     /// True once the first daemon document has been applied. The push path is
     /// gated on this: the host page may reset the daemon document on refresh,
     /// but the browser must still pull that authoritative post-reset state
@@ -198,6 +214,21 @@ impl WebSyncClient {
     pub fn parse_push_response(body: &str) -> Option<u64> {
         let value: serde_json::Value = serde_json::from_str(body).ok()?;
         if value.get("ok")?.as_bool() != Some(true) {
+            return None;
+        }
+        value.get("version")?.as_u64()
+    }
+
+    /// Parse a rejected `POST /api/mcp/document` push response's
+    /// `version-conflict` shape (`{"ok":false,"error":"version-conflict","version":N}`)
+    /// and return the daemon's current server version. `None` for an
+    /// accepted push or any other rejection reason.
+    pub fn parse_push_conflict(resp: &str) -> Option<u64> {
+        let value: serde_json::Value = serde_json::from_str(resp).ok()?;
+        if value.get("ok")?.as_bool() != Some(false) {
+            return None;
+        }
+        if value.get("error")?.as_str()? != "version-conflict" {
             return None;
         }
         value.get("version")?.as_u64()
@@ -423,6 +454,22 @@ mod tests {
         );
         assert_eq!(WebSyncClient::parse_push_response(r#"{"version":9}"#), None);
         assert_eq!(WebSyncClient::parse_push_response(""), None);
+    }
+
+    #[test]
+    fn push_body_with_base_and_conflict_roundtrip() {
+        let body = WebSyncClient::wrap_push_body_with_base(r#"{"pages":[]}"#, 7);
+        assert!(body.contains(r#""baseVersion":7"#));
+        assert_eq!(
+            WebSyncClient::parse_push_conflict(
+                r#"{"ok":false,"error":"version-conflict","version":12}"#
+            ),
+            Some(12)
+        );
+        assert_eq!(
+            WebSyncClient::parse_push_conflict(r#"{"ok":true,"version":9}"#),
+            None
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod agent_settings_button_state;
 pub mod agent_settings_connection;
 pub mod align;
 pub mod align_guides;
+pub mod bridge_protocol;
 pub mod button_press_state;
 pub mod chat;
 pub mod chat_activity;
@@ -87,6 +88,7 @@ pub mod statusbar_state;
 pub mod svg_import;
 pub mod svg_path_bounds;
 mod svg_path_data;
+pub mod sync_gate;
 
 /// Tight source-coordinate bounds for an SVG path-data string.
 pub fn svg_path_data_bounds(d: &str) -> Option<(f32, f32, f32, f32)> {
