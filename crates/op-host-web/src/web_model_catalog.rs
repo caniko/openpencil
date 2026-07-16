@@ -24,6 +24,7 @@ pub(crate) fn fetch_models<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>) 
     if xhr.open_with_async("GET", &url, true).is_err() {
         return;
     }
+    crate::live_sync::attach_daemon_headers(&xhr, &url);
     let xhr_cb = xhr.clone();
     let inner_cb = inner.clone();
     let onloadend = Closure::<dyn FnMut()>::once_into_js(move || {

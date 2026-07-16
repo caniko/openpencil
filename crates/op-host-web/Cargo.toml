@@ -114,6 +114,9 @@ features = [
   "KeyboardEvent",
   # `daemon_base` derives the daemon origin from `window.location`.
   "Location",
+  # postMessage bridge (`vscode_bridge`): the window `message` listener reads
+  # `MessageEvent::{data,origin,source}`.
+  "MessageEvent",
   "MouseEvent",
   "Navigator",
   "Performance",

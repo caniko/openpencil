@@ -316,6 +316,11 @@ fn fetch_text(url: &str, on_done: DoneFn) {
         resolve(&slot, Err("iconify request open failed".to_string()));
         return;
     }
+    // `fetch_text` serves BOTH the daemon brand-catalog fetch and the public
+    // Iconify CDN search/collection fetches. `attach_daemon_headers` only
+    // attaches the token when `url` targets the daemon origin, so the public
+    // Iconify requests are guaranteed never to leak the token.
+    crate::live_sync::attach_daemon_headers(&xhr, url);
     xhr.set_timeout(FETCH_TIMEOUT_MS);
     let xhr_cb = xhr.clone();
     let slot_cb = slot.clone();

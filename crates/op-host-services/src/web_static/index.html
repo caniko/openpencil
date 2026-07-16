@@ -78,21 +78,15 @@
         window.__opCanvasScale = dpr;
         return changed;
       };
-      const resetSyncDocument = async () => {
-        const response = await fetch('/api/mcp/sync-reset', {
-          method: 'POST',
-          cache: 'no-store',
-        });
-        if (!response.ok) {
-          throw new Error(`sync reset failed: ${response.status}`);
-        }
-      };
       // Size the canvas to the window BEFORE mount — the shell reads the
       // canvas width/height attributes when it builds its raster surface.
+      // The daemon sync-reset moved into the wasm mount (Task 7): the managed
+      // (VS Code) path issues it with the auth token after the bridge Init, and
+      // the direct-open path issues it right after mount — both gate the pull
+      // tick on its completion.
       markSmoke('booting');
       sizeCanvasForDisplay(BOOT_CANVAS_PIXEL_BUDGET);
       try {
-        await resetSyncDocument();
         const mod = await import('/pkg/op_host_web.js');
         await mod.default();
         sizeCanvasForDisplay(STEADY_CANVAS_PIXEL_BUDGET);

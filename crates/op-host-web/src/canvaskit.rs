@@ -952,10 +952,6 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
         a11y,
         ime,
     }));
-    crate::web_credential_sync::start();
-    if let Some(json) = initial_credential_json {
-        crate::web_credential_sync::credential_changed(json);
-    }
     {
         let mut b = inner.borrow_mut();
         let _ = b.resize_to_window(&window)?;
@@ -988,22 +984,66 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // when the read lands so their text re-shapes with the imported typeface).
     crate::web_fonts::load_imported_fonts_at_mount(&inner);
 
+    // ---- daemon bootstrap (startup order, Task 7) ----
+    //
+    // The `SyncController` (gate + wire client + push single-flight) is shared
+    // with the postMessage bridge, so both observe/mutate one instance. Build
+    // it FIRST so the bridge listener installs before any daemon service.
+    let sync_controller: crate::live_sync_glue::SharedSync =
+        Rc::new(RefCell::new(crate::live_sync_glue::SyncController::new()));
+    // 1. Install the bridge listener + observer BEFORE any daemon request, so an
+    //    Init / OpenDocument arriving during bootstrap is never missed.
+    crate::vscode_bridge::install(&inner, sync_controller.clone());
+    // 2. Inside a webview iframe, await the host's Init (token) with a 2s
+    //    fallback (proceed as a direct open on timeout). A standalone browser
+    //    tab is a direct open and continues immediately.
+    if crate::vscode_bridge::in_iframe(&window) {
+        crate::vscode_bridge::await_init(&window, 2000).await;
+    }
+    // 3. Only now start the daemon-dependent services — in managed mode the
+    //    token is present so their requests carry the auth header.
+    crate::web_credential_sync::start();
+    if let Some(json) = initial_credential_json {
+        crate::web_credential_sync::credential_changed(json);
+    }
     // Populate the chat model picker from the daemon's `/api/ai/models`
     // catalog (best-effort; async, repaints when the response lands).
     crate::web_chat::fetch_models(&inner);
     // Pull the brand-logo catalog (omitted from the wasm bundle) from the daemon
     // in the background so the icon picker / figma can resolve simple-icons.
     crate::iconify_web::fetch_brand_catalog(&inner);
-    // Bidirectional live-canvas sync with the daemon (pull on version bump,
-    // push local edits + selection) — same loops the skia mount wires. The
-    // `SyncController` (gate + wire client + push single-flight) is shared
-    // with the Task 7 postMessage bridge, so both observe/mutate one instance.
-    let sync_controller: crate::live_sync_glue::SharedSync =
-        Rc::new(RefCell::new(crate::live_sync_glue::SyncController::new()));
-    crate::live_sync_glue::start(&inner, sync_controller.clone());
     // Mirror the daemon's agent-indicator registry so design runs paint
     // their agent borders / badges / reveal animations on web too.
     crate::agent_indicator_sync::start(&inner);
+    // 4. Reset the daemon's transient sync document, THEN start the live-sync
+    //    ticks. The 400 ms pull tick must not run before the reset completes
+    //    (in BOTH managed + direct paths) or it pulls the pre-reset state.
+    //    Managed mode issues the reset with the token (via the live_sync
+    //    helper); direct open issues the legacy reset here — replacing the
+    //    fetch removed from index.html.
+    {
+        let base = crate::daemon_base::daemon_base();
+        let inner_for_sync = inner.clone();
+        let sync_for_start = sync_controller.clone();
+        let started = std::rc::Rc::new(std::cell::Cell::new(false));
+        let start_once: std::rc::Rc<dyn Fn()> = {
+            let started = started.clone();
+            std::rc::Rc::new(move || {
+                if started.replace(true) {
+                    return;
+                }
+                crate::live_sync_glue::start(&inner_for_sync, sync_for_start.clone());
+            })
+        };
+        let on_reset: std::rc::Rc<dyn Fn(String)> = {
+            let start_once = start_once.clone();
+            std::rc::Rc::new(move |_body: String| start_once())
+        };
+        if !crate::live_sync::post_json(&format!("{base}/api/mcp/sync-reset"), "", Some(on_reset)) {
+            // Request could not even start — don't wedge: start the ticks anyway.
+            start_once();
+        }
+    }
 
     let mut listeners: Vec<Listener> = Vec::new();
     let canvas_target: web_sys::EventTarget = canvas.clone().into();

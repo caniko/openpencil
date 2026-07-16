@@ -1,0 +1,728 @@
+//! `postMessage` bridge between the VS Code extension host and the wasm web
+//! editor — the thin DOM wiring layer. The wire codec (parse + event builders)
+//! lives in `op_editor_core::bridge_protocol`; the concurrency semantics live in
+//! `op_editor_core::sync_gate::SyncGate`. This file only translates DOM
+//! `message` events into gate/client mutations + daemon requests, and posts the
+//! codec's outbound strings back to `window.parent`.
+//!
+//! Emission discipline (enforced by construction): the three EDGE/STATE events
+//! `dirty-changed`, `sync-conflict`, and `opened` are emitted ONLY from the tick
+//! observer ([`observe_tick`]) which drains the gate's consumable latches
+//! (`take_conflict_edge` / `take_opened_edge`) and compares the
+//! `(generation, revision, is_dirty)` triple. Message handlers NEVER post those
+//! three directly — they mutate the gate (`note_conflict` / `note_synced`) and
+//! let the observer report. Handlers DO post the direct replies `ready`,
+//! `snapshot-result`, `snapshot-conflict`, and `conflict-resolved`.
+//!
+//! Borrow discipline mirrors Task 6: a `SharedSync`/`inner` borrow is held only
+//! for the span of one synchronous decision, never across an XHR callback.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use js_sys::{Function, Object, Promise};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::MessageEvent;
+
+use op_editor_core::bridge_protocol::{
+    event_conflict_resolved, event_ready, event_snapshot_conflict, event_snapshot_result,
+    BridgeInbound, ConflictMode,
+};
+use op_editor_core::web_sync::WebSyncClient;
+use op_editor_core::PenDocument;
+
+use crate::live_sync;
+use crate::live_sync_glue::SharedSync;
+use crate::repaint_ctx::RepaintContext;
+
+/// Tick cadence for the outbound-event observer. Latency only: the gate's edge
+/// latches never lose an event between ticks (a fast rise+fall is still drained
+/// once), so this can stay a coarse poll.
+const BRIDGE_TICK_INTERVAL_MS: i32 = 250;
+/// Re-check interval while waiting for an in-flight push to release `push_busy`
+/// so the bridge's own (open / snapshot / resolve) push can serialize behind it.
+const PUSH_BUSY_RETRY_MS: i32 = 40;
+/// A 409 between probe and push means a concurrent MCP write landed; re-probe
+/// and retry exactly once before surfacing the conflict.
+const RETRY_ONCE: u8 = 1;
+
+/// The `(generation, revision, is_dirty)` triple the observer compares to emit
+/// `dirty-changed`.
+type DirtyTriple = (u64, u64, bool);
+/// The observer's remembered-last-triple cell.
+type LastTripleCell = Rc<RefCell<Option<DirtyTriple>>>;
+
+thread_local! {
+    /// Locked host origin — recorded from the FIRST valid `init`'s
+    /// `event.origin`, then enforced on every later message (mismatch dropped).
+    static BRIDGE_ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The pending `await_init` promise resolver — the `init` handler calls it
+    /// so `mount_ck` stops waiting the moment the token lands.
+    static INIT_RESOLVER: RefCell<Option<Function>> = const { RefCell::new(None) };
+}
+
+// ---------------------------------------------------------------------------
+// Install + startup coordination
+// ---------------------------------------------------------------------------
+
+/// Install the window `message` listener + the outbound-event tick observer.
+/// The listener `Closure` is deliberately leaked (`forget`) — the bridge lives
+/// for the whole page, exactly like the other page-level listeners; returning an
+/// owning handle would tear the bridge down when `mount_ck` returns.
+pub(crate) fn install<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>, sync: SharedSync) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+
+    // Message listener.
+    {
+        let inner = inner.clone();
+        let sync = sync.clone();
+        let closure = Closure::<dyn FnMut(MessageEvent)>::new(move |evt: MessageEvent| {
+            handle_message(&inner, &sync, &evt);
+        });
+        let _ =
+            window.add_event_listener_with_callback("message", closure.as_ref().unchecked_ref());
+        closure.forget(); // page-lifetime listener, deliberately leaked
+    }
+
+    // Outbound-event tick observer — the SOLE emitter of the three edge/state
+    // events. Seed the dirty triple with the current state so only real changes
+    // (not the starter-document baseline) produce a `dirty-changed`.
+    let seed = read_triple(inner);
+    let last_triple = Rc::new(RefCell::new(seed));
+    {
+        let inner = inner.clone();
+        let sync = sync.clone();
+        let last_triple = last_triple.clone();
+        let tick: Rc<dyn Fn()> = Rc::new(move || observe_tick(&inner, &sync, &last_triple));
+        let _ = live_sync::start_interval(BRIDGE_TICK_INTERVAL_MS, tick);
+    }
+}
+
+/// True when the page runs inside a frame (`window.self != window.top`) — the
+/// VS Code webview case, where `mount_ck` awaits the host's `init` before it
+/// bootstraps the daemon services.
+pub(crate) fn in_iframe(window: &web_sys::Window) -> bool {
+    let self_win = window.self_();
+    // `top`/`parent` return a cross-origin-accessible WindowProxy; an identity
+    // compare never touches a property so it can't throw. Check both so a host
+    // that shadows one (some webview shells) is still detected.
+    let differs = |other: Result<Option<web_sys::Window>, JsValue>| {
+        other
+            .ok()
+            .flatten()
+            .map(|w| !Object::is(self_win.as_ref(), w.as_ref()))
+            .unwrap_or(false)
+    };
+    differs(window.top()) || differs(window.parent())
+}
+
+/// Await the host's `init` (which resolves the promise from the message
+/// handler) or a `timeout_ms` fallback, whichever comes first. On timeout the
+/// caller proceeds as a direct open (no token). Returns after the promise
+/// settles; check [`live_sync::bridge_token`] to learn which path won.
+pub(crate) async fn await_init(window: &web_sys::Window, timeout_ms: i32) {
+    let window = window.clone();
+    let promise = Promise::new(&mut |resolve, _reject| {
+        INIT_RESOLVER.with(|r| *r.borrow_mut() = Some(resolve.clone()));
+        // Timeout fallback: resolve the same promise so the await unblocks even
+        // if no host is listening (standalone browser tab, or a slow host).
+        let resolve_timeout = resolve.clone();
+        let cb = Closure::once_into_js(move || {
+            let _ = resolve_timeout.call0(&JsValue::NULL);
+        });
+        let _ = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), timeout_ms);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    // Drop the resolver so a late `init` doesn't try to settle a done promise.
+    INIT_RESOLVER.with(|r| *r.borrow_mut() = None);
+    if live_sync::bridge_token().is_none() {
+        web_sys::console::warn_1(&JsValue::from_str(
+            "[op-bridge] init not received before timeout; proceeding as direct open",
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inbound message routing
+// ---------------------------------------------------------------------------
+
+fn handle_message<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    evt: &MessageEvent,
+) {
+    // Source lock: only the parent frame (the VS Code webview host) may drive
+    // the bridge. `event.source == window.parent`.
+    let parent = web_sys::window().and_then(|w| w.parent().ok().flatten());
+    let source_ok = match (evt.source(), parent) {
+        (Some(src), Some(par)) => Object::is(src.as_ref(), par.as_ref()),
+        _ => false,
+    };
+    if !source_ok {
+        return;
+    }
+
+    // Bridge messages are JSON strings; anything else (react-devtools objects,
+    // etc.) is foreign traffic — silently ignored, never an error.
+    let Some(raw) = evt.data().as_string() else {
+        return;
+    };
+    let Some(msg) = BridgeInbound::parse(&raw) else {
+        return; // non-bridge / malformed
+    };
+
+    // Origin lock: the first valid `init` records the origin; every later
+    // message (including a re-`init`) must match it. A non-init arriving before
+    // any lock is dropped.
+    let origin = evt.origin();
+    let is_init = matches!(msg, BridgeInbound::Init { .. });
+    let locked = BRIDGE_ORIGIN.with(|o| o.borrow().clone());
+    match &locked {
+        Some(l) if *l != origin => return,
+        None if !is_init => return,
+        _ => {}
+    }
+    if is_init && locked.is_none() {
+        BRIDGE_ORIGIN.with(|o| *o.borrow_mut() = Some(origin.clone()));
+    }
+
+    match msg {
+        BridgeInbound::Init { token } => handle_init(inner, token),
+        BridgeInbound::OpenDocument { json } => handle_open_document(inner, sync, json),
+        BridgeInbound::Snapshot { request_id, .. } => handle_snapshot(inner, sync, request_id),
+        BridgeInbound::SaveCommitted {
+            generation,
+            revision,
+        } => handle_save_committed(inner, generation, revision),
+        BridgeInbound::ResolveConflict { mode, request_id } => {
+            handle_resolve_conflict(inner, sync, mode, request_id)
+        }
+    }
+}
+
+/// `init`: store the managed token, unblock `mount_ck`'s `await_init`, and reply
+/// with the current `(generation, revision)` so the host learns the starter
+/// document's identity before it sends `open-document`.
+fn handle_init<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>, token: String) {
+    live_sync::set_bridge_token(token);
+    INIT_RESOLVER.with(|r| {
+        if let Some(resolve) = r.borrow_mut().take() {
+            let _ = resolve.call0(&JsValue::NULL);
+        }
+    });
+    let (gen, rev, _) = read_triple(inner).unwrap_or((0, 0, false));
+    post_to_parent(&event_ready(gen, rev));
+}
+
+/// `open-document`: SYNCHRONOUS PROLOGUE (fixed order, before the first await) —
+/// `replace_document` mints the target generation `G`, `note_open_pending(G)`
+/// scopes the open + blocks pulls, then a probe-conditional push carries the
+/// opened bytes to the daemon. `opened` is NOT posted here: `note_synced` on
+/// push confirmation sets the opened latch, which the observer drains.
+fn handle_open_document<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    json: String,
+) {
+    let doc: PenDocument = match serde_json::from_str(&json) {
+        Ok(doc) => doc,
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "[op-bridge] open-document: bad JSON: {err}"
+            )));
+            return;
+        }
+    };
+
+    // Prologue borrow: replace + repaint + capture the opened pair/bytes.
+    let (pair, doc_json) = {
+        let Ok(mut b) = inner.try_borrow_mut() else {
+            return;
+        };
+        b.host_mut().editor_state_mut().replace_document(doc);
+        b.host_mut().force_rotate_layer_panel_owner();
+        b.host_mut().mark_editor_state_dirty();
+        let (w, h) = b.viewport_size();
+        b.host_mut().fit_content_to_viewport(w, h);
+        let _ = b.repaint();
+        let s = b.host().editor_state();
+        let pair = (s.document_generation(), s.document_revision());
+        match serde_json::to_string(&s.doc) {
+            Ok(json) => (pair, json),
+            Err(_) => return,
+        }
+    };
+
+    // Scope the open to generation G and block pulls, all before any await.
+    if let Ok(mut s) = sync.try_borrow_mut() {
+        s.gate.note_open_pending(pair.0);
+    } else {
+        return;
+    }
+
+    let base = crate::daemon_base::daemon_base();
+    drive_open_push(sync.clone(), base, pair, doc_json);
+}
+
+/// `snapshot`: independent of the tick. Conflict pending → reply
+/// `snapshot-conflict` at once (host must resolve first). Otherwise capture the
+/// pair + bytes atomically; if a push is due, send it over the uncapped
+/// snapshot channel (respecting `push_busy` serialization) and reply on
+/// confirmation; if nothing is due, reply immediately with the current bytes.
+fn handle_snapshot<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    request_id: String,
+) {
+    if let Some(server_v) = sync.try_borrow().ok().and_then(|s| s.gate.conflict()) {
+        post_to_parent(&event_snapshot_conflict(&request_id, server_v));
+        return;
+    }
+    let Some((pair, doc_json)) = snapshot_state(inner) else {
+        return;
+    };
+    let needs_push = sync
+        .try_borrow()
+        .map(|s| s.gate.needs_push(pair))
+        .unwrap_or(false);
+    if !needs_push {
+        post_to_parent(&event_snapshot_result(
+            &request_id,
+            &doc_json,
+            pair.0,
+            pair.1,
+        ));
+        return;
+    }
+    let base = crate::daemon_base::daemon_base();
+    drive_snapshot_push(sync.clone(), base, request_id, pair, doc_json);
+}
+
+/// `save-committed`: mark the reported revision saved. A stale generation
+/// (the host acked a save for a document already replaced) returns `false` and
+/// is silently dropped. The resulting dirty-flag flip is reported by the
+/// observer as `dirty-changed`, not here.
+fn handle_save_committed<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    generation: u64,
+    revision: u64,
+) {
+    let Ok(mut b) = inner.try_borrow_mut() else {
+        return;
+    };
+    let _ = b
+        .host_mut()
+        .editor_state_mut()
+        .mark_saved_revision_at(generation, revision);
+    let _ = b.repaint();
+}
+
+fn handle_resolve_conflict<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    mode: ConflictMode,
+    request_id: String,
+) {
+    match mode {
+        ConflictMode::UseLocal => resolve_use_local(inner, sync, request_id),
+        ConflictMode::AcceptRemote => resolve_accept_remote(inner, sync, request_id),
+    }
+}
+
+/// `resolve-conflict: use-local`: re-push the local document over the snapshot
+/// channel using the conflict's server version as `baseVersion`. Success →
+/// `mark_pushed` + `note_synced` (clears the conflict, and any pending open,
+/// whose `opened` the observer then reports) + `conflict-resolved`. A second
+/// conflict retries once with the fresh server version; still failing →
+/// `snapshot-conflict`.
+fn resolve_use_local<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    request_id: String,
+) {
+    let Some(server_v) = sync.try_borrow().ok().and_then(|s| s.gate.conflict()) else {
+        // No conflict pending — nothing to re-push. Acknowledge idempotently.
+        post_to_parent(&event_conflict_resolved(&request_id));
+        return;
+    };
+    let Some((pair, doc_json)) = snapshot_state(inner) else {
+        return;
+    };
+    let base = crate::daemon_base::daemon_base();
+    drive_use_local_push(sync.clone(), base, request_id, pair, doc_json, server_v);
+}
+
+/// `resolve-conflict: accept-remote`: first reply `snapshot-result` with the
+/// LOCAL bytes (the host keeps a backup — spec "neither version is lost"), then
+/// hand the gate the accept window over the current pair (pull re-opens for
+/// THIS pair only; open_pending is retained), then reply `conflict-resolved`.
+/// `opened` is NOT posted now — the remote is not applied yet; the resolving
+/// pull's `note_synced` sets the opened latch, which the observer drains then.
+fn resolve_accept_remote<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    request_id: String,
+) {
+    let Some((pair, doc_json)) = snapshot_state(inner) else {
+        return;
+    };
+    post_to_parent(&event_snapshot_result(
+        &request_id,
+        &doc_json,
+        pair.0,
+        pair.1,
+    ));
+    if let Ok(mut s) = sync.try_borrow_mut() {
+        s.gate.resolve_accept_remote(pair);
+    } else {
+        return;
+    }
+    post_to_parent(&event_conflict_resolved(&request_id));
+}
+
+// ---------------------------------------------------------------------------
+// Push drivers (SharedSync-only; no `inner`, no `C`)
+// ---------------------------------------------------------------------------
+
+/// Acquire `push_busy` (waiting via a short self-reschedule while an in-flight
+/// push holds it — the open's state is already latched, and `open_pull_block`
+/// keeps pulls out meanwhile), then run the probe-conditional open push.
+fn drive_open_push(sync: SharedSync, base: String, pair: (u64, u64), doc_json: String) {
+    if !acquire_push_busy(&sync) {
+        schedule_once(PUSH_BUSY_RETRY_MS, move || {
+            drive_open_push(sync, base, pair, doc_json)
+        });
+        return;
+    }
+    open_push_attempt(sync, base, pair, doc_json, RETRY_ONCE);
+}
+
+/// Probe `GET /api/mcp/version` for the daemon's live version `V` (NOT
+/// `last_version()` — during bootstrap that is 0 while sync-reset already
+/// bumped it, forcing a spurious 409), then conditionally push with
+/// `baseVersion=V`. 409 → re-probe + retry once; still 409 → `note_conflict`
+/// (its latch drives the observer's `sync-conflict`), release `push_busy`, no
+/// `opened`. `push_busy` is HELD across the retry (single-flight preserved).
+fn open_push_attempt(
+    sync: SharedSync,
+    base: String,
+    pair: (u64, u64),
+    doc_json: String,
+    retries_left: u8,
+) {
+    let version_url = format!("{base}/api/mcp/version");
+    let on_version: Rc<dyn Fn(String)> = {
+        let sync = sync.clone();
+        Rc::new(move |body: String| {
+            let Some(v) = WebSyncClient::parse_version_probe(&body) else {
+                // Daemon down / non-JSON — abort without wedging: release the
+                // latch, leave open_pending (a later retry / reload recovers).
+                release_push_busy(&sync);
+                return;
+            };
+            let push_body = WebSyncClient::wrap_push_body_with_base(&doc_json, v);
+            let doc_url = format!("{base}/api/mcp/document");
+            let on_resp: Rc<dyn Fn(String)> = {
+                let sync = sync.clone();
+                let base = base.clone();
+                let doc_json = doc_json.clone();
+                Rc::new(move |resp: String| {
+                    if let Some(server_v) = WebSyncClient::parse_push_conflict(&resp) {
+                        if retries_left > 0 {
+                            // Re-probe + retry once, still holding push_busy.
+                            open_push_attempt(
+                                sync.clone(),
+                                base.clone(),
+                                pair,
+                                doc_json.clone(),
+                                retries_left - 1,
+                            );
+                            return;
+                        }
+                        if let Ok(mut s) = sync.try_borrow_mut() {
+                            s.gate.note_conflict(server_v);
+                            s.push_busy = false;
+                        }
+                        return;
+                    }
+                    if let Some(version) = WebSyncClient::parse_push_response(&resp) {
+                        if let Ok(mut s) = sync.try_borrow_mut() {
+                            s.client.mark_pushed(&doc_json, version);
+                            s.gate.note_synced(pair.0, pair.1);
+                            s.push_busy = false;
+                        }
+                        return;
+                    }
+                    // Unrecognized (network/parse failure): release the latch.
+                    release_push_busy(&sync);
+                })
+            };
+            if !live_sync::post_json(&doc_url, &push_body, Some(on_resp)) {
+                release_push_busy(&sync);
+            }
+        })
+    };
+    if !live_sync::get(&version_url, on_version) {
+        release_push_busy(&sync);
+    }
+}
+
+/// Acquire `push_busy` (waiting via self-reschedule), then push the snapshot.
+fn drive_snapshot_push(
+    sync: SharedSync,
+    base: String,
+    request_id: String,
+    pair: (u64, u64),
+    doc_json: String,
+) {
+    if !acquire_push_busy(&sync) {
+        schedule_once(PUSH_BUSY_RETRY_MS, move || {
+            drive_snapshot_push(sync, base, request_id, pair, doc_json)
+        });
+        return;
+    }
+    snapshot_push_attempt(sync, base, request_id, pair, doc_json);
+}
+
+/// Snapshot-channel push with `baseVersion = last_version()` (the established
+/// baseline). Confirm → `mark_pushed` + `note_synced` + `snapshot-result`.
+/// Conflict → `note_conflict` (observer will report `sync-conflict`) +
+/// `snapshot-conflict` reply.
+fn snapshot_push_attempt(
+    sync: SharedSync,
+    base: String,
+    request_id: String,
+    pair: (u64, u64),
+    doc_json: String,
+) {
+    let base_version = sync
+        .try_borrow()
+        .map(|s| s.client.last_version())
+        .unwrap_or(0);
+    let push_body = WebSyncClient::wrap_push_body_with_base(&doc_json, base_version);
+    let doc_url = format!("{base}/api/mcp/document");
+    let on_resp: Rc<dyn Fn(String)> = {
+        let sync = sync.clone();
+        Rc::new(move |resp: String| {
+            if let Some(server_v) = WebSyncClient::parse_push_conflict(&resp) {
+                if let Ok(mut s) = sync.try_borrow_mut() {
+                    s.gate.note_conflict(server_v);
+                    s.push_busy = false;
+                }
+                post_to_parent(&event_snapshot_conflict(&request_id, server_v));
+                return;
+            }
+            if let Some(version) = WebSyncClient::parse_push_response(&resp) {
+                if let Ok(mut s) = sync.try_borrow_mut() {
+                    s.client.mark_pushed(&doc_json, version);
+                    s.gate.note_synced(pair.0, pair.1);
+                    s.push_busy = false;
+                }
+                post_to_parent(&event_snapshot_result(
+                    &request_id,
+                    &doc_json,
+                    pair.0,
+                    pair.1,
+                ));
+                return;
+            }
+            release_push_busy(&sync);
+        })
+    };
+    if !live_sync::post_json(&doc_url, &push_body, Some(on_resp)) {
+        release_push_busy(&sync);
+    }
+}
+
+/// Acquire `push_busy` (waiting via self-reschedule), then run the use-local
+/// re-push.
+fn drive_use_local_push(
+    sync: SharedSync,
+    base: String,
+    request_id: String,
+    pair: (u64, u64),
+    doc_json: String,
+    base_version: u64,
+) {
+    if !acquire_push_busy(&sync) {
+        schedule_once(PUSH_BUSY_RETRY_MS, move || {
+            drive_use_local_push(sync, base, request_id, pair, doc_json, base_version)
+        });
+        return;
+    }
+    use_local_push_attempt(
+        sync,
+        base,
+        request_id,
+        pair,
+        doc_json,
+        base_version,
+        RETRY_ONCE,
+    );
+}
+
+/// Re-push the local document with `baseVersion = base_version` (the conflict's
+/// server version). Confirm → `mark_pushed` + `note_synced` (clears conflict +
+/// any pending open) + `conflict-resolved`. Second conflict → retry once with
+/// the fresh server version (push_busy held); still failing → `note_conflict`
+/// (keeps the gate's conflict version current for a later retry) +
+/// `snapshot-conflict`.
+fn use_local_push_attempt(
+    sync: SharedSync,
+    base: String,
+    request_id: String,
+    pair: (u64, u64),
+    doc_json: String,
+    base_version: u64,
+    retries_left: u8,
+) {
+    let push_body = WebSyncClient::wrap_push_body_with_base(&doc_json, base_version);
+    let doc_url = format!("{base}/api/mcp/document");
+    let on_resp: Rc<dyn Fn(String)> = {
+        let sync = sync.clone();
+        Rc::new(move |resp: String| {
+            if let Some(server_v) = WebSyncClient::parse_push_conflict(&resp) {
+                if retries_left > 0 {
+                    use_local_push_attempt(
+                        sync.clone(),
+                        base.clone(),
+                        request_id.clone(),
+                        pair,
+                        doc_json.clone(),
+                        server_v,
+                        retries_left - 1,
+                    );
+                    return;
+                }
+                if let Ok(mut s) = sync.try_borrow_mut() {
+                    s.gate.note_conflict(server_v);
+                    s.push_busy = false;
+                }
+                post_to_parent(&event_snapshot_conflict(&request_id, server_v));
+                return;
+            }
+            if let Some(version) = WebSyncClient::parse_push_response(&resp) {
+                if let Ok(mut s) = sync.try_borrow_mut() {
+                    s.client.mark_pushed(&doc_json, version);
+                    s.gate.note_synced(pair.0, pair.1);
+                    s.push_busy = false;
+                }
+                post_to_parent(&event_conflict_resolved(&request_id));
+                return;
+            }
+            release_push_busy(&sync);
+        })
+    };
+    if !live_sync::post_json(&doc_url, &push_body, Some(on_resp)) {
+        release_push_busy(&sync);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound-event observer
+// ---------------------------------------------------------------------------
+
+/// The SOLE emitter of `sync-conflict` / `opened` (drained from the gate's
+/// consumable latches) and `dirty-changed` (on a `(generation, revision,
+/// is_dirty)` triple change). If either RefCell is momentarily borrowed the
+/// tick is skipped BEFORE the latches are drained, so no edge is lost.
+fn observe_tick<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    sync: &SharedSync,
+    last_triple: &LastTripleCell,
+) {
+    // Read the triple first: if `inner` is busy, skip WITHOUT draining latches.
+    let Some(triple) = read_triple(inner) else {
+        return;
+    };
+    // Drain the latches only once we can take the sync borrow; a failed borrow
+    // here also leaves the latches intact for the next tick.
+    let (opened, conflict) = {
+        let Ok(mut s) = sync.try_borrow_mut() else {
+            return;
+        };
+        (s.gate.take_opened_edge(), s.gate.take_conflict_edge())
+    };
+
+    if let Some(server_v) = conflict {
+        post_to_parent(&op_editor_core::bridge_protocol::event_sync_conflict(
+            triple.0, triple.1, server_v,
+        ));
+    }
+    if let Some(gen) = opened {
+        post_to_parent(&op_editor_core::bridge_protocol::event_opened(gen));
+    }
+    let changed = *last_triple.borrow() != Some(triple);
+    if changed {
+        *last_triple.borrow_mut() = Some(triple);
+        post_to_parent(&op_editor_core::bridge_protocol::event_dirty_changed(
+            triple.0, triple.1, triple.2,
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+fn read_triple<C: RepaintContext>(inner: &Rc<RefCell<C>>) -> Option<(u64, u64, bool)> {
+    let b = inner.try_borrow().ok()?;
+    let s = b.host().editor_state();
+    Some((s.document_generation(), s.document_revision(), s.is_dirty()))
+}
+
+/// Serialize the live document + capture its `(generation, revision)` pair
+/// atomically under a single borrow.
+fn snapshot_state<C: RepaintContext>(inner: &Rc<RefCell<C>>) -> Option<((u64, u64), String)> {
+    let b = inner.try_borrow().ok()?;
+    let s = b.host().editor_state();
+    let pair = (s.document_generation(), s.document_revision());
+    let json = serde_json::to_string(&s.doc).ok()?;
+    Some((pair, json))
+}
+
+/// Try to claim the shared push single-flight latch. `true` when acquired.
+fn acquire_push_busy(sync: &SharedSync) -> bool {
+    match sync.try_borrow_mut() {
+        Ok(mut s) if !s.push_busy => {
+            s.push_busy = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn release_push_busy(sync: &SharedSync) {
+    if let Ok(mut s) = sync.try_borrow_mut() {
+        s.push_busy = false;
+    }
+}
+
+/// Post a codec string to the locked host origin (falling back to `*` only
+/// before the origin is known — by which point every real reply is sent).
+fn post_to_parent(json: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(parent) = window.parent().ok().flatten() else {
+        return;
+    };
+    let target = BRIDGE_ORIGIN
+        .with(|o| o.borrow().clone())
+        .unwrap_or_else(|| "*".to_string());
+    let _ = parent.post_message(&JsValue::from_str(json), &target);
+}
+
+/// One-shot `setTimeout`. `once_into_js` self-frees after firing.
+fn schedule_once<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::once_into_js(f);
+    let _ =
+        window.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), delay_ms);
+}

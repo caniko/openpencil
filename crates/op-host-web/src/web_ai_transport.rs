@@ -91,7 +91,9 @@ pub fn post_ai_stream_to(
     on_event: Rc<dyn Fn(AiEvent)>,
 ) -> Result<AiStreamHandle, wasm_bindgen::JsValue> {
     let xhr = web_sys::XmlHttpRequest::new()?;
-    xhr.open_with_async("POST", &format!("{base}{endpoint}"), true)?;
+    let url = format!("{base}{endpoint}");
+    xhr.open_with_async("POST", &url, true)?;
+    crate::live_sync::attach_daemon_headers(&xhr, &url);
     xhr.set_request_header("Content-Type", "application/json")?;
 
     // `cursor` is the byte offset in `responseText` up to which we've already

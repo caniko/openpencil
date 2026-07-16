@@ -12,12 +12,47 @@
 //! host-unit-tested.
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 const STATUS_REQUEST_TIMEOUT_MS: u32 = 15_000;
+
+thread_local! {
+    /// Managed-daemon auth token supplied by the VS Code host over the
+    /// postMessage bridge's `Init`. `None` for a direct-open browser tab (no
+    /// token → no header). Lives here (always-compiled module) rather than in
+    /// the `canvaskit`-gated `vscode_bridge` so [`attach_daemon_headers`] can
+    /// read it from every request helper regardless of build config.
+    static BRIDGE_TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Store the managed-daemon token (from the bridge `Init`). Idempotent.
+pub fn set_bridge_token(token: String) {
+    BRIDGE_TOKEN.with(|t| *t.borrow_mut() = Some(token));
+}
+
+/// The stored managed-daemon token, if any. `Some` only in a managed webview
+/// after the host's `Init` landed.
+pub fn bridge_token() -> Option<String> {
+    BRIDGE_TOKEN.with(|t| t.borrow().clone())
+}
+
+/// Attach the managed-daemon auth header to `req` — but ONLY when `url` targets
+/// the daemon (`daemon_base()` prefix). Public requests (e.g. the Iconify CDN)
+/// MUST NEVER carry the token, so the prefix check is the leak guard: a URL that
+/// is not the daemon origin never receives the header even when a token is set.
+/// Call AFTER `open` and BEFORE `send` (request headers require an open XHR).
+pub fn attach_daemon_headers(req: &web_sys::XmlHttpRequest, url: &str) {
+    let Some(token) = bridge_token() else {
+        return;
+    };
+    if url.starts_with(&crate::daemon_base::daemon_base()) {
+        let _ = req.set_request_header("X-OpenPencil-Token", &token);
+    }
+}
 
 /// Run `tick` every `interval_ms` for the page lifetime (the interval owns
 /// the closure — same `forget()` idiom the previous document poll used).
@@ -45,6 +80,7 @@ pub fn get(url: &str, on_response: Rc<dyn Fn(String)>) -> bool {
     if xhr.open_with_async("GET", url, true).is_err() {
         return false;
     }
+    attach_daemon_headers(&xhr, url);
     let xhr_for_load = xhr.clone();
     // `once_into_js` self-cleans after a single firing (no leaked closure per
     // request, unlike `forget()`).
@@ -70,6 +106,7 @@ pub fn get_with_status(url: &str, on_response: Rc<dyn Fn(u16, String)>) -> bool 
     if xhr.open_with_async("GET", url, true).is_err() {
         return false;
     }
+    attach_daemon_headers(&xhr, url);
     xhr.set_timeout(STATUS_REQUEST_TIMEOUT_MS);
     let xhr_for_load = xhr.clone();
     let onloadend = Closure::<dyn FnMut()>::once_into_js(move || {
@@ -96,6 +133,7 @@ pub fn post_json(url: &str, body: &str, on_response: Option<Rc<dyn Fn(String)>>)
     if xhr.open_with_async("POST", url, true).is_err() {
         return false;
     }
+    attach_daemon_headers(&xhr, url);
     let _ = xhr.set_request_header("Content-Type", "application/json");
     if let Some(on_response) = on_response {
         let xhr_for_load = xhr.clone();
@@ -122,6 +160,7 @@ pub fn post_json_with_status(url: &str, body: &str, on_response: Rc<dyn Fn(u16, 
     if xhr.open_with_async("POST", url, true).is_err() {
         return false;
     }
+    attach_daemon_headers(&xhr, url);
     xhr.set_timeout(STATUS_REQUEST_TIMEOUT_MS);
     let _ = xhr.set_request_header("Content-Type", "application/json");
     let xhr_for_load = xhr.clone();
