@@ -12,3 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 op-host-services = { path = "../op-host-services" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

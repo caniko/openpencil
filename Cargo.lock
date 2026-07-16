@@ -3357,6 +3357,7 @@ name = "op-host-web-server"
 version = "0.8.1"
 dependencies = [
  "op-host-services",
+ "serde_json",
 ]
 
 [[package]]
