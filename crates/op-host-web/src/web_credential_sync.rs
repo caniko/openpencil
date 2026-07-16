@@ -25,6 +25,10 @@ enum SyncAction {
 }
 
 impl CredentialSyncState {
+    // Combined reset + policy-check. The mount now drives these two phases
+    // separately (`reset` early, `start` after the bridge gate), so this stays
+    // as the state-machine's tested "full start" shape.
+    #[cfg(test)]
     fn start(&mut self) -> SyncAction {
         *self = Self::default();
         self.begin_policy_check()
@@ -138,8 +142,20 @@ thread_local! {
     static SYNC_STATE: RefCell<CredentialSyncState> = RefCell::new(CredentialSyncState::default());
 }
 
+/// Clear the transient credential-sync queue. Split out of `start` so the
+/// mount can reset state BEFORE repaint callbacks are wired: `repaint` calls
+/// `credential_changed` when a credential edit lands, so an early repaint must
+/// not queue a change that a later reset silently wipes. This issues no daemon
+/// request, so it is safe to run ahead of the postMessage bridge init gate.
+pub(crate) fn reset() {
+    SYNC_STATE.with(|state| *state.borrow_mut() = CredentialSyncState::default());
+}
+
+/// Begin credential-policy discovery against the daemon. This issues a daemon
+/// request, so the mount calls it only AFTER the bridge init gate (managed mode
+/// needs the auth token on the wire). State must already be cleared via `reset`.
 pub(crate) fn start() {
-    let action = SYNC_STATE.with(|state| state.borrow_mut().start());
+    let action = SYNC_STATE.with(|state| state.borrow_mut().begin_policy_check());
     dispatch(action);
 }
 

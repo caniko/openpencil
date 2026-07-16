@@ -117,11 +117,11 @@ fn canvaskit_repaint_persists_local_settings_and_syncs_only_credential_changes()
     let install = source
         .find("repaint_coalescer::install")
         .expect("repaint coalescer installation");
-    let sync_start = source
-        .find("web_credential_sync::start")
-        .expect("credential policy discovery");
+    let sync_reset = source
+        .find("web_credential_sync::reset")
+        .expect("credential sync state reset");
     assert!(
-        sync_start < install,
+        sync_reset < install,
         "credential sync state is reset before repaint callbacks can queue changes"
     );
 }

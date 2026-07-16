@@ -952,6 +952,14 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
         a11y,
         ime,
     }));
+    // Reset the credential-sync queue BEFORE the first repaint and before the
+    // rAF coalescer is installed below. `repaint` calls
+    // `web_credential_sync::credential_changed` whenever a credential edit
+    // lands, so the reset must precede any repaint wiring — otherwise an early
+    // repaint could queue a change that a later reset silently wipes. This is a
+    // pure state reset (no daemon request), so it is safe ahead of the bridge
+    // init gate; the daemon-facing policy fetch (`start`) still waits for it.
+    crate::web_credential_sync::reset();
     {
         let mut b = inner.borrow_mut();
         let _ = b.resize_to_window(&window)?;
