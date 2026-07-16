@@ -44,12 +44,31 @@ pub(in crate::widget_host) fn request_mcp_server_update(request: McpServerReques
         return;
     };
 
+    // Build an absolute daemon URL (not a bare `/api/mcp/server` relative
+    // path) so the daemon-token gate below is checking the actual request
+    // target rather than assuming same-origin — same convention as every
+    // other daemon call site (`web_chat.rs`, `dom_io.rs`, …).
+    let base = crate::daemon_base::daemon_base();
+    let url = format!("{base}/api/mcp/server");
+
     let headers = Object::new();
     let _ = Reflect::set(
         &headers,
         &JsValue::from_str("Content-Type"),
         &JsValue::from_str("application/json"),
     );
+    // Managed mode (VS Code webview) gates `/api/*` behind the bridge token;
+    // this `fetch` bypasses `live_sync`'s XHR helpers, so it must attach the
+    // header itself under the exact same policy as
+    // `live_sync::attach_daemon_headers` — daemon-targeted URL AND a token
+    // present — via the shared `live_sync::daemon_token_for` decision.
+    if let Some(token) = crate::live_sync::daemon_token_for(&url) {
+        let _ = Reflect::set(
+            &headers,
+            &JsValue::from_str("X-OpenPencil-Token"),
+            &JsValue::from_str(&token),
+        );
+    }
 
     let init = Object::new();
     let _ = Reflect::set(
@@ -65,7 +84,7 @@ pub(in crate::widget_host) fn request_mcp_server_update(request: McpServerReques
     let _ = Reflect::set(&init, &JsValue::from_str("body"), &JsValue::from_str(&body));
 
     let args = Array::new();
-    args.push(&JsValue::from_str("/api/mcp/server"));
+    args.push(&JsValue::from_str(&url));
     args.push(&init);
     let _ = fetch.apply(window.as_ref(), &args);
 }

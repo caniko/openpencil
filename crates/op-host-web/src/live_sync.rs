@@ -40,16 +40,29 @@ pub fn bridge_token() -> Option<String> {
     BRIDGE_TOKEN.with(|t| t.borrow().clone())
 }
 
+/// The managed-daemon auth token to send for a request targeting `url`, if
+/// any. `Some` only when BOTH a bridge token is stored AND `url` targets the
+/// daemon (`daemon_base()` prefix) — public requests (e.g. the Iconify CDN)
+/// MUST NEVER carry the token, so the prefix check is the leak guard: a URL
+/// that is not the daemon origin never yields a token even when one is set.
+/// This is the single policy every request helper (XHR-based and `fetch`-based
+/// alike) must funnel through so the leak guard can't drift between call sites.
+pub fn daemon_token_for(url: &str) -> Option<String> {
+    let token = bridge_token()?;
+    if url.starts_with(&crate::daemon_base::daemon_base()) {
+        Some(token)
+    } else {
+        None
+    }
+}
+
 /// Attach the managed-daemon auth header to `req` — but ONLY when `url` targets
 /// the daemon (`daemon_base()` prefix). Public requests (e.g. the Iconify CDN)
 /// MUST NEVER carry the token, so the prefix check is the leak guard: a URL that
 /// is not the daemon origin never receives the header even when a token is set.
 /// Call AFTER `open` and BEFORE `send` (request headers require an open XHR).
 pub fn attach_daemon_headers(req: &web_sys::XmlHttpRequest, url: &str) {
-    let Some(token) = bridge_token() else {
-        return;
-    };
-    if url.starts_with(&crate::daemon_base::daemon_base()) {
+    if let Some(token) = daemon_token_for(url) {
         let _ = req.set_request_header("X-OpenPencil-Token", &token);
     }
 }
