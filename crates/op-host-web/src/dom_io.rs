@@ -237,7 +237,7 @@ fn new_document<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
 /// daemon has no path or the request cannot start, fall back to the original
 /// browser Blob download.
 fn save_document<C: RepaintContext + 'static>(inner: &InnerRc<C>, daemon_first: bool) {
-    let (json, name, body) = {
+    let (json, name, body, snap_gen, snap_rev) = {
         let b = inner.borrow();
         let state = b.host().editor_state();
         let json = match file_actions::serialize_document(state) {
@@ -249,7 +249,9 @@ fn save_document<C: RepaintContext + 'static>(inner: &InnerRc<C>, daemon_first: 
         };
         let name = file_actions::save_file_name(state);
         let body = file_actions::save_request_body(state);
-        (json, name, body)
+        let snap_gen = state.document_generation();
+        let snap_rev = state.document_revision();
+        (json, name, body, snap_gen, snap_rev)
     };
     let body = match body {
         Ok(body) => body,
@@ -276,6 +278,10 @@ fn save_document<C: RepaintContext + 'static>(inner: &InnerRc<C>, daemon_first: 
                     let mut b = inner_for_response.borrow_mut();
                     b.host_mut().editor_state_mut().editor_ui.file_name_display =
                         Some(saved.file_name);
+                    let _ = b
+                        .host_mut()
+                        .editor_state_mut()
+                        .mark_saved_revision_at(snap_gen, snap_rev);
                     b.host_mut().mark_editor_state_dirty();
                     let _ = b.repaint();
                 }
