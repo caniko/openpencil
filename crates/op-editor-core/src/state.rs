@@ -594,6 +594,29 @@ mod tests {
     }
 
     #[test]
+    fn external_apply_bump_marks_dirty_while_open_stays_clean() {
+        // Locks the editor-core semantics the wasm-only live-sync glue relies
+        // on (Finding 2): an undoable external apply (AI turn / MCP client)
+        // followed by `mark_document_changed` must read dirty, while the plain
+        // open path (`replace_document`) must stay clean. The glue ordering
+        // itself is compile-gated wasm-only; this test guards the primitives.
+        let mut s = EditorState::new();
+        s.replace_document(empty_document()); // mount-time pull: clean baseline
+        assert!(!s.is_dirty());
+
+        // Undoable external apply + the glue's post-apply content bump.
+        s.replace_document_with_undo(empty_document());
+        s.mark_document_changed();
+        assert!(s.is_dirty());
+        assert_ne!(s.document_revision(), s.saved_revision());
+
+        // The open path stays clean — opens must not mark the tab dirty.
+        s.replace_document(empty_document());
+        assert!(!s.is_dirty());
+        assert_eq!(s.document_revision(), s.saved_revision());
+    }
+
+    #[test]
     fn ack_for_older_revision_does_not_mark_newer_edits_clean() {
         let mut s = EditorState::new();
         s.mark_document_changed(); // revision 1 — snapshot exported here
