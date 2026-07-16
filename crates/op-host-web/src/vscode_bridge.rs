@@ -60,6 +60,12 @@ thread_local! {
     /// The pending `await_init` promise resolver — the `init` handler calls it
     /// so `mount_ck` stops waiting the moment the token lands.
     static INIT_RESOLVER: RefCell<Option<Function>> = const { RefCell::new(None) };
+    /// One-shot late-init recovery hook. Registered by `canvaskit`'s FALLBACK
+    /// (unmanaged) bootstrap completion when `await_init` timed out; invoked by
+    /// [`handle_init`] if a slow host's `init` lands afterwards, so the managed
+    /// bootstrap re-runs and `ready` is still emitted. `None` on the normal path
+    /// (init before the timeout), where it is never registered.
+    static LATE_INIT_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +226,26 @@ fn handle_init(token: String) {
             let _ = resolve.call0(&JsValue::NULL);
         }
     });
+    // Late-init recovery: when the host's `init` lands AFTER `await_init`'s
+    // timeout, the fallback (unmanaged) bootstrap already ran and never emitted
+    // `ready`. The one-shot hook — registered by that fallback bootstrap's
+    // completion — re-runs the managed bootstrap (a tokened sync-reset, now that
+    // the token above is stored, then `emit_ready`). Take it so it fires at most
+    // once; on the normal path (init before the timeout) it is never registered,
+    // so this is a no-op.
+    let hook = LATE_INIT_HOOK.with(|h| h.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// Register the one-shot late-init recovery hook (see [`LATE_INIT_HOOK`]).
+/// `canvaskit`'s fallback bootstrap calls this ONLY after its unmanaged
+/// sync-reset has completed, so the recovery reset the hook later triggers
+/// cannot interleave with the fallback reset. Overwrites any prior hook (only
+/// one bootstrap ever registers).
+pub(crate) fn register_late_init_hook<F: Fn() + 'static>(hook: F) {
+    LATE_INIT_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
 }
 
 /// Post the managed `ready` reply with the current `(generation, revision)` so

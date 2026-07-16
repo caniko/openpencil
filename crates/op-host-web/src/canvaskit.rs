@@ -905,22 +905,29 @@ const BOOTSTRAP_RESET_RETRIES: u8 = 1;
 /// count as completion. A transport/server error retries once, then proceeds
 /// anyway with a console warning.
 ///
+/// The request goes through [`crate::live_sync::post_json_with_status`], which
+/// arms an XHR timeout: a STALLED connection therefore fires `onloadend` with
+/// status 0 (empty body) instead of hanging silently, so it lands on the same
+/// retry-then-complete path as any other transport error. Without the timeout a
+/// hung reset would fire neither success nor error and wedge `ready` forever.
+///
 /// `complete` is ALWAYS eventually called: a webview that never emits `ready`
 /// (wedged forever) is worse than one running on a best-effort-reset daemon
 /// (degraded), so the retry is bounded and completion is unconditional past it.
 fn start_bootstrap_reset(base: String, complete: std::rc::Rc<dyn Fn()>, retries_left: u8) {
     let url = format!("{base}/api/mcp/sync-reset");
-    let on_reset: std::rc::Rc<dyn Fn(String)> = {
+    let on_reset: std::rc::Rc<dyn Fn(u16, String)> = {
         let complete = complete.clone();
         let base = base.clone();
-        std::rc::Rc::new(move |body: String| {
+        std::rc::Rc::new(move |_status: u16, body: String| {
             // The daemon answers `{"ok":true,...}` for both a fresh reset and a
             // peer-skipped one (`"skipped":true`) — either is completion.
             if body.contains("\"ok\":true") {
                 complete();
                 return;
             }
-            // Error body / empty (transport failure): retry once, then proceed.
+            // Error body / empty (transport failure, or an XHR timeout ->
+            // status 0 + empty body): retry once, then proceed.
             if retries_left > 0 {
                 start_bootstrap_reset(base.clone(), complete.clone(), retries_left - 1);
                 return;
@@ -931,7 +938,7 @@ fn start_bootstrap_reset(base: String, complete: std::rc::Rc<dyn Fn()>, retries_
             complete();
         })
     };
-    if !crate::live_sync::post_json(&url, "", Some(on_reset)) {
+    if !crate::live_sync::post_json_with_status(&url, "", on_reset) {
         // Request could not even start — treat as a transport error.
         if retries_left > 0 {
             start_bootstrap_reset(base, complete, retries_left - 1);
@@ -1054,7 +1061,8 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // 2. Inside a webview iframe, await the host's Init (token) with a 2s
     //    fallback (proceed as a direct open on timeout). A standalone browser
     //    tab is a direct open and continues immediately.
-    if crate::vscode_bridge::in_iframe(&window) {
+    let is_iframe = crate::vscode_bridge::in_iframe(&window);
+    if is_iframe {
         crate::vscode_bridge::await_init(&window, 2000).await;
     }
     // 3. Only now start the daemon-dependent services — in managed mode the
@@ -1097,6 +1105,13 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
         // retry path in `start_bootstrap_reset` can never double-emit or
         // double-start.
         let done = std::rc::Rc::new(std::cell::Cell::new(false));
+        // Late-init recovery captures (Finding 1): if we bootstrap UNMANAGED
+        // (init did not arrive before the timeout) inside a webview iframe, a
+        // slow host's `init` may still land later. The fallback completion below
+        // registers a one-shot hook (see `vscode_bridge::register_late_init_hook`)
+        // that re-runs the managed bootstrap so `ready` is still emitted.
+        let inner_for_hook = inner.clone();
+        let base_for_hook = base.clone();
         let complete: std::rc::Rc<dyn Fn()> = {
             let done = done.clone();
             std::rc::Rc::new(move || {
@@ -1107,6 +1122,36 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                     crate::vscode_bridge::emit_ready(&inner_for_ready);
                 }
                 crate::live_sync_glue::start(&inner_for_sync, sync_for_start.clone());
+                // Register the late-init hook ONLY after this fallback reset has
+                // completed, so the recovery reset it triggers can't interleave
+                // with the fallback reset. Managed bootstraps already emitted
+                // `ready`, and a standalone tab (`!is_iframe`) never receives an
+                // `init`, so neither registers.
+                if !managed && is_iframe {
+                    let inner_hook = inner_for_hook.clone();
+                    let base_hook = base_for_hook.clone();
+                    crate::vscode_bridge::register_late_init_hook(move || {
+                        // The token is now stored (set by `handle_init` before it
+                        // invoked us), so this reset carries the auth header. The
+                        // daemon's Task-5 guard makes a repeat reset a no-op skip
+                        // (`"ok":true` / `"skipped":true`), which still counts as
+                        // completion. Ticks are already running from the fallback
+                        // `start` above and pick up the token automatically.
+                        let inner_ready = inner_hook.clone();
+                        let done2 = std::rc::Rc::new(std::cell::Cell::new(false));
+                        let complete2: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
+                            if done2.replace(true) {
+                                return;
+                            }
+                            crate::vscode_bridge::emit_ready(&inner_ready);
+                        });
+                        start_bootstrap_reset(
+                            base_hook.clone(),
+                            complete2,
+                            BOOTSTRAP_RESET_RETRIES,
+                        );
+                    });
+                }
             })
         };
         start_bootstrap_reset(base, complete, BOOTSTRAP_RESET_RETRIES);
