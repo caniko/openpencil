@@ -895,6 +895,55 @@ fn dispatch_a11y_dom_event(
     }
 }
 
+/// Retries for the bootstrap sync-reset after a transport/server error before
+/// giving up and proceeding anyway (exactly one — see [`start_bootstrap_reset`]).
+const BOOTSTRAP_RESET_RETRIES: u8 = 1;
+
+/// POST the bootstrap `POST /api/mcp/sync-reset`, invoking `complete` EXACTLY
+/// once the daemon has been reset — a fresh reset OR a peer view that already
+/// reset it (`"skipped":true`, which the daemon still answers `"ok":true`) both
+/// count as completion. A transport/server error retries once, then proceeds
+/// anyway with a console warning.
+///
+/// `complete` is ALWAYS eventually called: a webview that never emits `ready`
+/// (wedged forever) is worse than one running on a best-effort-reset daemon
+/// (degraded), so the retry is bounded and completion is unconditional past it.
+fn start_bootstrap_reset(base: String, complete: std::rc::Rc<dyn Fn()>, retries_left: u8) {
+    let url = format!("{base}/api/mcp/sync-reset");
+    let on_reset: std::rc::Rc<dyn Fn(String)> = {
+        let complete = complete.clone();
+        let base = base.clone();
+        std::rc::Rc::new(move |body: String| {
+            // The daemon answers `{"ok":true,...}` for both a fresh reset and a
+            // peer-skipped one (`"skipped":true`) — either is completion.
+            if body.contains("\"ok\":true") {
+                complete();
+                return;
+            }
+            // Error body / empty (transport failure): retry once, then proceed.
+            if retries_left > 0 {
+                start_bootstrap_reset(base.clone(), complete.clone(), retries_left - 1);
+                return;
+            }
+            web_sys::console::warn_1(&JsValue::from_str(
+                "[op-bridge] sync-reset failed after retry; proceeding on a best-effort daemon",
+            ));
+            complete();
+        })
+    };
+    if !crate::live_sync::post_json(&url, "", Some(on_reset)) {
+        // Request could not even start — treat as a transport error.
+        if retries_left > 0 {
+            start_bootstrap_reset(base, complete, retries_left - 1);
+        } else {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "[op-bridge] sync-reset could not be issued after retry; proceeding",
+            ));
+            complete();
+        }
+    }
+}
+
 /// Mount the full editor chrome on `canvas_id`, rendered via CanvasKit on the
 /// GPU, with mouse / wheel / keyboard interactivity. Builds the shared
 /// `WidgetHost` (skia-free under this feature) and drives it through
@@ -1023,34 +1072,44 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     // Mirror the daemon's agent-indicator registry so design runs paint
     // their agent borders / badges / reveal animations on web too.
     crate::agent_indicator_sync::start(&inner);
-    // 4. Reset the daemon's transient sync document, THEN start the live-sync
-    //    ticks. The 400 ms pull tick must not run before the reset completes
-    //    (in BOTH managed + direct paths) or it pulls the pre-reset state.
-    //    Managed mode issues the reset with the token (via the live_sync
-    //    helper); direct open issues the legacy reset here — replacing the
-    //    fetch removed from index.html.
+    // 4. Reset the daemon's transient sync document, THEN emit the managed
+    //    `ready` reply and start the live-sync ticks. The reset must complete
+    //    FIRST for two reasons:
+    //      * The 400 ms pull tick must not run before the reset (in BOTH
+    //        managed + direct paths) or it pulls the pre-reset state.
+    //      * `ready` must be serialized after the reset (managed path): the
+    //        host opens a document as soon as it sees `ready`, and an open push
+    //        landing before the bootstrap reset would be clobbered when the
+    //        reset resets the daemon to `--file` content and the next pull tick
+    //        pulls that over the just-opened canvas. `ready` is therefore posted
+    //        from the reset-completion callback here, never from `handle_init`.
+    //    Managed mode issues the reset with the token (attached automatically by
+    //    the `live_sync` helper); direct open issues the same reset — replacing
+    //    the fetch removed from index.html — but never emits `ready` (no bridge).
     {
         let base = crate::daemon_base::daemon_base();
+        let managed = crate::live_sync::bridge_token().is_some();
         let inner_for_sync = inner.clone();
+        let inner_for_ready = inner.clone();
         let sync_for_start = sync_controller.clone();
-        let started = std::rc::Rc::new(std::cell::Cell::new(false));
-        let start_once: std::rc::Rc<dyn Fn()> = {
-            let started = started.clone();
+        // Single guarded completion: emit `ready` (managed only) with the
+        // then-current generation/revision, THEN start the ticks. Guarded so the
+        // retry path in `start_bootstrap_reset` can never double-emit or
+        // double-start.
+        let done = std::rc::Rc::new(std::cell::Cell::new(false));
+        let complete: std::rc::Rc<dyn Fn()> = {
+            let done = done.clone();
             std::rc::Rc::new(move || {
-                if started.replace(true) {
+                if done.replace(true) {
                     return;
+                }
+                if managed {
+                    crate::vscode_bridge::emit_ready(&inner_for_ready);
                 }
                 crate::live_sync_glue::start(&inner_for_sync, sync_for_start.clone());
             })
         };
-        let on_reset: std::rc::Rc<dyn Fn(String)> = {
-            let start_once = start_once.clone();
-            std::rc::Rc::new(move |_body: String| start_once())
-        };
-        if !crate::live_sync::post_json(&format!("{base}/api/mcp/sync-reset"), "", Some(on_reset)) {
-            // Request could not even start — don't wedge: start the ticks anyway.
-            start_once();
-        }
+        start_bootstrap_reset(base, complete, BOOTSTRAP_RESET_RETRIES);
     }
 
     let mut listeners: Vec<Listener> = Vec::new();

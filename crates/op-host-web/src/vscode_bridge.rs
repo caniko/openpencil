@@ -191,7 +191,7 @@ fn handle_message<C: RepaintContext + 'static>(
     }
 
     match msg {
-        BridgeInbound::Init { token } => handle_init(inner, token),
+        BridgeInbound::Init { token } => handle_init(token),
         BridgeInbound::OpenDocument { json } => handle_open_document(inner, sync, json),
         BridgeInbound::Snapshot { request_id, .. } => handle_snapshot(inner, sync, request_id),
         BridgeInbound::SaveCommitted {
@@ -204,16 +204,32 @@ fn handle_message<C: RepaintContext + 'static>(
     }
 }
 
-/// `init`: store the managed token, unblock `mount_ck`'s `await_init`, and reply
-/// with the current `(generation, revision)` so the host learns the starter
-/// document's identity before it sends `open-document`.
-fn handle_init<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>, token: String) {
+/// `init`: store the managed token and unblock `mount_ck`'s `await_init`.
+///
+/// `ready` is deliberately NOT emitted here. It must be serialized strictly
+/// AFTER the managed bootstrap sync-reset: the host sends `open-document` the
+/// moment it sees `ready`, and an open push that lands before the reset would
+/// be silently clobbered when the still-in-flight reset resets the daemon to
+/// its `--file` content and the next pull tick pulls that over the just-opened
+/// canvas. The reset-completion callback in `canvaskit`'s managed path calls
+/// [`emit_ready`] once the reset has landed.
+fn handle_init(token: String) {
     live_sync::set_bridge_token(token);
     INIT_RESOLVER.with(|r| {
         if let Some(resolve) = r.borrow_mut().take() {
             let _ = resolve.call0(&JsValue::NULL);
         }
     });
+}
+
+/// Post the managed `ready` reply with the current `(generation, revision)` so
+/// the host learns the starter document's identity before it sends
+/// `open-document`. Called from `canvaskit`'s managed bootstrap ONLY after the
+/// sync-reset has completed (see [`handle_init`]). `ready` is a
+/// request/response-style reply — not one of the three edge/state events the
+/// tick observer owns — so a direct post here keeps single-point edge
+/// discipline intact while ordering `ready` strictly after the reset.
+pub(crate) fn emit_ready<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>) {
     let (gen, rev, _) = read_triple(inner).unwrap_or((0, 0, false));
     post_to_parent(&event_ready(gen, rev));
 }
