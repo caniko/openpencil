@@ -69,20 +69,34 @@ pub(crate) enum ScriptResponse {
 }
 
 /// 按脚本逐次返回响应的 `LlmClient` 桩 —— 每次 `call` 弹一条。
+///
+/// Also records each call's `system_prompt` in arrival order (via
+/// [`ScriptedLlm::system_prompts`]) — tests that need to prove WHICH
+/// complexity settings drove a particular call (e.g. the salvage pass must
+/// resolve the minimal-skills prompt, not the full-complexity one) inspect
+/// this instead of adding a second stub.
 pub(crate) struct ScriptedLlm {
     responses: Mutex<VecDeque<ScriptResponse>>,
+    system_prompts: Mutex<Vec<String>>,
 }
 
 impl ScriptedLlm {
     pub(crate) fn new(responses: Vec<ScriptResponse>) -> Self {
         Self {
             responses: Mutex::new(responses.into()),
+            system_prompts: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Every `call`'s `system_prompt`, in the order calls arrived.
+    pub(crate) fn system_prompts(&self) -> Vec<String> {
+        self.system_prompts.lock().unwrap().clone()
     }
 }
 
 impl LlmClient for ScriptedLlm {
-    fn call(&self, _req: CallRequest) -> BoxStream<'static, Result<LlmChunk, LlmError>> {
+    fn call(&self, req: CallRequest) -> BoxStream<'static, Result<LlmChunk, LlmError>> {
+        self.system_prompts.lock().unwrap().push(req.system_prompt);
         let next = self.responses.lock().unwrap().pop_front();
         let items: Vec<Result<LlmChunk, LlmError>> = match next {
             Some(ScriptResponse::Text(t)) => vec![Ok(LlmChunk::Text(t))],
@@ -219,6 +233,88 @@ impl LlmClient for CountingLlm {
             yielded_once: false,
             text: Some(text),
             counters: Arc::clone(&self.counters),
+        })
+    }
+}
+
+/// A stream that yields `Poll::Pending` a caller-chosen number of times
+/// (self-waking each time) before producing its single text chunk — like
+/// [`YieldingChunkStream`] but with a controllable delay, so tests can force
+/// a DETERMINISTIC finish order across concurrent workers (more pending
+/// polls = finishes later) instead of relying on incidental executor polling
+/// order. `finished` (when present) is bumped the instant the text chunk is
+/// produced, so a test can read "how many of N calls have resolved so far"
+/// from OUTSIDE the stream — the only way to prove a callback fired WHILE
+/// siblings were still in flight, since the final `Vec<Progress>` order
+/// alone can't distinguish "delivered live" from "delivered late but
+/// enqueued in the right order" (an mpsc channel preserves send order either
+/// way).
+struct DelayedChunkStream {
+    remaining_pending: usize,
+    text: Option<String>,
+    finished: Option<Arc<AtomicUsize>>,
+}
+
+impl Stream for DelayedChunkStream {
+    type Item = Result<LlmChunk, LlmError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.remaining_pending > 0 {
+            this.remaining_pending -= 1;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        match this.text.take() {
+            Some(t) => {
+                if let Some(counter) = &this.finished {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                Poll::Ready(Some(Ok(LlmChunk::Text(t))))
+            }
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+/// An `LlmClient` whose calls each carry their own `(pending_polls, text)` —
+/// popped in call order. Lets a test force e.g. the SECOND screen group's
+/// worker to finish before the FIRST's, proving replay / progress ordering
+/// follows genuine COMPLETION order rather than plan order. `finished()`
+/// reports how many calls have resolved so far — read it from inside an
+/// `on_progress` callback to prove that callback fired before every call had
+/// resolved (real-time delivery, not a post-hoc batch).
+pub(crate) struct DelayedLlm {
+    responses: Mutex<VecDeque<(usize, String)>>,
+    finished: Arc<AtomicUsize>,
+}
+
+impl DelayedLlm {
+    pub(crate) fn new(responses: Vec<(usize, String)>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into()),
+            finished: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Number of calls whose stream has produced its text chunk so far.
+    pub(crate) fn finished(&self) -> usize {
+        self.finished.load(Ordering::SeqCst)
+    }
+}
+
+impl LlmClient for DelayedLlm {
+    fn call(&self, _req: CallRequest) -> BoxStream<'static, Result<LlmChunk, LlmError>> {
+        let (remaining_pending, text) = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or((0, String::new()));
+        Box::pin(DelayedChunkStream {
+            remaining_pending,
+            text: Some(text),
+            finished: Some(Arc::clone(&self.finished)),
         })
     }
 }

@@ -3,6 +3,7 @@
 //! 副作用只从 [`DocSink`](文档变更)与 [`LlmClient`](LLM 调用)
 //! 两个 trait 进出;其余全是数据类型。
 
+use crate::plan::Subtask;
 use futures::stream::BoxStream;
 use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorCommand, EditorState, NodeId};
@@ -303,6 +304,29 @@ pub enum Progress {
         id: String,
         nodes_so_far: usize,
     },
+    /// Emitted ONCE, right before the screen-group concurrent phase starts
+    /// (D-lite "three-piece" visibility fix, 2026-07-17) — a user-facing
+    /// confirmation that `group_count` screens are about to run against
+    /// `workers` overlapping workers, so ⚡Nx's effect is legible instead of
+    /// silent. Never emitted on the sequential path (`workers == 1` never
+    /// fires this — see `run.rs`'s `effective_concurrency` branch).
+    ConcurrentGroupsStarted {
+        group_count: usize,
+        workers: u32,
+    },
+    /// The dual of [`Progress::ConcurrentGroupsStarted`] — emitted ONCE when
+    /// the plan has ≥2 screen groups but the SEQUENTIAL phase-3 loop ran
+    /// anyway (`effective_concurrency == 1`). Self-diagnostic
+    /// (sequential-execution root-cause hunt, 2026-07-17): `requested_workers`
+    /// is the raw, unclamped `DesignRequest.concurrency` this turn carried —
+    /// `1` proves the ⚡Nx picker's value never reached the orchestrator for
+    /// this turn; any value `> 1` here would mean `effective_concurrency`
+    /// itself has a bug (its contract guarantees `> 1` whenever
+    /// `group_count > 1 && clamp_concurrency(requested_workers) > 1`).
+    ScreenGroupsSequential {
+        group_count: usize,
+        requested_workers: u32,
+    },
     CleanupDone,
     // ── S3c: Vision-validation progress variants ─────────────────────────────
     /// 视觉校验阶段开始(pre-validation 将在此之后立即运行)。
@@ -424,6 +448,13 @@ pub struct SubtaskOutcome {
     /// cleanup scopes to exactly these — Component 11). Empty on failure
     /// or when the sink is buffered (ids unavailable until replay).
     pub inserted_root_ids: Vec<String>,
+    /// The persisted subtask spec, present ONLY on a zero-node failure —
+    /// carries `region`/`elements`/`screen`/`parent_frame_id` through to the
+    /// host so a failed row's manual "Retry" button (progress-panel remedy,
+    /// see `crate::retry_subtask`) can re-run this EXACT subtask later,
+    /// instead of a re-derived approximation. `None` on success (nothing to
+    /// retry) — avoids cloning the spec on the common path.
+    pub subtask: Option<Subtask>,
 }
 
 /// `run()` 成功返回的汇总。

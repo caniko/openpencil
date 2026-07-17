@@ -69,13 +69,18 @@ const HEADER_REGION_MAX_Y: f64 = 140.0;
 const ENTRY_NAME_HINTS: [&str; 4] = ["home", "main", "dashboard", "index"];
 
 /// One screen-shaped top-level frame collected from the active page.
-struct ScreenCandidate {
-    id: String,
+///
+/// `pub(crate)` (fields too) — `unify_shared_nav.rs` reuses this SAME
+/// screen-shape detection to find the reference/target screens its
+/// cross-screen nav unification pass operates on, so "what counts as a
+/// screen" can never drift between the two passes.
+pub(crate) struct ScreenCandidate {
+    pub(crate) id: String,
     /// Display name used for slugging + navbar label matching; falls back to
     /// the node id when unnamed.
-    name: String,
+    pub(crate) name: String,
     /// Pre-existing authored `screen` marker, if any — never overwritten.
-    existing_path: Option<String>,
+    pub(crate) existing_path: Option<String>,
 }
 
 /// Entry point: mark screen-shaped top-level frames with a `screen` route
@@ -122,7 +127,8 @@ pub fn wire_screen_navigation(sink: &mut dyn DocSink) {
 
 /// Scan the active page's top-level `Frame` children for screen-shaped
 /// candidates (numeric width AND height, width in a mobile or desktop band).
-fn collect_screen_candidates(state: &EditorState) -> Vec<ScreenCandidate> {
+/// `pub(crate)` for `unify_shared_nav`'s reuse — see [`ScreenCandidate`].
+pub(crate) fn collect_screen_candidates(state: &EditorState) -> Vec<ScreenCandidate> {
     state
         .active_children()
         .iter()

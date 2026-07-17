@@ -187,9 +187,16 @@ fn run_mobile_scaffold_reveals_status_bar() {
         .map(|node| node.id_str().to_string())
         .expect("mobile scaffold should insert a status bar");
     let snapshot = op_editor_core::agent_indicators::snapshot();
+    // Dual-cursor-identity fix (2026-07-17): the sequential path no longer
+    // tags its root with an orchestrator-minted identity — the host's
+    // confirmed transcript identity (`cursor_agent`) is the single source of
+    // truth for a single-agent run now (see `run.rs`'s `group_identities`
+    // doc). Reveal scheduling (a SEPARATE mechanism from ownership tagging)
+    // is unaffected either way.
     assert!(
-        snapshot.frames.contains_key(root.id_str()),
-        "sequential scaffold root should get an agent frame badge"
+        !snapshot.frames.contains_key(root.id_str()),
+        "sequential scaffold root must NOT get its own agent frame badge \
+         anymore — it should inherit the host-confirmed identity instead"
     );
     assert!(
         snapshot.reveals.contains_key(&status_id),
@@ -640,6 +647,78 @@ fn run_salvage_pass_recovers_a_transiently_failed_subtask() {
         .iter()
         .any(|e| matches!(e, Progress::SubtaskDone { id, .. } if id == "hero"));
     assert!(hero_done, "hero eventually Done via salvage");
+}
+
+#[test]
+fn run_salvage_pass_uses_minimal_skills_not_full_complexity() {
+    // 2026-07-17 policy (failed-subtask remediation, automatic-layer step 1):
+    // the salvage pass no longer repeats attempt-1's full complexity —
+    // attempts 1-3 already tried full/reduced/minimal and all failed, so an
+    // identical repeat of attempt-1 is the least-informed retry choice.
+    // Salvage now uses attempt-3's settings (reduced_complexity=true,
+    // minimal_skills=true): the schema-only "floor" protocol most likely to
+    // land SOME content instead of reproducing the same zero-content outcome.
+    use crate::types::LlmError;
+    let empty = || {
+        ScriptResponse::Fail(LlmError {
+            message: "empty content from provider".into(),
+            aborted: false,
+        })
+    };
+    let llm = ScriptedLlm::new(vec![
+        ScriptResponse::Text(PLAN_JSON.into()),
+        empty(),                                 // hero attempt 1 (full)
+        empty(),                                 // hero attempt 2
+        empty(),                                 // hero attempt 3 (minimal)
+        ScriptResponse::Text(node_json("feat")), // feat attempt 1 (ok)
+        ScriptResponse::Text(node_json("hero")), // hero salvage (ok)
+    ]);
+    let mut sink = VecDocSink::new();
+    let mut events: Vec<Progress> = Vec::new();
+    let mut on_progress = |p: Progress| events.push(p);
+
+    futures::executor::block_on(Orchestrator::new().run(
+        req(),
+        &mut sink,
+        &llm,
+        &mut on_progress,
+        &AbortFlag::new(),
+        &stub_providers(),
+    ))
+    .expect("salvaged run ok");
+
+    // Call order: [0] planning, [1] hero attempt 1 (full), [2] hero attempt 2,
+    // [3] hero attempt 3 (minimal), [4] feat attempt 1, [5] hero salvage.
+    let prompts = llm.system_prompts();
+    assert_eq!(
+        prompts.len(),
+        6,
+        "unexpected call count: {:?}",
+        prompts.iter().map(|p| p.len()).collect::<Vec<_>>()
+    );
+    let hero_attempt1 = &prompts[1];
+    let hero_attempt3 = &prompts[3];
+    let hero_salvage = &prompts[5];
+
+    assert!(
+        hero_salvage.len() < hero_attempt1.len(),
+        "salvage prompt ({} chars) must be shorter than attempt-1's full-complexity \
+         prompt ({} chars) — it must resolve the minimal-skills (schema-only) set, \
+         not repeat attempt 1's settings",
+        hero_salvage.len(),
+        hero_attempt1.len()
+    );
+    // Salvage must match attempt 3's (minimal_skills=true) prompt shape
+    // exactly, not just "shorter than attempt 1" by coincidence.
+    assert_eq!(
+        hero_salvage.len(),
+        hero_attempt3.len(),
+        "salvage must resolve the SAME minimal-skills prompt shape as attempt 3"
+    );
+    assert!(
+        hero_salvage.contains("OUTPUT PROTOCOL: JAVASCRIPT PROGRAM"),
+        "salvage must still be script-gen: {hero_salvage}"
+    );
 }
 
 const DASHBOARD_PLAN_JSON: &str = r##"{

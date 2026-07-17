@@ -103,6 +103,10 @@ pub(crate) async fn run_subtask_with_reveal_at(
         node_count: 0,
         error: Some(msg),
         inserted_root_ids: Vec::new(),
+        // Persist the spec on every zero-node failure so the progress
+        // panel's manual "Retry" button (see `crate::retry_subtask`) can
+        // re-run this EXACT subtask later.
+        subtask: Some(subtask.clone()),
     };
 
     // Snapshot the document's reusable-component registry before the prompt
@@ -320,6 +324,7 @@ pub(crate) async fn run_subtask_with_reveal_at(
         node_count,
         error: None,
         inserted_root_ids,
+        subtask: None,
     }
 }
 

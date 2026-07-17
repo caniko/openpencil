@@ -1450,6 +1450,15 @@ pub fn run_cleanup_passes(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_
     anchor_bottom_nav_last_for_all_roots(sink);
     crate::mobile_reflow::repair_mobile_trailing_nav_reflow_in_sink(sink);
 
+    // Cross-screen shared-chrome unification: each screen's independently
+    // re-generated bottom-nav drifts in icons/labels (measured: Home screen
+    // "Home/Search/Library/Premium" vs Library screen's own redraw
+    // "Home/Search/Your Library/Premium"). Runs BEFORE `wire_screen_
+    // navigation` below so Track A's label↔screen tab-matching sees the
+    // POST-unification tree (every screen sharing one tab-label set), not a
+    // stale per-screen one.
+    crate::unify_shared_nav::unify_shared_nav(sink);
+
     // Track A of the interactive-preview plan: mark screen-shaped top-level
     // frames + wire their nav tabs / back buttons, so a multi-screen document
     // enters App Mode preview with zero model cooperation. Runs LAST — after

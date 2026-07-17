@@ -60,6 +60,7 @@ pub mod loop_finalize;
 pub mod nav_issues;
 pub mod prompt;
 pub mod radial_repair;
+pub mod retry_subtask;
 pub mod role_defaults;
 pub mod role_infer;
 pub(crate) mod role_layout_post_pass;
@@ -74,6 +75,7 @@ pub mod stub_repair;
 pub mod subagent;
 pub mod table_repair;
 pub mod tree_heuristics;
+pub(crate) mod unify_shared_nav;
 pub mod wire_screen_navigation;
 
 #[cfg(test)]

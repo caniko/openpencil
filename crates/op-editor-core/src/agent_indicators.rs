@@ -185,6 +185,30 @@ pub fn add_frame(epoch: u64, frame_id: &str, color: &str, name: &str) {
     );
 }
 
+/// Like [`add_frame`], but a no-op when `frame_id` is ALREADY tagged.
+///
+/// Used by drivers that re-scan the canvas every animation frame (e.g. the
+/// desktop host's design-loop indicator) to register frames a design turn
+/// produced — such a driver must not blindly overwrite a tag some OTHER
+/// caller already assigned earlier in the same epoch (e.g. the orchestrator
+/// tagging N screen-group roots with N distinct per-group identities before
+/// the host's next repaint observes them) — re-running `add_frame`
+/// unconditionally every frame would collapse every root back to the
+/// driver's own single identity.
+pub fn add_frame_if_absent(epoch: u64, frame_id: &str, color: &str, name: &str) {
+    let mut r = REGISTRY.lock().unwrap();
+    if r.epoch != epoch || r.frames.contains_key(frame_id) {
+        return;
+    }
+    r.frames.insert(
+        frame_id.to_string(),
+        AgentTag {
+            color: color.to_string(),
+            name: name.to_string(),
+        },
+    );
+}
+
 /// Mark a node as a not-yet-materialised preview (pulse fill).
 /// Epoch-scoped like [`add_node`].
 pub fn mark_preview(epoch: u64, node_id: &str) {

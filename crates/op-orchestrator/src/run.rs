@@ -1,25 +1,31 @@
 //! `Orchestrator::run()` —— 四阶段编排主轴(spec §4)。
 //!
-//! 规划 → 画布搭建 → 顺序子 agent → 清理。
+//! 规划 → 画布搭建 → 子 agent(屏组间可并发)→ 清理。
 //! 副作用全经 [`DocSink`] / [`LlmClient`]。
 //! 错误 / abort / 零内容语义见 spec §6。
 //!
-//! 单一顺序执行路径(无并发)—— dashboard(原 sidebar+main 专用 scaffold)
-//! 收敛进单根路径:它的 per-subtask 产出与确定性后处理跟通用路径完全一致,
-//! 只差 scaffold 形状(基准路径没用上)。**多屏不再收敛**(2026-07-17 修复
-//! multiscreen-fanout-break item A):plan 的 subtask 若带 ≥2 个不同
-//! `screen` 标签,`insert_screen_group_roots` 建 N 个顶层 root(每屏一个),
-//! 各组 subtask 仍按 plan 顺序**依次**(非并发)执行 —— 结构复活,并发未复活。
-//! `concurrency` 字段仍由独立的 `spawn_agents` 扇出(`spawn_concurrent.rs`)消费。
+//! dashboard(原 sidebar+main 专用 scaffold)收敛进单根路径:它的 per-subtask
+//! 产出与确定性后处理跟通用路径完全一致,只差 scaffold 形状(基准路径没用
+//! 上)。**多屏不再收敛**(2026-07-17 修复 multiscreen-fanout-break item A):
+//! plan 的 subtask 若带 ≥2 个不同 `screen` 标签,`insert_screen_group_roots`
+//! 建 N 个顶层 root(每屏一个)。
+//!
+//! **屏组间并发(item D-lite,同日跟进)**:`effective_concurrency` =
+//! `min(clamp(request.concurrency), groups.len())`;>1 时阶段 3 走
+//! `concurrent::run_screen_groups_concurrent`(每屏一个 worker,`join_all`
+//! 驱动,组内仍是原 3 次重试梯;组间通过各自的 `BufferDocSink` 隔离,跑完后
+//! 按 plan 序 replay 进真实 sink),=1(单组 / 单屏 / append 模式)原样走本文件
+//! 未改动的顺序循环 —— 字节级回归锁。`agent_team_size` → `request.concurrency`
+//! 至此才真正对经典路径生效;`spawn_agents` 扇出(`spawn_concurrent.rs`)是另
+//! 一条独立消费方,不受此影响。
 
 use crate::append::apply_append_context_to_plan;
 use crate::cleanup::{descendant_count, finalize_design};
-use crate::model_profile::{resolve_model_profile, ModelTier};
+use crate::model_profile::resolve_model_profile;
 use crate::plan::{build_fallback_plan, OrchestratorPlan};
 use crate::plan_normalize::{normalize, NormInfo};
 use crate::plan_repair::parse_orchestrator_response;
 use crate::prompt::build_orchestrator_prompt;
-use crate::retry::is_non_retryable;
 use crate::scaffold::{build_scaffold_at, build_scaffold_reusing};
 use crate::screen_groups::group_subtasks_by_screen;
 use crate::subagent::{apply_command_with_reveal, reveal_now_millis, run_subtask_with_reveal_at};
@@ -149,13 +155,13 @@ impl Orchestrator {
                 .collect(),
         });
 
-        // The orchestrator runs a single sequential path. Multi-screen designs
-        // (formerly the concurrent branch) and dashboards (formerly a bespoke
-        // sidebar+main scaffold) flow through this same single-root sequential
-        // pipeline — they produced byte-identical per-subtask output, only
-        // differing in wall-clock parallelism / scaffold shape, neither of which
-        // the default + benchmarked path used. The `concurrency` field is still
-        // honored by the separate `spawn_agents` fan-out (`spawn_concurrent.rs`).
+        // Dashboards (formerly a bespoke sidebar+main scaffold) flow through
+        // the same single-root pipeline as any other single-screen plan —
+        // they produced byte-identical per-subtask output, only differing in
+        // scaffold shape. Multi-screen plans get N scaffold roots (item A)
+        // and, when `request.concurrency` allows it, run their screen groups
+        // genuinely CONCURRENTLY (item D-lite) — see `groups` / `effective_concurrency`
+        // below and the module doc.
         let planned_root_id = plan.root_frame.id.clone();
 
         // -- 进入"已动文档"区,全程 undo batch 包裹 --
@@ -173,12 +179,94 @@ impl Orchestrator {
             .map(|n| n.id_str().to_string())
             .collect();
 
-        let sequential_identity = if append_result.skip_root_insertion {
-            None
+        // Screen grouping (multiscreen-fanout-break fix, item A): a plan
+        // whose subtasks span ≥2 distinct `screen` labels gets one scaffold
+        // root PER GROUP instead of one shared root. Zero labels, or every
+        // subtask sharing the SAME one, both give `groups.len() <= 1` — the
+        // single-root path below runs byte-identical to today (regression
+        // lock). Multi-root is mutually exclusive with append mode (a
+        // continuation turn always targets ONE existing frame) and with the
+        // empty-canvas-reuse path (reuse only replaces ONE frame in place —
+        // see `insert_screen_group_roots`'s doc). `groups.len()` also feeds
+        // `effective_concurrency` below (item D-lite) — computed once here so
+        // both the scaffold branch and the phase-3 executor choice see the
+        // SAME grouping.
+        let groups = if append_result.skip_root_insertion {
+            Vec::new()
         } else {
-            crate::agent_identity::assign_agent_identities(1)
-                .into_iter()
-                .next()
+            group_subtasks_by_screen(&plan.subtasks)
+        };
+
+        // `effective_concurrency` only needs `request.concurrency` +
+        // `groups.len()` — computed here (before scaffold, not just before
+        // phase 3) so the scaffold step below can decide whether to hand
+        // `insert_screen_group_roots` ONE shared identity (still a single
+        // agent working through N screens sequentially) or N DISTINCT
+        // identities (genuine concurrent agents — three-piece visibility
+        // fix, 2026-07-17: distinct per-group colour/name is what lets the
+        // canvas show N cursors instead of one).
+        let effective_concurrency =
+            crate::concurrent::effective_concurrency(request.concurrency, groups.len());
+
+        // Single source of truth for agent identity (2026-07-17,
+        // dual-cursor-identity fix — see the module doc's "Identity" section):
+        // the orchestrator ONLY mints/tags its own identities when groups
+        // genuinely run CONCURRENTLY; the sequential path (single agent,
+        // whether single-root or multiple screen groups run one after
+        // another) tags NOTHING, so every reveal falls through to
+        // `agent_indicators::cursor_agent` — the ONE identity the host's
+        // transcript pump already confirms for the session. Before this fix
+        // the sequential path independently minted its own "Kiki" (seed-0)
+        // identity and tagged frames with it while the host separately
+        // confirmed a random transcript identity ("Fern") — two unrelated
+        // sources that `canvas_agent_cursor.rs`'s old confirmed-always-wins
+        // precedence silently papered over. Flipping that precedence
+        // (three-piece visibility fix) made the split visible as two
+        // cursors; the real fix is here, not reverting the precedence.
+        let group_identities: Vec<crate::agent_identity::AgentIdentity> = if groups.len() > 1
+            && effective_concurrency > 1
+        {
+            // Some callers confirm a `cursor_agent` BEFORE calling `run()` at
+            // all — the web streaming route announces + confirms a persona
+            // to the client immediately (the SSE transcript needs one before
+            // groups/concurrency is even known), well before this point. If
+            // we minted a fresh set here regardless, the primary group's
+            // badge would silently diverge from whatever persona the caller
+            // already told its client — the SAME split as the desktop bug,
+            // just from the opposite direction (the CALLER confirmed first,
+            // not the orchestrator). So: adopt whatever is ALREADY confirmed
+            // for OUR epoch as the primary identity instead of minting one,
+            // and only generate fresh identities for the other groups.
+            let already_confirmed = self.agent_indicator_epoch.and_then(|epoch| {
+                (op_editor_core::agent_indicators::active_epoch() == Some(epoch))
+                    .then(op_editor_core::agent_indicators::snapshot)
+                    .and_then(|snap| snap.cursor_agent)
+            });
+            let identities = match already_confirmed {
+                Some(tag) => crate::agent_identity::assign_agent_identities_with_primary(
+                    crate::agent_identity::AgentIdentity {
+                        color: tag.color,
+                        name: tag.name,
+                    },
+                    groups.len(),
+                ),
+                None => crate::agent_identity::assign_agent_identities(groups.len()),
+            };
+            // Confirm the FIRST (primary) group's identity as the canonical
+            // `cursor_agent` BEFORE any host-side pump gets a chance to mint
+            // an independent one — a no-op when it was already confirmed
+            // (the web case above), the FIRST confirmation otherwise (the
+            // desktop case, where nothing pre-exists at this point).
+            if let (Some(epoch), Some(primary)) = (self.agent_indicator_epoch, identities.first()) {
+                op_editor_core::agent_indicators::confirm_cursor_agent(
+                    epoch,
+                    &primary.color,
+                    &primary.name,
+                );
+            }
+            identities
+        } else {
+            Vec::new()
         };
 
         let (root_ids, scaffold_baselines): (Vec<String>, Vec<usize>) = if append_result
@@ -194,18 +282,6 @@ impl Orchestrator {
         } else {
             let effective_is_mobile = norm.is_mobile && !append_result.skip_status_bar;
 
-            // Screen grouping (multiscreen-fanout-break fix, item A): a plan
-            // whose subtasks span ≥2 distinct `screen` labels gets one
-            // scaffold root PER GROUP instead of one shared root. Zero
-            // labels, or every subtask sharing the SAME one, both give
-            // `groups.len() <= 1` — the single-root path below runs
-            // byte-identical to today (regression lock). Multi-root is
-            // mutually exclusive with the empty-canvas-reuse path (a truly
-            // blank canvas + a multi-screen-tagged plan is not a case any
-            // existing test exercises, and reuse only replaces ONE frame in
-            // place — see `insert_screen_group_roots`'s doc).
-            let groups = group_subtasks_by_screen(&plan.subtasks);
-
             if groups.len() > 1 {
                 match insert_screen_group_roots(
                     &mut plan,
@@ -214,7 +290,7 @@ impl Orchestrator {
                     sink,
                     &scaffold_root_ids_before,
                     self.agent_indicator_epoch,
-                    sequential_identity.as_ref(),
+                    &group_identities,
                 ) {
                     Ok((ids, baselines)) => {
                         on_progress(Progress::ScaffoldDone);
@@ -307,23 +383,18 @@ impl Orchestrator {
                     };
                     subtask.parent_frame_id = Some(parent);
                 }
-                if let (Some(epoch), Some(identity)) =
-                    (self.agent_indicator_epoch, sequential_identity.as_ref())
-                {
-                    op_editor_core::agent_indicators::add_frame(
-                        epoch,
-                        &rid,
-                        &identity.color,
-                        &identity.name,
-                    );
-                }
+                // No orchestrator-side frame tagging here — this is always
+                // the single-agent sequential path (single root), so the
+                // host's confirmed transcript identity (`cursor_agent`) is
+                // the sole source; see the `group_identities` doc above for
+                // why (dual-cursor-identity fix, 2026-07-17).
                 let baseline = descendant_count(sink.state(), &rid);
                 on_progress(Progress::ScaffoldDone);
                 (vec![rid], vec![baseline])
             }
         };
 
-        // -- 阶段 3:顺序子 agent(C3: 3-attempt tier-gated retry ladder) --
+        // -- 阶段 3:子 agent(C3: 3-attempt tier-gated retry ladder)--
         //
         // Port of `orchestrator-sub-agent.ts:128-206` (sequential path).
         //
@@ -336,175 +407,138 @@ impl Orchestrator {
         //                       && !abort.is_set() && !is_non_retryable(&err).
         // non_retryable is evaluated from attempt-1's error and cached
         // (matching TS semantics where `isNonRetryable` is computed once
-        // before the retry chain).
+        // before the retry chain). The ladder itself lives in
+        // `concurrent::run_subtask_retry_ladder` — shared by this sequential
+        // loop and every screen-group worker so parallelizing groups (item
+        // D-lite) can never drift from this retry semantics.
+        //
         // A partial result (node_count > 0) is never retried.
         // After 3 still-zero → zero_node_failure stop.
         let tier = resolve_model_profile(request.model.as_deref().unwrap_or("")).tier;
-        let mut outcomes: Vec<SubtaskOutcome> = Vec::new();
-        let mut aborted_mid = false;
-        let mut zero_node_failure = false;
-        // (subtask index, outcomes index) of every all-attempts-failed subtask,
-        // for the end-of-run salvage pass below.
-        let mut salvage: Vec<(usize, usize)> = Vec::new();
-        for (subtask_index, subtask) in plan.subtasks.iter().enumerate() {
-            if abort.is_set() {
-                aborted_mid = true;
-                break;
-            }
-            on_progress(Progress::SubtaskStarted {
-                id: subtask.id.clone(),
-                label: subtask.label.clone(),
-            });
+        // `effective_concurrency` was already computed above (before the
+        // scaffold step, so `group_identities` could see it too) — reused
+        // here unchanged, not recomputed.
 
-            // Attempt 1 — full complexity. SubtaskSkills fires via on_progress.
-            let outcome1 = run_subtask_with_reveal_at(
-                subtask,
+        let (mut outcomes, mut aborted_mid, mut zero_node_failure, salvage): (
+            Vec<SubtaskOutcome>,
+            bool,
+            bool,
+            Vec<(usize, usize)>,
+        ) = if effective_concurrency > 1 {
+            // Item D-lite: ≥2 screen groups AND the user's ⚡Nx setting
+            // allows it — run the groups genuinely CONCURRENTLY (never
+            // same-screen section parallelism; see the module doc for why
+            // that distinction matters against `aca0d3a0`'s data verdict).
+            let result = crate::concurrent::run_screen_groups_concurrent(
+                &groups,
                 &plan,
                 &request,
                 llm,
                 sink,
                 abort,
-                false,
-                false,
+                tier,
+                effective_concurrency,
                 self.agent_indicator_epoch,
-                reveal_now_millis(),
-                Some(&mut *on_progress),
+                on_progress,
             )
             .await;
-
-            // Evaluate non-retryable predicate once from attempt-1's error
-            // (faithful to TS: `isNonRetryable` is computed before the retry
-            // chain and reused for both the attempt-2 and attempt-3 guards).
-            let non_retryable = outcome1
-                .error
-                .as_deref()
-                .map(is_non_retryable)
-                .unwrap_or(false);
-
-            // Helper: is the current outcome a retryable failure?
-            let retryable = |o: &SubtaskOutcome| {
-                o.error.is_some() && o.node_count == 0 && !abort.is_set() && !non_retryable
-            };
-
-            // Attempt 2 — reduced_complexity iff Basic tier.
-            let outcome2 = if retryable(&outcome1) {
-                tracing::warn!(
-                    subtask = %subtask.id,
-                    error = outcome1.error.as_deref().unwrap_or(""),
-                    "subtask failed, retrying (attempt 2)"
-                );
-                on_progress(Progress::SubtaskRetry {
-                    id: subtask.id.clone(),
-                    attempt: 2,
-                    reason: outcome1
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "zero nodes generated".into()),
+            (
+                result.outcomes,
+                result.aborted_mid,
+                result.zero_node_failure,
+                result.salvage,
+            )
+        } else {
+            // Single group / single screen / append mode — the ORIGINAL
+            // sequential loop, unchanged in behavior (byte-identical
+            // regression lock), just calling the extracted retry ladder.
+            //
+            // Self-diagnostic (2026-07-17, sequential-execution root-cause
+            // hunt): when ≥2 screen groups exist but this branch still ran
+            // (i.e. `effective_concurrency == 1` despite `groups.len() > 1`),
+            // announce it — this is the dual of `ConcurrentGroupsStarted`. By
+            // `effective_concurrency`'s own contract this can only happen
+            // when `clamp_concurrency(request.concurrency) <= 1`, so the
+            // announced `requested_workers` value is diagnostic gold: `1`
+            // here proves the ⚡Nx picker's value never reached
+            // `DesignRequest.concurrency` for this turn; anything `> 1`
+            // would mean `effective_concurrency` itself has a bug.
+            if groups.len() > 1 {
+                on_progress(Progress::ScreenGroupsSequential {
+                    group_count: groups.len(),
+                    requested_workers: request.concurrency,
                 });
-                Some(
-                    run_subtask_with_reveal_at(
-                        subtask,
-                        &plan,
-                        &request,
-                        llm,
-                        sink,
-                        abort,
-                        tier == ModelTier::Basic,
-                        false,
-                        self.agent_indicator_epoch,
-                        reveal_now_millis(),
-                        None,
-                    )
-                    .await,
+            }
+            let mut outcomes: Vec<SubtaskOutcome> = Vec::new();
+            let mut aborted_mid = false;
+            let mut zero_node_failure = false;
+            // (subtask index, outcomes index) of every all-attempts-failed
+            // subtask, for the end-of-run salvage pass below.
+            let mut salvage: Vec<(usize, usize)> = Vec::new();
+            for (subtask_index, subtask) in plan.subtasks.iter().enumerate() {
+                if abort.is_set() {
+                    aborted_mid = true;
+                    break;
+                }
+                let outcome = crate::concurrent::run_subtask_retry_ladder(
+                    subtask,
+                    &plan,
+                    &request,
+                    llm,
+                    sink,
+                    abort,
+                    tier,
+                    self.agent_indicator_epoch,
+                    on_progress,
                 )
-            } else {
-                None
-            };
+                .await;
 
-            // Pick current best outcome after attempt 2.
-            let outcome_after2 = outcome2.as_ref().unwrap_or(&outcome1);
+                let zero = outcome.node_count == 0;
+                let node_count = outcome.node_count;
+                let err_msg = outcome.error.clone();
+                outcomes.push(outcome);
 
-            // Attempt 3 — minimal skills (last-ditch fallback).
-            let outcome3 = if retryable(outcome_after2) {
-                tracing::warn!(
-                    subtask = %subtask.id,
-                    error = outcome_after2.error.as_deref().unwrap_or(""),
-                    "subtask still empty after retry, falling back to minimal skills (attempt 3)"
-                );
-                on_progress(Progress::SubtaskRetry {
-                    id: subtask.id.clone(),
-                    attempt: 3,
-                    reason: outcome_after2
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "zero nodes generated".into()),
-                });
-                Some(
-                    run_subtask_with_reveal_at(
-                        subtask,
-                        &plan,
-                        &request,
-                        llm,
-                        sink,
-                        abort,
-                        true,
-                        true,
-                        self.agent_indicator_epoch,
-                        reveal_now_millis(),
-                        None,
-                    )
-                    .await,
-                )
-            } else {
-                None
-            };
-
-            // Final outcome: last attempt that ran.
-            let outcome = outcome3.unwrap_or_else(|| outcome2.unwrap_or(outcome1));
-
-            let zero = outcome.node_count == 0;
-            let node_count = outcome.node_count;
-            let err_msg = outcome.error.clone();
-            outcomes.push(outcome);
-
-            // abort 在 run_subtask 期间被置位 —— 优先于零节点判定归
-            // abort 路径(否则 mid-stream abort 会被误判为错误路径,
-            // 错误地移除 scaffold root 并返回 NoContent 而非 Aborted)。
-            if abort.is_set() {
-                aborted_mid = true;
+                // abort 在 run_subtask 期间被置位 —— 优先于零节点判定归
+                // abort 路径(否则 mid-stream abort 会被误判为错误路径,
+                // 错误地移除 scaffold root 并返回 NoContent 而非 Aborted)。
+                if abort.is_set() {
+                    aborted_mid = true;
+                    if zero {
+                        on_progress(Progress::SubtaskFailed {
+                            id: subtask.id.clone(),
+                            error: err_msg.unwrap_or_else(|| "aborted".into()),
+                        });
+                    } else {
+                        on_progress(Progress::SubtaskDone {
+                            id: subtask.id.clone(),
+                            node_count,
+                        });
+                    }
+                    break;
+                }
                 if zero {
+                    // 零节点失败(非 abort,全部 3 次皆失败)。**不 break** ——
+                    // 一个 section 失败不该放弃后续所有 subtask。各 subtask
+                    // 独立 InsertSubtree 到 root、互不依赖;break 会把失败点
+                    // 之后的必要内容(bottom nav 等)全丢掉(用户报的"管线丢
+                    // 内容")。跳过这个、继续后面的;`zero_node_failure` 仍标记
+                    // "至少一个失败",最终若**全部**零内容(zero_content)才删
+                    // scaffold root。
                     on_progress(Progress::SubtaskFailed {
                         id: subtask.id.clone(),
-                        error: err_msg.unwrap_or_else(|| "aborted".into()),
+                        error: err_msg.unwrap_or_default(),
                     });
-                } else {
-                    on_progress(Progress::SubtaskDone {
-                        id: subtask.id.clone(),
-                        node_count,
-                    });
+                    zero_node_failure = true;
+                    salvage.push((subtask_index, outcomes.len() - 1));
+                    continue;
                 }
-                break;
-            }
-            if zero {
-                // 零节点失败(非 abort,全部 3 次皆失败)。**不 break** —— 一个
-                // section 失败不该放弃后续所有 subtask。各 subtask 独立
-                // InsertSubtree 到 root、互不依赖;break 会把失败点之后的必要
-                // 内容(bottom nav 等)全丢掉(用户报的"管线丢内容")。跳过这个、
-                // 继续后面的;`zero_node_failure` 仍标记"至少一个失败",最终若
-                // **全部**零内容(zero_content)才删 scaffold root。
-                on_progress(Progress::SubtaskFailed {
+                on_progress(Progress::SubtaskDone {
                     id: subtask.id.clone(),
-                    error: err_msg.unwrap_or_default(),
+                    node_count,
                 });
-                zero_node_failure = true;
-                salvage.push((subtask_index, outcomes.len() - 1));
-                continue;
             }
-            on_progress(Progress::SubtaskDone {
-                id: subtask.id.clone(),
-                node_count,
-            });
-        }
+            (outcomes, aborted_mid, zero_node_failure, salvage)
+        };
 
         // -- 阶段 4.4:失败抢救轮 --
         // 瞬时故障(供应商网络抖动、偶发空回复)会把一个 subtask 的 3 次
@@ -512,6 +546,16 @@ impl Orchestrator {
         // provider" → 侧栏子任务整段消失,设计**无侧栏出厂**且无可见信号)。
         // 其余 subtask 跑完后隔了几十秒再给每个失败者最后一次完整尝试 ——
         // 瞬时故障此时多已恢复;仍失败的维持 SubtaskFailed,不再重试。
+        //
+        // 保底策略(2026-07-17 修订,失败-subtask 补救方案自动层第一步):
+        // 此前这里复用 attempt-1 的设置(reduced_complexity=false,
+        // minimal_skills=false)——但 attempt 1-3 已经把全/降/minimal 三档都
+        // 试过仍失败,原样重复 attempt-1 是信息量最低的选择:对瞬时故障(网络
+        // 抖动、供应商偶发空回复)没有差别,但对确定性失败(self-check 拒绝、
+        // 解析失败)必然原样重现。改成 attempt-3 的 minimal_skills 设置——
+        // 缩小技能集后的 script-gen 协议是"保底"路径,给瞬时故障同样的恢复
+        // 窗口,同时让 CORRECTNESS 类失败更可能至少拿到非零内容而不是重复
+        // 落空。预算上限不变:仍是每 subtask 最多 1 次 salvage 尝试。
         if !salvage.is_empty() && !abort.is_set() {
             for (subtask_index, outcome_index) in salvage {
                 if abort.is_set() {
@@ -531,8 +575,8 @@ impl Orchestrator {
                     llm,
                     sink,
                     abort,
-                    false,
-                    false,
+                    true,
+                    true,
                     self.agent_indicator_epoch,
                     reveal_now_millis(),
                     None,

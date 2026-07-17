@@ -465,11 +465,19 @@ pub(crate) fn cursor_sprites_with_idle_anchor(
     // Group placements per owning agent; key `None` = untagged fallback.
     let mut groups: AgentGroups = AgentGroups::new();
     for (tag, id, wp) in tagged {
-        // The transcript-confirmed run identity is authoritative for this
-        // single-agent epoch. Node ownership can arrive from the orchestrator
-        // under an earlier provisional persona; preferring it would split one
-        // turn into two differently named cursors.
-        let tag = confirmed.cloned().or(tag);
+        // Prefer the waypoint's OWN ownership tag; `confirmed` (the
+        // transcript-published identity) is only a FALLBACK for untagged
+        // waypoints. This used to run the other way (confirmed always won)
+        // for a single-agent run where node ownership could arrive under an
+        // earlier provisional persona before the transcript's real name was
+        // confirmed — overriding kept that from splitting into two
+        // differently-named cursors. That single-agent case still resolves
+        // correctly here (its nodes are untagged, so they still fall
+        // through to `confirmed`); flipping the precedence is what lets a
+        // genuinely multi-agent run (D-lite's screen-group concurrency,
+        // 2026-07-17) show N distinct cursors instead of every group's
+        // waypoints collapsing onto the one confirmed name.
+        let tag = tag.or_else(|| confirmed.cloned());
         let key = tag.as_ref().map(|t| (t.color.clone(), t.name.clone()));
         groups
             .entry(key)

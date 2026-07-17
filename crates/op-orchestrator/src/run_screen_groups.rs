@@ -5,6 +5,7 @@
 //! private-parent-item access works in this codebase's split-file
 //! convention (e.g. `op-host-native/src/preview/app_mode.rs`).
 
+use crate::agent_identity::AgentIdentity;
 use crate::plan::OrchestratorPlan;
 use crate::scaffold::build_screen_group_scaffold;
 use crate::screen_groups::ScreenGroup;
@@ -26,6 +27,16 @@ use op_editor_core::PenNodeExt;
 /// single-root path uses); each subsequent group's root lands
 /// `SCREEN_GROUP_GAP` to the right of the previous one.
 ///
+/// `identities` is either EMPTY (the sequential path — this function tags
+/// NO frame at all, so every reveal falls through to the host-confirmed
+/// `cursor_agent`, the single source of truth for a single-agent run — see
+/// `run.rs`'s `group_identities` doc for why, dual-cursor-identity fix
+/// 2026-07-17) or exactly `groups.len()` DISTINCT identities (a genuinely
+/// concurrent run, D-lite's three-piece visibility fix: N different root
+/// badges is what lets the canvas resolve N different agent cursors). Any
+/// other length tags nothing — the caller (`run.rs`) is the only caller and
+/// always passes one of these two shapes.
+///
 /// Returns `Err` on scaffold-template bugs or a remap-count mismatch — the
 /// caller rolls back + ends the undo batch on either, same as every other
 /// scaffold-insert failure path in `run()`.
@@ -36,7 +47,7 @@ pub(crate) fn insert_screen_group_roots(
     sink: &mut dyn DocSink,
     scaffold_root_ids_before: &[String],
     agent_indicator_epoch: Option<u64>,
-    sequential_identity: Option<&crate::agent_identity::AgentIdentity>,
+    identities: &[AgentIdentity],
 ) -> Result<(Vec<String>, Vec<usize>), String> {
     let (insert_x, insert_y) =
         super::next_root_insert_position(sink.state(), plan.root_frame.width);
@@ -77,13 +88,19 @@ pub(crate) fn insert_screen_group_roots(
         }
     }
 
-    // One shared identity/color for every group's root — still ONE agent
-    // working sequentially through N screens, not N concurrent agents (which
-    // is what distinct per-root colors implied in the deleted concurrent
-    // path).
-    if let (Some(epoch), Some(identity)) = (agent_indicator_epoch, sequential_identity) {
-        for id in &new_root_ids {
-            op_editor_core::agent_indicators::add_frame(epoch, id, &identity.color, &identity.name);
+    // Only the genuinely-concurrent shape (`identities.len() ==
+    // new_root_ids.len()`) tags anything — an empty slice (the sequential
+    // path) deliberately leaves every root untagged; see this function's doc.
+    if let Some(epoch) = agent_indicator_epoch {
+        if identities.len() == new_root_ids.len() {
+            for (id, identity) in new_root_ids.iter().zip(identities.iter()) {
+                op_editor_core::agent_indicators::add_frame(
+                    epoch,
+                    id,
+                    &identity.color,
+                    &identity.name,
+                );
+            }
         }
     }
 

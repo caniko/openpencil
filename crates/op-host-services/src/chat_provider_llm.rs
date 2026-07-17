@@ -227,4 +227,119 @@ mod tests {
         let unknown = call_with_model(None);
         assert_eq!(unknown.thinking, ThinkingMode::Disabled);
     }
+
+    // ── Provider-shape agnosticism ───────────────────────────────────────
+    //
+    // The manual per-subtask retry (failed-subtask remediation, phase 2)
+    // reuses `ChatProviderLlmClient` with WHATEVER `ChatProvider` the user
+    // currently has selected — a CLI subprocess agent (Claude Code /
+    // Copilot / Gemini via `SubprocessProvider`) exactly as often as a
+    // builtin API-key provider. `call()` above has no branch on the
+    // concrete provider type anywhere — it only calls the `ChatProvider`
+    // trait method — so these two tests prove that structurally, with two
+    // stub providers shaped like the two real families instead of relying
+    // on reading the source.
+
+    /// Shaped like `SubprocessProvider` (CLI agents): plain text deltas,
+    /// no thinking stream, `Done` ends the turn.
+    struct SubprocessStyleProvider;
+    impl ChatProvider for SubprocessStyleProvider {
+        fn provider_label(&self) -> &str {
+            "subprocess-style"
+        }
+        fn send(&self, _request: ChatRequest) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
+            Box::new(
+                vec![
+                    ChatDelta::TextDelta("I(null, ".into()),
+                    ChatDelta::TextDelta("{\"type\":\"frame\"});".into()),
+                    ChatDelta::Done {
+                        stop_reason: op_ai::chat_provider::StopReason::EndTurn,
+                    },
+                ]
+                .into_iter(),
+            )
+        }
+    }
+
+    /// Shaped like a builtin reasoning-model HTTP provider: a `Thinking`
+    /// stream precedes the text — the adapter must forward `Thinking` as
+    /// `LlmChunk::Thinking` (not drop or misfile it as text) exactly as it
+    /// does for the subprocess shape's plain text.
+    struct ReasoningStyleProvider;
+    impl ChatProvider for ReasoningStyleProvider {
+        fn provider_label(&self) -> &str {
+            "reasoning-style"
+        }
+        fn send(&self, _request: ChatRequest) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
+            Box::new(
+                vec![
+                    ChatDelta::Thinking("considering the layout...".into()),
+                    ChatDelta::TextDelta("I(null, {\"type\":\"frame\"});".into()),
+                    ChatDelta::Done {
+                        stop_reason: op_ai::chat_provider::StopReason::EndTurn,
+                    },
+                ]
+                .into_iter(),
+            )
+        }
+    }
+
+    fn collect_chunks(client: ChatProviderLlmClient) -> Vec<Result<LlmChunk, LlmError>> {
+        let req = CallRequest {
+            system_prompt: "sys".into(),
+            user_prompt: "user".into(),
+            model: None,
+            provider: None,
+            timeout: Duration::from_secs(5),
+            abort: AbortFlag::new(),
+            no_text_timeout: None,
+            first_text_timeout: None,
+        };
+        futures::executor::block_on(async {
+            use futures::StreamExt;
+            client.call(req).collect().await
+        })
+    }
+
+    #[test]
+    fn works_for_a_subprocess_style_cli_provider() {
+        let chunks = collect_chunks(ChatProviderLlmClient::new(Arc::new(
+            SubprocessStyleProvider,
+        )));
+        let text: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                Ok(LlmChunk::Text(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "I(null, {\"type\":\"frame\"});");
+        assert!(
+            chunks
+                .iter()
+                .all(|c| !matches!(c, Ok(LlmChunk::Thinking(_)))),
+            "the subprocess-style provider emits no thinking: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn works_for_a_reasoning_style_builtin_http_provider() {
+        let chunks = collect_chunks(ChatProviderLlmClient::new(Arc::new(ReasoningStyleProvider)));
+        let text: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                Ok(LlmChunk::Text(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let thinking: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                Ok(LlmChunk::Thinking(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "I(null, {\"type\":\"frame\"});");
+        assert_eq!(thinking, "considering the layout...");
+    }
 }

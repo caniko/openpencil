@@ -180,18 +180,58 @@ fn provider_endpoint_rejects_queries_and_fragments() {
     }
 }
 
-fn collect_stalled_provider_turn(max_retries: u32) -> (Vec<ChatDelta>, Duration, String) {
+/// Drive one stalled-provider turn and report which BEHAVIOR happened —
+/// specifically, how many TCP connections the client actually attempted —
+/// rather than how long the whole call took.
+///
+/// The original version of this helper measured wall-clock `elapsed` and
+/// asserted an upper bound (`< 1s`) to infer "no retry happened" (a real
+/// retry sleeps a >=1s exponential backoff — see `backoff_delay`). Under a
+/// loaded machine (several `cargo test` processes racing for CPU), the whole
+/// call — including the CORRECT, no-retry path — can occasionally cross
+/// that bound purely from scheduling delay, failing a test whose underlying
+/// behavior was fine (confirmed: reproducibly green under
+/// `--test-threads=1`, flaky only under full parallel load). `.collect()`
+/// only returns once the client has synchronously finished every attempt it
+/// will EVER make (a timeout aborts inline; a retry sleeps its backoff
+/// inline before opening the next connection), so by the time it returns,
+/// whether a second connection was attempted is already decided — counting
+/// accepted connections is a discrete, load-independent stand-in for "did a
+/// retry fire" that never depends on how fast the CPU got there.
+fn collect_stalled_provider_turn(max_retries: u32) -> (Vec<ChatDelta>, Vec<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled server");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking stalled listener");
     let addr = listener.local_addr().expect("stalled server address");
-    let (accepted_tx, accepted_rx) = std_mpsc::channel();
-    let (release_tx, release_rx) = std_mpsc::channel();
+    let accepted: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let accepted_for_server = Arc::clone(&accepted);
+    let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
+
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept stalled request");
-        let request = read_http_request(&mut stream);
-        accepted_tx.send(request).expect("record stalled request");
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
-        // Intentionally send no response; keep the accepted socket open until
-        // the client-side request deadline has fired.
+        // Every accepted socket is held here (never responded to) until the
+        // thread exits — accept in a LOOP (not once) so a client retry (a
+        // second connection attempt) is observable at all; the original
+        // single-`accept()` design could not distinguish "no retry" from
+        // "no second accept call existed to observe it with".
+        let mut held = Vec::new();
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).ok();
+                    let request = read_http_request(&mut stream);
+                    accepted_for_server.lock().unwrap().push(request);
+                    held.push(stream);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(_) => break,
+            }
+        }
     });
 
     let mut provider = ConfiguredBuiltinProvider::from_builtin_agent(&builtin_config(
@@ -201,40 +241,48 @@ fn collect_stalled_provider_turn(max_retries: u32) -> (Vec<ChatDelta>, Duration,
     .expect("ready stalled provider");
     provider.http_client = Some(
         reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(50))
-            .timeout(Duration::from_millis(150))
+            .connect_timeout(Duration::from_millis(30))
+            .timeout(Duration::from_millis(80))
             .build()
             .expect("short-timeout test client"),
     );
     provider.max_retries = max_retries;
     provider.min_gap = Duration::ZERO;
 
-    let started = std::time::Instant::now();
     let deltas: Vec<_> = provider
         .send(ChatRequest {
             user_message: "hello".into(),
             ..Default::default()
         })
         .collect();
-    let elapsed = started.elapsed();
-    let _ = release_tx.send(());
+
+    // Pure TCP/poll-loop settle slop: lets the nonblocking accept loop
+    // (2ms poll cadence) catch up to a connection the kernel may have
+    // already queued. This is NOT a race against the retry decision — that
+    // finished synchronously inside `.collect()` above — so, unlike the old
+    // `elapsed < 1s` assertion, widening or narrowing this sleep can never
+    // flip which outcome the test observes, only how promptly it observes
+    // the already-final one.
+    std::thread::sleep(Duration::from_millis(50));
+    let _ = stop_tx.send(());
     server.join().expect("stalled server exits");
-    let request = accepted_rx.recv().expect("stalled request captured");
-    (deltas, elapsed, request)
+    let requests = accepted.lock().unwrap().clone();
+    (deltas, requests)
 }
 
 #[test]
 fn stalled_provider_request_times_out_and_aborts_without_retrying() {
-    let (deltas, elapsed, request) = collect_stalled_provider_turn(0);
+    let (deltas, accepted) = collect_stalled_provider_turn(0);
 
-    assert!(request.starts_with("POST /v1/chat/completions "));
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "zero-retry short timeout took {elapsed:?}"
+    assert_eq!(
+        accepted.len(),
+        1,
+        "zero retry budget must make exactly one connection attempt: {accepted:?}"
     );
+    assert!(accepted[0].starts_with("POST /v1/chat/completions "));
     assert!(
         matches!(deltas.first(), Some(ChatDelta::Error(message)) if message.contains("timed out") && message.contains("/v1/chat/completions")),
-        "expected timeout-context provider error, got {deltas:?} after {elapsed:?}"
+        "expected timeout-context provider error, got {deltas:?}"
     );
     assert!(
         matches!(
@@ -250,11 +298,13 @@ fn stalled_provider_request_times_out_and_aborts_without_retrying() {
 
 #[test]
 fn request_timeout_does_not_consume_available_retry_budget() {
-    let (deltas, elapsed, _) = collect_stalled_provider_turn(3);
+    let (deltas, accepted) = collect_stalled_provider_turn(3);
 
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "timeouts must abort before retry backoff, took {elapsed:?}"
+    assert_eq!(
+        accepted.len(),
+        1,
+        "a client-side timeout must abort immediately without spending ANY of the \
+         3-retry budget — a retried (second) connection attempt would show up here: {accepted:?}"
     );
     assert!(
         matches!(deltas.as_slice(), [ChatDelta::Error(message), ChatDelta::Done { stop_reason: StopReason::Aborted }] if message.contains("timed out")),
@@ -336,6 +386,61 @@ fn provider_does_not_follow_redirects_or_echo_upstream_error_bodies() {
     assert!(error.contains("302"), "unexpected error: {error}");
     assert!(!error.contains("sk-test"), "credential leaked: {error}");
     assert!(!error.contains("echoed credential"), "body leaked: {error}");
+}
+
+#[test]
+fn exhausted_rate_limit_error_names_http_429_for_the_non_retryable_classifier() {
+    // Regression lock for a real bug: the prior wording "...(429)..." never
+    // contained the literal substring `op_orchestrator::retry::is_non_retryable`
+    // matches on ("http 429"), so a genuinely exhausted rate limit from this
+    // builtin-http path was misclassified as retryable — burning two more
+    // full orchestrator attempts before the failure ladder gave up. This test
+    // does not import `is_non_retryable` (op-host-services -> op-orchestrator
+    // is the wrong direction for a private fn anyway); it locks the actual
+    // production error TEXT against the classifier's documented contract.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rate-limited server");
+    let addr = listener.local_addr().expect("rate-limited server address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept rate-limited request");
+        let _ = read_http_request(&mut stream);
+        let body = r#"{"error":"rate limited"}"#;
+        let response = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let mut provider = ConfiguredBuiltinProvider::from_builtin_agent(&builtin_config(
+        BuiltinAgentKind::OpenAiCompat,
+        format!("http://{addr}/v1/"),
+    ))
+    .expect("ready rate-limited provider");
+    // Zero retry budget so the loop hits the exhausted branch on its first
+    // attempt without sleeping through real backoff delays.
+    provider.max_retries = 0;
+    provider.min_gap = Duration::ZERO;
+
+    let deltas: Vec<_> = provider
+        .send(ChatRequest {
+            user_message: "hello".into(),
+            ..Default::default()
+        })
+        .collect();
+    server.join().expect("rate-limited server exits");
+
+    let error = deltas
+        .iter()
+        .find_map(|delta| match delta {
+            ChatDelta::Error(message) => Some(message.as_str()),
+            _ => None,
+        })
+        .expect("exhausted 429 must surface a provider error");
+    assert!(
+        error.to_lowercase().contains("http 429"),
+        "exhausted-429 message must contain the literal substring \"http 429\" \
+         (case-insensitive) so is_non_retryable classifies it correctly: {error}"
+    );
 }
 
 #[test]

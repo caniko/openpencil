@@ -461,8 +461,16 @@ pub(crate) async fn send_with_backoff(
                     continue;
                 }
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    // Must contain the literal substring "http 429" (case-
+                    // insensitively) — `op_orchestrator::retry::is_non_retryable`
+                    // pattern-matches on it to stop the subtask retry ladder
+                    // at attempt 1 instead of burning two more full LLM calls
+                    // on a rate limit that will still be in effect seconds
+                    // later. The prior wording "(429)" (no "http") silently
+                    // missed that classifier — a genuinely exhausted 429 was
+                    // misread as retryable and got attempts 2/3 anyway.
                     return Err(format!(
-                        "The model provider is rate-limiting this account (429) and the run could not ride it out after {max_retries} retries. Wait a moment, then send the prompt again to continue. ({label})"
+                        "The model provider is rate-limiting this account (HTTP 429) and the run could not ride it out after {max_retries} retries. Wait a moment, then send the prompt again to continue. ({label})"
                     ));
                 }
                 // Provider error bodies are untrusted and can echo request

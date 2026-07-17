@@ -665,6 +665,16 @@ fn progress_label(p: &Progress) -> String {
         Progress::SubtaskNodes { id, nodes_so_far } => {
             format!("• Subtask `{id}` — {nodes_so_far} node(s) so far")
         }
+        Progress::ConcurrentGroupsStarted {
+            group_count,
+            workers,
+        } => format!("• {group_count} screen groups · {workers} workers"),
+        Progress::ScreenGroupsSequential {
+            group_count,
+            requested_workers,
+        } => format!(
+            "• {group_count} screen groups · sequential (parallel setting: {requested_workers})"
+        ),
         Progress::CleanupDone => "• Cleanup done".into(),
         Progress::ValidationStarted => "• Validation started".into(),
         Progress::ValidationPreCheckDone { applied, .. } => {

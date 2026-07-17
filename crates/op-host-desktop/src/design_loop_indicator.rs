@@ -87,12 +87,27 @@ pub(crate) fn collect_top_level_frame_ids(state: &EditorState) -> HashSet<String
 
 /// Register any Frame nodes that appeared since the turn started.
 /// Called every pump while the chat session is still alive.
+///
+/// Uses `add_frame_if_absent`, not `add_frame`: the classic Orchestrator's
+/// screen-group scaffold (D-lite's inter-group concurrency) may already have
+/// tagged a fresh root with its OWN per-group identity — distinct
+/// colour/name per screen — before this pump next observes it. Blindly
+/// overwriting with this driver's single identity every frame would
+/// collapse N concurrent agents' badges back down to one (the "single
+/// cursor" visibility bug this pump was implicated in, 2026-07-17). For the
+/// ordinary single-agent turn this is behavior-identical to `add_frame`:
+/// the frame is untagged the first time this driver sees it either way.
 pub(crate) fn register_new_frames(indicator: &DesignLoopIndicator, state: &EditorState) {
     for node in state.active_children() {
         if let PenNode::Frame(_) = node {
             let id = node.id_str();
             if !indicator.initial_frame_ids.contains(id) {
-                agent_indicators::add_frame(indicator.epoch, id, &indicator.color, &indicator.name);
+                agent_indicators::add_frame_if_absent(
+                    indicator.epoch,
+                    id,
+                    &indicator.color,
+                    &indicator.name,
+                );
             }
         }
     }
@@ -252,6 +267,18 @@ pub(super) fn ensure_design_session_transcript_identity(
     let (name, color) =
         if let (Some(name), Some(color)) = (&message.agent_name, &message.agent_color) {
             (name.clone(), color.clone())
+        } else if let Some(tag) = agent_indicators::snapshot().cursor_agent {
+            // Adopt whatever identity is ALREADY confirmed for this run
+            // instead of minting an independent one (dual-cursor-identity
+            // fix, 2026-07-17). The classic Orchestrator's D-lite concurrent
+            // screen-group path confirms its primary group's identity
+            // before this pump ever runs (see `run.rs`'s `group_identities`
+            // doc) — adopting it here is what keeps the transcript speaker
+            // matching one of the visible cursors instead of a third,
+            // unrelated persona picked by this function's own random seed.
+            message.agent_name = Some(tag.name.clone());
+            message.agent_color = Some(tag.color.clone());
+            (tag.name, tag.color)
         } else {
             let identity = assign_agent_identities_seeded(1, identity_seed())
                 .into_iter()
@@ -560,6 +587,52 @@ mod tests {
         );
     }
 
+    /// Dual-cursor-identity fix (2026-07-17): when the orchestrator's D-lite
+    /// concurrent screen-group path has ALREADY confirmed a `cursor_agent`
+    /// (its primary group's identity) before this pump ever runs, the
+    /// transcript must ADOPT that identity rather than minting an
+    /// independent random one — otherwise the chat bubble shows a THIRD
+    /// persona unrelated to any of the visible canvas cursors.
+    #[test]
+    fn design_session_indicator_adopts_an_already_confirmed_identity_instead_of_minting_one() {
+        let _guard = lock_agent_indicators();
+        agent_indicators::clear();
+        let mut state = make_state();
+        let mut message = op_editor_core::ChatMessage::assistant_streaming();
+        message.activities.push(op_editor_core::ChatActivity {
+            id: "content".into(),
+            title: "Build content".into(),
+            detail: None,
+            status: op_editor_core::ChatActivityStatus::Running,
+            content_offset: None,
+        });
+        state.chat.messages.push(message);
+        let (session, epoch) = design_session_with_epoch();
+        // The orchestrator's concurrent phase already confirmed its primary
+        // group's identity before this pump runs.
+        agent_indicators::confirm_cursor_agent(epoch, "#6C5CE7", "Pixel");
+        let current = Some(session);
+        let mut indicator: Option<DesignLoopIndicator> = None;
+
+        pump_design_session_indicator(&mut indicator, &current, &mut state, None);
+
+        let transcript = state.chat.messages.last().expect("streaming message");
+        assert_eq!(
+            transcript.agent_name.as_deref(),
+            Some("Pixel"),
+            "the transcript must adopt the already-confirmed identity, not mint a new one"
+        );
+        assert_eq!(transcript.agent_color.as_deref(), Some("#6C5CE7"));
+        // Adopting must not disturb the already-confirmed cursor_agent.
+        assert_eq!(
+            agent_indicators::snapshot().cursor_agent,
+            Some(agent_indicators::AgentTag {
+                color: "#6C5CE7".into(),
+                name: "Pixel".into(),
+            })
+        );
+    }
+
     #[test]
     fn design_session_indicator_teardown_clears_local_handle_only() {
         let _guard = lock_agent_indicators();
@@ -614,5 +687,72 @@ mod tests {
         pump_design_session_indicator(&mut design_indicator, &current_design, &mut state, None);
         assert!(design_indicator.is_some());
         assert_eq!(design_indicator.as_ref().unwrap().epoch, epoch);
+    }
+
+    /// D-lite three-piece visibility fix (2026-07-17): a screen-group root
+    /// the orchestrator ALREADY tagged with its OWN per-group identity must
+    /// keep that tag across every later pump — `register_new_frames` must
+    /// never clobber it back down to this driver's single identity, or N
+    /// concurrent agents' distinct badges/cursors collapse to one.
+    #[test]
+    fn register_new_frames_does_not_clobber_an_already_tagged_frame() {
+        let _guard = lock_agent_indicators();
+        agent_indicators::clear();
+        let epoch = agent_indicators::begin();
+        // Simulate the orchestrator having already tagged a screen-group
+        // root with a DIFFERENT identity than this driver's own, before
+        // this pump ever sees the frame.
+        agent_indicators::add_frame(epoch, "frame-1", "#5B8DEF", "Pixel");
+        let indicator = DesignLoopIndicator {
+            epoch,
+            color: "#FF6B6B".to_string(),
+            name: "Kiki".to_string(),
+            initial_frame_ids: HashSet::new(),
+        };
+        let mut state = make_state();
+        state.active_children_mut().push(frame_node("frame-1"));
+
+        register_new_frames(&indicator, &state);
+
+        let snap = agent_indicators::snapshot();
+        assert_eq!(
+            snap.frames.get("frame-1"),
+            Some(&agent_indicators::AgentTag {
+                color: "#5B8DEF".to_string(),
+                name: "Pixel".to_string(),
+            }),
+            "an already-tagged frame must keep its own identity, not the driver's"
+        );
+        agent_indicators::end_if_epoch(epoch);
+    }
+
+    /// The ordinary single-agent case is unaffected: a frame this driver
+    /// sees for the FIRST time (nothing tagged it yet) still gets tagged
+    /// with the driver's own identity, exactly as `add_frame` always did.
+    #[test]
+    fn register_new_frames_still_tags_a_fresh_untagged_frame() {
+        let _guard = lock_agent_indicators();
+        agent_indicators::clear();
+        let epoch = agent_indicators::begin();
+        let indicator = DesignLoopIndicator {
+            epoch,
+            color: "#FF6B6B".to_string(),
+            name: "Kiki".to_string(),
+            initial_frame_ids: HashSet::new(),
+        };
+        let mut state = make_state();
+        state.active_children_mut().push(frame_node("frame-1"));
+
+        register_new_frames(&indicator, &state);
+
+        let snap = agent_indicators::snapshot();
+        assert_eq!(
+            snap.frames.get("frame-1"),
+            Some(&agent_indicators::AgentTag {
+                color: "#FF6B6B".to_string(),
+                name: "Kiki".to_string(),
+            })
+        );
+        agent_indicators::end_if_epoch(epoch);
     }
 }
