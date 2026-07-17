@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "내장 제공자",
         "settings.agents.builtinSubtitle" => "API 키를 직접 구성 — CLI 도구가 필요 없습니다.",
         "settings.agents.builtinEmpty" => "구성된 내장 제공자가 없습니다.",
+        "settings.agents.syncError" => "서버 동기화 실패:",
         "settings.agents.addProvider" => "+ 제공자 추가",
         "settings.agents.acp" => "ACP 에이전트",
         "settings.agents.acpSubtitle" => "외부 ACP 호환 에이전트를 연결합니다.",

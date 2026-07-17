@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Yerleşik sağlayıcılar",
         "settings.agents.builtinSubtitle" => "API anahtarlarını doğrudan yapılandırın — CLI araçlarına gerek yok.",
         "settings.agents.builtinEmpty" => "Yapılandırılmış yerleşik sağlayıcı yok.",
+        "settings.agents.syncError" => "Sunucu eşitlemesi başarısız:",
         "settings.agents.addProvider" => "+ Sağlayıcı ekle",
         "settings.agents.acp" => "ACP Aracısı",
         "settings.agents.acpSubtitle" => "Harici ACP uyumlu aracıları bağlayın.",

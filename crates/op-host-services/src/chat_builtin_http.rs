@@ -74,9 +74,14 @@ pub struct ConfiguredBuiltinProvider {
     http_client: Option<reqwest::Client>,
     max_retries: u32,
     min_gap: Duration,
+    /// How this provider's endpoint may be dialed. Browser-originated
+    /// credentials get `PublicOnly` (connect-time DNS screening + pinning);
+    /// operator-owned daemon settings stay `Trusted`.
+    dial_policy: crate::provider_dial::EndpointDialPolicy,
 }
 
 impl ConfiguredBuiltinProvider {
+    /// Build a provider from operator-owned (trusted) configuration.
     pub fn from_builtin_agent(config: &BuiltinAgentConfig) -> Option<Self> {
         let configured_base = if config.base_url.trim().is_empty() {
             config.kind.default_base_url()
@@ -116,7 +121,33 @@ impl ConfiguredBuiltinProvider {
             http_client,
             max_retries: BUILTIN_HTTP_MAX_RETRIES,
             min_gap: builtin_http_min_gap(),
+            dial_policy: crate::provider_dial::EndpointDialPolicy::Trusted,
         })
+    }
+
+    /// Build a provider from a browser-supplied credential. The endpoint is
+    /// dialed `PublicOnly` (connect-time DNS screening + address pinning)
+    /// unless the operator explicitly allowlisted it.
+    pub fn from_builtin_agent_for_web(config: &BuiltinAgentConfig) -> Option<Self> {
+        let mut provider = Self::from_builtin_agent(config)?;
+        let allowlist = std::env::var(crate::web_credentials::WEB_AI_ENDPOINT_ALLOWLIST_ENV).ok();
+        provider.dial_policy =
+            crate::provider_dial::web_dial_policy_for(&provider.base_url, allowlist.as_deref());
+        Some(provider)
+    }
+
+    /// Per-request client honoring this provider's dial policy. `Trusted`
+    /// reuses the eagerly-built client; `PublicOnly` resolves + pins.
+    async fn dial_client(&self, url: &str) -> Result<reqwest::Client, String> {
+        match self.dial_policy {
+            crate::provider_dial::EndpointDialPolicy::Trusted => self
+                .http_client
+                .clone()
+                .ok_or_else(|| "Provider HTTP client is unavailable".to_string()),
+            crate::provider_dial::EndpointDialPolicy::PublicOnly => {
+                crate::provider_dial::client_for(self.dial_policy, url).await
+            }
+        }
     }
 
     /// Enable the tool-executing agent loop for this provider's turns.
@@ -250,6 +281,7 @@ impl ChatProvider for ConfiguredBuiltinProvider {
                     },
                     finalize_on_exit: provider.finalize_on_exit,
                     disable_thinking,
+                    dial_policy: provider.dial_policy,
                 };
                 match provider.kind {
                     BuiltinAgentKind::Anthropic => run_anthropic_agent_loop(cfg, &tx).await,
@@ -496,10 +528,7 @@ async fn run_openai_chat(
             obj.insert("thinking".into(), json!({ "type": "disabled" }));
         }
     }
-    let client = provider
-        .http_client
-        .clone()
-        .ok_or_else(|| "Provider HTTP client is unavailable".to_string())?;
+    let client = provider.dial_client(&url).await?;
     let resp = send_with_backoff(
         "openai-compatible",
         &url,
@@ -520,12 +549,18 @@ async fn run_openai_chat(
 /// planning loop falls back instead of hanging. 300s is generous enough not to
 /// kill a slow-but-live generation.
 pub(crate) fn builtin_http_client() -> Result<reqwest::Client, String> {
+    builtin_http_client_builder()
+        .build()
+        .map_err(|error| format!("Failed to configure provider HTTP client: {error}"))
+}
+
+/// Shared builder so pinned (DNS-screened) clients keep the same redirect
+/// and timeout posture as the default provider client.
+pub(crate) fn builtin_http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(BUILTIN_HTTP_CONNECT_TIMEOUT)
         .timeout(BUILTIN_HTTP_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| format!("Failed to configure provider HTTP client: {error}"))
 }
 
 async fn run_anthropic_chat(
@@ -555,10 +590,7 @@ async fn run_anthropic_chat(
             .expect("anthropic request body is object")
             .insert("system".into(), json!(system_prompt));
     }
-    let client = provider
-        .http_client
-        .clone()
-        .ok_or_else(|| "Provider HTTP client is unavailable".to_string())?;
+    let client = provider.dial_client(&url).await?;
     let resp = send_with_backoff(
         "anthropic",
         &url,

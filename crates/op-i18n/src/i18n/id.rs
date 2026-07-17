@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Penyedia bawaan",
         "settings.agents.builtinSubtitle" => "Konfigurasikan kunci API secara langsung — tidak perlu alat CLI.",
         "settings.agents.builtinEmpty" => "Tidak ada penyedia bawaan yang dikonfigurasi.",
+        "settings.agents.syncError" => "Sinkronisasi server gagal:",
         "settings.agents.addProvider" => "+ Tambah penyedia",
         "settings.agents.acp" => "Agent ACP",
         "settings.agents.acpSubtitle" => "Hubungkan Agent eksternal yang kompatibel dengan ACP.",

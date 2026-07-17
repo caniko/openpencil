@@ -103,23 +103,12 @@ pub(crate) fn parse_transient_builtin(value: &serde_json::Value) -> Option<Built
     Some(agent)
 }
 
+/// Whether a browser-supplied provider endpoint may be dialed. Any public
+/// HTTPS origin passes; private/loopback/metadata targets need an explicit
+/// `OPENPENCIL_WEB_AI_ENDPOINT_ALLOWLIST` entry. Connect-time DNS pinning
+/// (`chat_builtin_http`) closes the rebinding gap this hostname check leaves.
 pub(crate) fn public_demo_transient_endpoint_allowed(agent: &BuiltinAgentConfig) -> bool {
-    let allowlist = std::env::var(WEB_AI_ENDPOINT_ALLOWLIST_ENV).ok();
-    let Ok(candidate) =
-        validate_web_provider_base_url_with_allowlist(agent.base_url.trim(), allowlist.as_deref())
-    else {
-        return false;
-    };
-    if endpoint_is_explicitly_allowlisted(&candidate, allowlist.as_deref()) {
-        return true;
-    }
-    op_editor_core::BUILTIN_AGENT_PRESETS.iter().any(|preset| {
-        std::iter::once(Some(preset.base_url))
-            .chain(std::iter::once(preset.alt_base_url))
-            .flatten()
-            .filter(|base_url| !base_url.is_empty())
-            .any(|base_url| provider_endpoint_matches(&candidate, base_url))
-    })
+    validate_web_provider_base_url(agent.base_url.trim()).is_ok()
 }
 
 /// Validate a browser-controlled provider endpoint independently of whether
@@ -161,6 +150,13 @@ fn validate_web_provider_base_url_with_allowlist(
         return Err("browser provider endpoint is not allowed".into());
     }
     Ok(url)
+}
+
+/// Whether a raw base URL is an exact scheme/host/port match for an
+/// `OPENPENCIL_WEB_AI_ENDPOINT_ALLOWLIST` entry. Unparseable URLs are not.
+pub(crate) fn base_url_is_explicitly_allowlisted(base_url: &str, allowlist: Option<&str>) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .is_ok_and(|url| endpoint_is_explicitly_allowlisted(&url, allowlist))
 }
 
 fn endpoint_is_explicitly_allowlisted(url: &reqwest::Url, allowlist: Option<&str>) -> bool {
@@ -210,7 +206,7 @@ fn is_restricted_hostname(host: &str) -> bool {
         )
 }
 
-fn is_restricted_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_restricted_ipv4(ip),
         IpAddr::V6(ip) => is_restricted_ipv6(ip),
@@ -306,19 +302,6 @@ pub(crate) fn remove_browser_owned_credentials(state: &mut EditorState) -> bool 
     );
     state.rebuild_chat_models();
     had_browser_credentials
-}
-
-fn provider_endpoint_matches(candidate: &reqwest::Url, allowed: &str) -> bool {
-    let Ok(allowed) = reqwest::Url::parse(allowed) else {
-        return false;
-    };
-    candidate.scheme() == allowed.scheme()
-        && candidate
-            .host_str()
-            .zip(allowed.host_str())
-            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
-        && candidate.port_or_known_default() == allowed.port_or_known_default()
-        && candidate.path().trim_end_matches('/') == allowed.path().trim_end_matches('/')
 }
 
 fn validate_and_merge(

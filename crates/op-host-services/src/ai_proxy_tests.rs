@@ -86,7 +86,7 @@ fn verified_cli_models_are_never_exposed_or_routed_by_the_web_proxy() {
 }
 
 #[test]
-fn server_persistence_does_not_allow_an_unapproved_public_request_endpoint() {
+fn transient_request_accepts_a_public_https_endpoint_without_allowlist() {
     let body = serde_json::json!({
         "model": "private-model",
         "user": "generate",
@@ -97,7 +97,35 @@ fn server_persistence_does_not_allow_an_unapproved_public_request_endpoint() {
             "kind": "openai-compat",
             "api_key": "sk-transient",
             "model": "private-model",
-            "base_url": "https://attacker.example/v1",
+            "base_url": "https://custom-gateway.example/v1",
+            "enabled": true
+        }
+    })
+    .to_string();
+    let request = parse_ai_stream_body(&body).expect("request parses");
+
+    let provider = proxy_provider_for_request(
+        &EditorState::new(),
+        &request,
+        crate::web_credential_policy::WebCredentialPersistence::Server,
+    )
+    .expect("public HTTPS endpoint is accepted");
+    assert!(provider.is_some(), "provider must build for the credential");
+}
+
+#[test]
+fn server_persistence_does_not_allow_a_reserved_request_endpoint() {
+    let body = serde_json::json!({
+        "model": "private-model",
+        "user": "generate",
+        "credential": {
+            "id": "builtin-web-1",
+            "preset": "custom",
+            "display_name": "Private",
+            "kind": "openai-compat",
+            "api_key": "sk-transient",
+            "model": "private-model",
+            "base_url": "http://169.254.169.254/v1",
             "enabled": true
         }
     })
@@ -110,28 +138,47 @@ fn server_persistence_does_not_allow_an_unapproved_public_request_endpoint() {
         crate::web_credential_policy::WebCredentialPersistence::Server,
     );
     let Err(error) = result else {
-        panic!("persistence must not authorize an arbitrary public provider endpoint");
+        panic!("persistence must not authorize a reserved provider endpoint");
     };
 
     assert!(error.contains("endpoint"), "unexpected error: {error}");
 }
 
 #[test]
-fn persisted_browser_owned_agent_cannot_use_an_unapproved_public_endpoint() {
+fn persisted_browser_owned_agent_can_use_a_public_https_endpoint() {
     let mut editor = EditorState::new();
     editor.editor_ui.agent_settings.add_builtin_agent_config(
         "Browser",
         "sk-browser",
         "private-model",
         op_editor_core::BuiltinAgentKind::OpenAiCompat,
-        "https://attacker.example/v1",
+        "https://custom-gateway.example/v1",
+    );
+    editor.editor_ui.agent_settings.builtin_agents[0].id =
+        "web-credential:builtin:browser-agent".into();
+
+    assert!(
+        proxy_provider(&editor, "private-model").is_some(),
+        "public HTTPS endpoints no longer require a preset or explicit allowlist"
+    );
+}
+
+#[test]
+fn persisted_browser_owned_agent_cannot_use_a_reserved_endpoint() {
+    let mut editor = EditorState::new();
+    editor.editor_ui.agent_settings.add_builtin_agent_config(
+        "Browser",
+        "sk-browser",
+        "private-model",
+        op_editor_core::BuiltinAgentKind::OpenAiCompat,
+        "http://10.0.0.7/v1",
     );
     editor.editor_ui.agent_settings.builtin_agents[0].id =
         "web-credential:builtin:browser-agent".into();
 
     assert!(
         proxy_provider(&editor, "private-model").is_none(),
-        "persisted browser-owned agents still require a preset or explicit allowlist"
+        "reserved endpoints still require an explicit allowlist"
     );
 }
 
@@ -143,7 +190,7 @@ fn disallowed_exact_browser_model_is_hidden_and_does_not_fall_back() {
         "sk-browser",
         "private-model",
         op_editor_core::BuiltinAgentKind::OpenAiCompat,
-        "https://attacker.example/v1",
+        "http://10.0.0.7/v1",
     );
     editor.editor_ui.agent_settings.builtin_agents[0].id =
         "web-credential:builtin:browser-agent".into();

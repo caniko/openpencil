@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Встроенные провайдеры",
         "settings.agents.builtinSubtitle" => "Настройте ключи API напрямую — инструменты CLI не нужны.",
         "settings.agents.builtinEmpty" => "Встроенные провайдеры не настроены.",
+        "settings.agents.syncError" => "Ошибка синхронизации с сервером:",
         "settings.agents.addProvider" => "+ Добавить провайдера",
         "settings.agents.acp" => "Агент ACP",
         "settings.agents.acpSubtitle" => "Подключение внешних ACP-совместимых агентов.",

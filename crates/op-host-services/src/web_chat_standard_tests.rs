@@ -118,8 +118,8 @@ fn browser_only_demo_rejects_custom_or_loopback_transient_endpoints_without_muta
 }
 
 #[test]
-fn server_persistence_does_not_allow_an_unapproved_public_transient_endpoint() {
-    let body = standard_body_with_credential_at("sk-transient", "https://attacker.example/v1");
+fn server_persistence_does_not_allow_a_reserved_transient_endpoint() {
+    let body = standard_body_with_credential_at("sk-transient", "http://169.254.169.254/v1");
     let req = parse_standard_turn_body(&body).expect("credential shape parses");
     let state = Mutex::new(WebCanvasState::new_with_policy(
         EditorState::new(),
@@ -128,7 +128,7 @@ fn server_persistence_does_not_allow_an_unapproved_public_transient_endpoint() {
     ));
 
     let error = apply_request_snapshot(&req, &state, &SseHub::default())
-        .expect_err("persistence must not authorize an arbitrary public provider endpoint");
+        .expect_err("persistence must not authorize a reserved provider endpoint");
     assert!(error.contains("endpoint"), "unexpected error: {error}");
 }
 

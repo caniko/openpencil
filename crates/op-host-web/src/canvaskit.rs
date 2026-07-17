@@ -733,17 +733,10 @@ struct CkInner {
 impl CkInner {
     fn repaint(&mut self) {
         crate::web_chat::reconcile_models(self.host.editor_state_mut());
-        let (w, h) = self.backend.logical_size();
-        self.backend.begin_frame();
-        self.host.paint_dyn(&mut self.backend, w, h);
-        self.backend.end_frame();
-        self.sync_a11y();
-        // #54: focus the hidden IME input only while a text field owns the
-        // keyboard, so CJK composition works when editing and no soft keyboard
-        // appears otherwise. Cheap — toggles only on a focus transition.
-        if let Some(ime) = self.ime.as_mut() {
-            ime.sync_focus(self.host.input_active());
-        }
+        // Detect a credential edit and enqueue the daemon sync BEFORE mirroring
+        // the sync status below: a corrective edit clears the stale error in
+        // the sync state machine here, so the mirror reflects it in the SAME
+        // frame instead of leaving the banner up until the next repaint.
         if crate::web_settings::save_credentials_if_changed(
             self.host.editor_state(),
             &mut self.credential_fingerprint,
@@ -755,6 +748,26 @@ impl CkInner {
             {
                 crate::web_credential_sync::credential_changed(json);
             }
+        }
+        // Mirror the (now up-to-date) credential-sync status into the settings
+        // modal so a rejected server save is visible instead of console-only.
+        let sync_error = crate::web_credential_sync::current_sync_error();
+        {
+            let settings = &mut self.host.editor_state_mut().editor_ui.agent_settings;
+            if settings.web_credential_sync_error != sync_error {
+                settings.web_credential_sync_error = sync_error;
+            }
+        }
+        let (w, h) = self.backend.logical_size();
+        self.backend.begin_frame();
+        self.host.paint_dyn(&mut self.backend, w, h);
+        self.backend.end_frame();
+        self.sync_a11y();
+        // #54: focus the hidden IME input only while a text field owns the
+        // keyboard, so CJK composition works when editing and no soft keyboard
+        // appears otherwise. Cheap — toggles only on a focus transition.
+        if let Some(ime) = self.ime.as_mut() {
+            ime.sync_focus(self.host.input_active());
         }
         if !crate::web_settings::credential_migration_pending(&self.credential_fingerprint) {
             if let Some(settings_fingerprint) = self.settings_fingerprint.as_mut() {

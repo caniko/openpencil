@@ -6,6 +6,18 @@ use op_editor_core::agent_settings::{AgentSettings, SettingsFocus};
 
 pub(super) const HEADER_HEIGHT: f32 = 28.0;
 pub(super) const SUBTITLE_HEIGHT: f32 = 28.0;
+pub(super) const SYNC_ERROR_HEIGHT: f32 = 22.0;
+
+/// Extra row reserved under the subtitle when the browser→daemon credential
+/// sync reported a failure. Every y-walk (paint + hit-test + heights) must
+/// add this so cards stay aligned while the status row shows.
+pub(super) fn sync_error_height(settings: &AgentSettings) -> f32 {
+    if settings.web_credential_sync_error.is_some() {
+        SYNC_ERROR_HEIGHT
+    } else {
+        0.0
+    }
+}
 pub(super) const EMPTY_HEIGHT: f32 = 64.0;
 const COMPACT_CARD_HEIGHT: f32 = 60.0;
 const EXPANDED_CARD_HEIGHT: f32 = 196.0;

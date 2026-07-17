@@ -265,9 +265,9 @@ pub fn proxy_provider_for_request_with_chat_session(
         }
         crate::web_credentials::validate_web_provider_base_url(&agent.base_url)?;
         if !crate::web_credentials::public_demo_transient_endpoint_allowed(agent) {
-            return Err("custom provider endpoint is not explicitly allowed".into());
+            return Err("provider endpoint is not allowed: private, loopback, and reserved addresses require an OPENPENCIL_WEB_AI_ENDPOINT_ALLOWLIST entry".into());
         }
-        return Ok(ConfiguredBuiltinProvider::from_builtin_agent(agent)
+        return Ok(ConfiguredBuiltinProvider::from_builtin_agent_for_web(agent)
             .map(|provider| Box::new(provider) as Box<dyn ChatProvider>));
     }
 
@@ -311,6 +311,17 @@ pub fn models_json(editor: &EditorState) -> String {
     serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// Web-request provider constructor: browser-owned agents dial with
+/// connect-time DNS screening; operator-owned daemon agents stay trusted.
+fn web_provider_for_agent(agent: &BuiltinAgentConfig) -> Option<Box<dyn ChatProvider>> {
+    let provider = if crate::web_credentials::browser_owns_builtin_agent(agent) {
+        ConfiguredBuiltinProvider::from_builtin_agent_for_web(agent)
+    } else {
+        ConfiguredBuiltinProvider::from_builtin_agent(agent)
+    };
+    provider.map(|configured| Box::new(configured) as Box<dyn ChatProvider>)
+}
+
 fn proxy_builtin_for_identity(
     editor: &EditorState,
     provider: Option<AgentProvider>,
@@ -329,8 +340,7 @@ fn proxy_builtin_for_identity(
                     && agent.model.trim() == builtin_model
                     && provider.is_none_or(|expected| agent.kind.model_provider() == expected)
             })?;
-        return ConfiguredBuiltinProvider::from_builtin_agent(chosen)
-            .map(|p| Box::new(p) as Box<dyn ChatProvider>);
+        return web_provider_for_agent(chosen);
     }
 
     let requested = model.trim();
@@ -344,8 +354,7 @@ fn proxy_builtin_for_identity(
         })
     };
     if let Some(chosen) = exact().find(|agent| browser_owned_endpoint_is_allowed(agent)) {
-        return ConfiguredBuiltinProvider::from_builtin_agent(chosen)
-            .map(|configured| Box::new(configured) as Box<dyn ChatProvider>);
+        return web_provider_for_agent(chosen);
     }
     if exact().next().is_some() || !is_default {
         return None;
@@ -356,8 +365,7 @@ fn proxy_builtin_for_identity(
             && browser_owned_endpoint_is_allowed(agent)
             && provider.is_none_or(|expected| agent.kind.model_provider() == expected)
     })?;
-    ConfiguredBuiltinProvider::from_builtin_agent(chosen)
-        .map(|configured| Box::new(configured) as Box<dyn ChatProvider>)
+    web_provider_for_agent(chosen)
 }
 
 fn parse_builtin_model_key(value: &str) -> Option<(&str, &str)> {

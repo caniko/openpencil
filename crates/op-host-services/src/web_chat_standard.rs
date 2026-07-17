@@ -240,7 +240,7 @@ fn apply_request_snapshot(
             }
             crate::web_credentials::validate_web_provider_base_url(&agent.base_url)?;
             if !crate::web_credentials::public_demo_transient_endpoint_allowed(agent) {
-                return Err("custom provider endpoint is not explicitly allowed".into());
+                return Err("provider endpoint is not allowed: private, loopback, and reserved addresses require an OPENPENCIL_WEB_AI_ENDPOINT_ALLOWLIST entry".into());
             }
         }
         if let Some(doc_json) = req.document_json.as_deref() {

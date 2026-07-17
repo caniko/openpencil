@@ -284,6 +284,10 @@ pub struct HttpRequest {
     /// web-canvas daemon's per-instance auth token (see
     /// `web_canvas_server::RequestAuth`).
     pub token: Option<String>,
+    /// `Content-Type` header value, when present. Browser-facing JSON routes
+    /// require `application/json` so cross-origin "simple requests" (which
+    /// skip the CORS preflight) cannot reach them.
+    pub content_type: Option<String>,
 }
 
 /// Parse a capped HTTP header and then read exactly its declared body length.
@@ -359,6 +363,7 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
     let host = header_value("host");
     let origin = header_value("origin");
     let token = header_value("x-openpencil-token");
+    let content_type = header_value("content-type");
     if content_length > MAX_BODY {
         return Err(format!(
             "request body exceeds {} MiB",
@@ -388,6 +393,7 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
         host,
         origin,
         token,
+        content_type,
     })
 }
 

@@ -16,7 +16,13 @@ impl WebCredentialPersistence {
 
 pub fn parse(raw: Option<&str>) -> WebCredentialPersistence {
     match raw.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) if value.eq_ignore_ascii_case("true") => WebCredentialPersistence::Server,
+        Some(value)
+            if ["true", "1", "yes", "on"]
+                .iter()
+                .any(|truthy| value.eq_ignore_ascii_case(truthy)) =>
+        {
+            WebCredentialPersistence::Server
+        }
         _ => WebCredentialPersistence::BrowserOnly,
     }
 }
@@ -48,16 +54,26 @@ mod tests {
     }
 
     #[test]
-    fn only_trimmed_case_insensitive_true_enables_server_persistence() {
-        for raw in ["true", "TRUE", " TrUe ", "\ttrue\n"] {
-            assert_eq!(parse(Some(raw)), WebCredentialPersistence::Server);
+    fn trimmed_case_insensitive_truthy_values_enable_server_persistence() {
+        for raw in [
+            "true", "TRUE", " TrUe ", "\ttrue\n", "1", "yes", "YES", "on", " On ",
+        ] {
+            assert_eq!(
+                parse(Some(raw)),
+                WebCredentialPersistence::Server,
+                "raw={raw:?}"
+            );
         }
     }
 
     #[test]
-    fn truthy_aliases_do_not_enable_server_persistence() {
-        for raw in ["1", "yes", "on", "enabled"] {
-            assert_eq!(parse(Some(raw)), WebCredentialPersistence::BrowserOnly);
+    fn falsy_and_unknown_values_keep_browser_only_persistence() {
+        for raw in ["0", "false", "no", "off", "enabled", "maybe", "2"] {
+            assert_eq!(
+                parse(Some(raw)),
+                WebCredentialPersistence::BrowserOnly,
+                "raw={raw:?}"
+            );
         }
     }
 }

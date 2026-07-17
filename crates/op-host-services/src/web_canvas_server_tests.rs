@@ -397,6 +397,7 @@ fn sensitive_browser_posts_include_credentials_and_ai_routes() {
             host: None,
             origin: None,
             token: None,
+            content_type: None,
         };
         assert!(is_sensitive_browser_post(&request), "path={path}");
     }
@@ -1112,12 +1113,63 @@ fn serve_one_routes_rest_health_and_document() {
     assert!(post.contains(r#""ok":true"#));
 }
 
+/// Drive one request with an explicit Content-Type header through `serve_one`.
+fn serve_with_content_type(method: &str, path: &str, content_type: &str, body: &str) -> String {
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = mock_stream(&request);
+    let state = Mutex::new(fresh_state());
+    let hub = SseHub::default();
+    serve_one(&mut stream, &state, &hub).expect("serve_one");
+    String::from_utf8_lossy(&stream.output).into_owned()
+}
+
 #[test]
 fn serve_one_standard_ai_route_is_sse_not_404() {
-    let r = serve("POST", "/api/ai/standard", "not json");
+    let r = serve_with_content_type("POST", "/api/ai/standard", "application/json", "not json");
     assert!(r.contains("text/event-stream"), "{r}");
     assert!(r.contains("invalid request body"), "{r}");
     assert!(!r.contains("404 Not Found"), "{r}");
+}
+
+#[test]
+fn serve_one_browser_json_routes_reject_simple_request_content_types() {
+    // Cross-origin "simple requests" (text/plain, form-encoded, or no
+    // Content-Type at all) never trigger a CORS preflight, so a drive-by
+    // page could fire them at a local daemon. The JSON routes that carry
+    // credentials or dial provider endpoints must refuse them outright.
+    for (method, path) in [
+        ("POST", "/api/ai/standard"),
+        ("POST", "/api/ai/stream"),
+        ("POST", "/api/settings/credentials"),
+    ] {
+        for content_type in ["text/plain", "application/x-www-form-urlencoded"] {
+            let r = serve_with_content_type(method, path, content_type, "{}");
+            assert!(
+                r.contains("415 Unsupported Media Type"),
+                "{method} {path} with {content_type} must be refused: {r}"
+            );
+        }
+        let r = serve(method, path, "{}");
+        assert!(
+            r.contains("415 Unsupported Media Type"),
+            "{method} {path} without a content type must be refused: {r}"
+        );
+    }
+}
+
+#[test]
+fn serve_one_json_content_type_with_charset_parameter_is_accepted() {
+    let r = serve_with_content_type(
+        "POST",
+        "/api/ai/standard",
+        "application/json; charset=utf-8",
+        "not json",
+    );
+    assert!(r.contains("invalid request body"), "{r}");
+    assert!(!r.contains("415"), "{r}");
 }
 
 #[test]

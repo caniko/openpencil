@@ -21,3 +21,21 @@ fn pure_builtin_provider_base_url_is_read_only_hit_target() {
 
     assert_eq!(panel.hit_test(rect, point), AgentSettingsHit::Inside);
 }
+
+#[test]
+fn credential_sync_error_reserves_a_status_row_in_the_layout() {
+    let mut state = EditorState::default();
+    state.editor_ui.agent_settings.add_builtin_agent();
+    let without =
+        crate::widgets::agent_settings_builtin::content_height(&state.editor_ui.agent_settings);
+
+    state.editor_ui.agent_settings.web_credential_sync_error =
+        Some("server rejected the credential snapshot (400)".into());
+    let with =
+        crate::widgets::agent_settings_builtin::content_height(&state.editor_ui.agent_settings);
+
+    assert!(
+        with > without,
+        "sync error must reserve extra height (with={with}, without={without})"
+    );
+}

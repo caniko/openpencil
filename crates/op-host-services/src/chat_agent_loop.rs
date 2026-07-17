@@ -41,6 +41,9 @@ pub struct AgentLoopConfig {
     /// Disable MiniMax / GLM hidden reasoning for structured design output;
     /// otherwise it can consume the whole output allowance before tool JSON.
     pub disable_thinking: bool,
+    /// Dial policy inherited from the provider that spawned this loop —
+    /// browser-originated endpoints resolve + pin per request.
+    pub(crate) dial_policy: crate::provider_dial::EndpointDialPolicy,
 }
 
 impl AgentLoopConfig {
@@ -394,7 +397,7 @@ pub async fn run_anthropic_agent_loop(
                 .expect("anthropic request body is object")
                 .insert("system".into(), json!(cfg.system_prompt));
         }
-        let client = crate::chat_builtin_http::builtin_http_client()?;
+        let client = crate::provider_dial::client_for(cfg.dial_policy, &cfg.url).await?;
         let (max_retries, min_gap) = crate::chat_builtin_http::default_backoff_knobs();
         let resp = crate::chat_builtin_http::send_with_backoff(
             "anthropic",
@@ -668,7 +671,7 @@ pub async fn run_openai_agent_loop(
         // to post raw, so a provider rate limit killed the design run with
         // no retries and a raw JSON error (measured: glm-5.2, 429
         // AccountRateLimitExceeded, 2026-07-12).
-        let client = crate::chat_builtin_http::builtin_http_client()?;
+        let client = crate::provider_dial::client_for(cfg.dial_policy, &cfg.url).await?;
         let (max_retries, min_gap) = crate::chat_builtin_http::default_backoff_knobs();
         let resp = crate::chat_builtin_http::send_with_backoff(
             "openai-compatible",

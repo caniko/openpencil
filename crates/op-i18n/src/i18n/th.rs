@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "ผู้ให้บริการในตัว",
         "settings.agents.builtinSubtitle" => "กำหนดค่าคีย์ API โดยตรง — ไม่ต้องใช้เครื่องมือ CLI",
         "settings.agents.builtinEmpty" => "ยังไม่ได้กำหนดค่าผู้ให้บริการในตัว",
+        "settings.agents.syncError" => "การซิงค์กับเซิร์ฟเวอร์ล้มเหลว:",
         "settings.agents.addProvider" => "+ เพิ่มผู้ให้บริการ",
         "settings.agents.acp" => "ACP Agent",
         "settings.agents.acpSubtitle" => "เชื่อมต่อ Agent ภายนอกที่รองรับ ACP",

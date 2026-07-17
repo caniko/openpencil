@@ -1676,6 +1676,20 @@ fn serve_one<S: Read + Write>(
         )
         .map(|()| false);
     }
+    // Sensitive JSON routes refuse CORS "simple request" content types
+    // (text/plain, form-encoded, or none): a drive-by page can fire those
+    // without a preflight, and unmanaged daemons have no token gate.
+    if is_sensitive_browser_post(&req) && !content_type_is_json(req.content_type.as_deref()) {
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "415 Unsupported Media Type",
+            &crate::mcp_serve::rest_error_body(
+                "this route requires Content-Type: application/json",
+            ),
+            cors_origin,
+        )
+        .map(|()| false);
+    }
     // Static serving: the host page (`/`) and the wasm-bindgen bundle
     // (`/pkg/*`). Owns only those paths — everything else falls through.
     if req.method == "GET" {
@@ -1915,6 +1929,18 @@ const WEB_ALLOWED_ORIGINS_ENV: &str = "OPENPENCIL_WEB_ALLOWED_ORIGINS";
 fn is_sensitive_browser_post(request: &crate::mcp_serve::HttpRequest) -> bool {
     request.method == "POST"
         && (request.path == "/api/settings/credentials" || request.path.starts_with("/api/ai/"))
+}
+
+/// `application/json` (optionally with parameters, e.g. `; charset=utf-8`).
+fn content_type_is_json(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    })
 }
 
 fn credential_request_origin_allowed(request: &crate::mcp_serve::HttpRequest) -> bool {

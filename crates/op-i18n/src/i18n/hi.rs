@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "अंतर्निहित प्रदाता",
         "settings.agents.builtinSubtitle" => "API कुंजियाँ सीधे कॉन्फ़िगर करें — किसी CLI टूल की आवश्यकता नहीं।",
         "settings.agents.builtinEmpty" => "कोई अंतर्निहित प्रदाता कॉन्फ़िगर नहीं किया गया।",
+        "settings.agents.syncError" => "सर्वर सिंक विफल:",
         "settings.agents.addProvider" => "+ प्रदाता जोड़ें",
         "settings.agents.acp" => "ACP एजेंट",
         "settings.agents.acpSubtitle" => "बाहरी ACP-संगत एजेंट कनेक्ट करें।",

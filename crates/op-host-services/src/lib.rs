@@ -59,6 +59,7 @@ pub mod mcp_serve;
 pub mod model_discovery;
 mod model_probe;
 pub mod pre_validator;
+mod provider_dial;
 pub mod provider_probe;
 pub mod provider_probe_host;
 pub mod provider_probe_models;

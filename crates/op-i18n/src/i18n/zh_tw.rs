@@ -515,6 +515,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "內建服務商",
         "settings.agents.builtinSubtitle" => "直接設定 API 金鑰 — 無需 CLI 工具。",
         "settings.agents.builtinEmpty" => "尚未設定內建服務商。",
+        "settings.agents.syncError" => "伺服器同步失敗:",
         "settings.agents.addProvider" => "+ 新增服務商",
         "settings.agents.acp" => "ACP Agent",
         "settings.agents.acpSubtitle" => "連接外部 ACP 相容的 Agent。",

@@ -275,7 +275,6 @@ fn credential_snapshot_rejects_reserved_provider_endpoints_atomically() {
         "http://[fd00:ec2::254]/latest/meta-data",
         "http://metadata.google.internal/computeMetadata/v1",
         "https://provider.example.test/v1",
-        "https://attacker.example/v1",
     ];
 
     for endpoint in endpoints {
@@ -292,24 +291,21 @@ fn credential_snapshot_rejects_reserved_provider_endpoints_atomically() {
 }
 
 #[test]
-fn credential_snapshot_accepts_a_custom_origin_only_when_explicitly_allowlisted() {
+fn credential_snapshot_accepts_a_public_https_origin_without_allowlist() {
     let _guard = EnvVarGuard::unset(super::WEB_AI_ENDPOINT_ALLOWLIST_ENV);
     let body = VALID_BODY.replace(
         "https://api.openai.com/v1",
-        "https://allowlisted-credential.example/v1",
+        "https://custom-gateway.example/v1",
     );
     let mut state = state_with_operator_agent();
 
-    assert!(
-        apply_json(&mut state, &body).is_err(),
-        "unapproved public origin must be rejected"
-    );
-
-    std::env::set_var(
-        super::WEB_AI_ENDPOINT_ALLOWLIST_ENV,
-        "https://allowlisted-credential.example",
-    );
-    apply_json(&mut state, &body).expect("explicitly allowlisted origin is accepted");
+    apply_json(&mut state, &body).expect("public HTTPS origin is accepted without allowlist");
+    assert!(state
+        .editor_ui
+        .agent_settings
+        .builtin_agents
+        .iter()
+        .any(|agent| agent.base_url == "https://custom-gateway.example/v1"));
 }
 
 #[test]

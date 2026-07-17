@@ -521,6 +521,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Built-in providers",
         "settings.agents.builtinSubtitle" => "Configure API keys directly — no CLI tools needed.",
         "settings.agents.builtinEmpty" => "No built-in providers configured.",
+        "settings.agents.syncError" => "Server sync failed:",
         "settings.agents.addProvider" => "+ Add provider",
         "settings.agents.acp" => "ACP Agent",
         "settings.agents.acpSubtitle" => "Connect external ACP-compatible Agents.",

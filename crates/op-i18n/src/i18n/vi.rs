@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Nhà cung cấp tích hợp",
         "settings.agents.builtinSubtitle" => "Cấu hình khóa API trực tiếp — không cần công cụ CLI.",
         "settings.agents.builtinEmpty" => "Chưa cấu hình nhà cung cấp tích hợp nào.",
+        "settings.agents.syncError" => "Đồng bộ máy chủ thất bại:",
         "settings.agents.addProvider" => "+ Thêm nhà cung cấp",
         "settings.agents.acp" => "Agent ACP",
         "settings.agents.acpSubtitle" => "Kết nối các Agent bên ngoài tương thích ACP.",

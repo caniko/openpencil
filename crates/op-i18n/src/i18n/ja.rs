@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "組み込みプロバイダー",
         "settings.agents.builtinSubtitle" => "API キーを直接設定 — CLI ツールは不要です。",
         "settings.agents.builtinEmpty" => "組み込みプロバイダーが設定されていません。",
+        "settings.agents.syncError" => "サーバー同期に失敗しました:",
         "settings.agents.addProvider" => "+ プロバイダーを追加",
         "settings.agents.acp" => "ACP エージェント",
         "settings.agents.acpSubtitle" => "外部の ACP 対応エージェントに接続します。",

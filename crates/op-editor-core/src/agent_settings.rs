@@ -479,6 +479,9 @@ pub struct AgentSettings {
     pub hover_add_acp_agent: bool,
     /// Sidebar nav item under the cursor; `None` = no hover.
     pub hover_nav: Option<AgentSettingsTab>,
+    /// Latest browser→daemon credential-sync failure worth showing (web
+    /// host only; transient, never persisted). `None` = last sync ok.
+    pub web_credential_sync_error: Option<String>,
 }
 
 impl Default for AgentSettings {
@@ -534,6 +537,7 @@ impl Default for AgentSettings {
             hover_add_provider: false,
             hover_add_acp_agent: false,
             hover_nav: None,
+            web_credential_sync_error: None,
         }
     }
 }

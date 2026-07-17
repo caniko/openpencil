@@ -4,7 +4,7 @@ use crate::theme::Theme;
 use crate::widgets::agent_settings_builtin_layout::{
     add_provider_rect, card_height, card_rect, compact_edit_rect, compact_remove_rect,
     compact_switch_rect, draft_card_height, expanded_card_height, field_input_rect, is_editing,
-    CARD_GAP, EMPTY_HEIGHT, HEADER_HEIGHT, SUBTITLE_HEIGHT,
+    sync_error_height, CARD_GAP, EMPTY_HEIGHT, HEADER_HEIGHT, SUBTITLE_HEIGHT,
 };
 use crate::widgets::agent_settings_builtin_parts;
 use crate::widgets::agent_settings_caret::{paint_settings_input_view, settings_input_text};
@@ -71,7 +71,7 @@ pub fn content_height(settings: &AgentSettings) -> f32 {
                 0.0
             }
     };
-    HEADER_HEIGHT + SUBTITLE_HEIGHT + list_h
+    HEADER_HEIGHT + SUBTITLE_HEIGHT + sync_error_height(settings) + list_h
 }
 
 pub fn hit_test(content: Rect, settings: &AgentSettings, point: Point2D) -> BuiltinHit {
@@ -79,7 +79,7 @@ pub fn hit_test(content: Rect, settings: &AgentSettings, point: Point2D) -> Buil
     if (add_provider_rect(content, y)).contains(point) {
         return BuiltinHit::AddProvider;
     }
-    let mut card_y = y + HEADER_HEIGHT + SUBTITLE_HEIGHT;
+    let mut card_y = y + HEADER_HEIGHT + SUBTITLE_HEIGHT + sync_error_height(settings);
     for (index, agent) in settings.builtin_agents.iter().enumerate() {
         let card = card_rect(
             content.origin.x,
@@ -188,7 +188,8 @@ pub fn hit_test(content: Rect, settings: &AgentSettings, point: Point2D) -> Buil
 }
 
 pub fn card_at(content: Rect, settings: &AgentSettings, point: Point2D) -> Option<usize> {
-    let mut card_y = content.origin.y + 12.0 + HEADER_HEIGHT + SUBTITLE_HEIGHT;
+    let mut card_y =
+        content.origin.y + 12.0 + HEADER_HEIGHT + SUBTITLE_HEIGHT + sync_error_height(settings);
     for (index, _) in settings.builtin_agents.iter().enumerate() {
         let card = card_rect(
             content.origin.x,
@@ -227,7 +228,8 @@ pub fn preset_scroll_max_at(
 }
 
 fn open_preset_menu_card(content: Rect, settings: &AgentSettings, point: Point2D) -> Option<Rect> {
-    let mut card_y = content.origin.y + 12.0 + HEADER_HEIGHT + SUBTITLE_HEIGHT;
+    let mut card_y =
+        content.origin.y + 12.0 + HEADER_HEIGHT + SUBTITLE_HEIGHT + sync_error_height(settings);
     for (index, _) in settings.builtin_agents.iter().enumerate() {
         let card = card_rect(
             content.origin.x,
@@ -289,6 +291,19 @@ pub fn paint_builtin_section(
         content.origin.x,
         y,
     );
+    if let Some(error) = settings.web_credential_sync_error.as_deref() {
+        let text = format!("{} {error}", t_settings(ui, "settings.agents.syncError"));
+        let layout = TextLayout::single_run(
+            &text,
+            "system-ui",
+            12.0,
+            (theme.destructive).to_jian(),
+            Point2D::new(0.0, 0.0),
+        );
+        cx.backend
+            .draw_text(&layout, Point2D::new(content.origin.x, y + 14.0));
+        y += sync_error_height(settings);
+    }
     if settings.builtin_agents.is_empty() && settings.builtin_agent_draft.is_none() {
         return paint_empty(
             cx,

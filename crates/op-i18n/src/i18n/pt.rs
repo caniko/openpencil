@@ -503,6 +503,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.agents.builtin" => "Provedores integrados",
         "settings.agents.builtinSubtitle" => "Configure as chaves de API diretamente — sem necessidade de ferramentas CLI.",
         "settings.agents.builtinEmpty" => "Nenhum provedor integrado configurado.",
+        "settings.agents.syncError" => "Falha na sincronização com o servidor:",
         "settings.agents.addProvider" => "+ Adicionar provedor",
         "settings.agents.acp" => "Agente ACP",
         "settings.agents.acpSubtitle" => "Conecte agentes externos compatíveis com ACP.",
