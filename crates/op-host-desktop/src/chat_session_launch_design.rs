@@ -59,33 +59,87 @@ fn prompt_is_landing(prompt: &str) -> bool {
         .any(|keyword| lower.contains(keyword))
 }
 
+/// E-lite: the loop-path system-prompt fact naming the user's
+/// `chat.agent_team_size` (⚡Nx) setting, so the model actually knows how
+/// many parallel agents it's allowed before deciding whether to
+/// `spawn_agents` for a multi-screen request — the design-agent.md
+/// spawn_agents guidance no longer uses a fixed screen-count threshold, it
+/// asks whether "the user's parallel-agents setting allows it", which is
+/// meaningless unless the model is TOLD the setting. `None` at the default
+/// of 1 — a team of one has nothing to parallelize, so the fact would only
+/// add noise for the common case.
+fn team_size_fact(agent_team_size: u32) -> Option<String> {
+    (agent_team_size > 1).then(|| format!("User's parallel-agents setting: {agent_team_size}"))
+}
+
+/// Screen-shaped top-level frame width band — mirrors
+/// `op_orchestrator::wire_screen_navigation::MOBILE_SCREEN_WIDTH`. Kept as a
+/// small local duplicate rather than an import: this is a host-side ROUTING
+/// heuristic at a different architectural layer than the orchestrator's
+/// generation-time screen-wiring pass, and reaching into that pass's
+/// internals for one width check would be the wrong dependency direction.
+const MOBILE_SCREEN_WIDTH: std::ops::RangeInclusive<f64> = 320.0..=480.0;
+
+/// True when the active page already holds a screen-shaped mobile-width
+/// top-level frame — i.e. the canvas is already an in-progress mobile app,
+/// independent of what the CURRENT turn's prompt text says.
+///
+/// A pure-Chinese continuation prompt ("继续生成剩下3个页面") carries no
+/// ASCII mobile keyword `root_seed_prompt_is_mobile` can match, so without
+/// this canvas signal a mobile multi-screen continuation silently misroutes
+/// to the classic orchestrator (see the multi-screen fan-out break plan in
+/// openpencil-docs).
+fn canvas_has_mobile_screen_root(state: &op_editor_core::EditorState) -> bool {
+    use op_editor_core::PenNodeExt;
+    state.active_children().iter().any(|node| {
+        matches!(node, jian_ops_schema::node::PenNode::Frame(_))
+            && node
+                .width_px()
+                .is_some_and(|w| MOBILE_SCREEN_WIDTH.contains(&w))
+    })
+}
+
 /// Pure predicate for the design-agent-loop gate.
 ///
 /// Routing has three states: a truthy env value or the Settings experimental
 /// toggle forces the loop for every prompt; when neither force-loop condition
 /// applies, a falsy env value forces the single-shot orchestrator; otherwise
-/// mobile and landing prompts auto-route to the loop while desktop dashboard,
-/// web-app, and other prompts stay on the orchestrator.
+/// mobile and landing prompts, OR a canvas that already has a mobile-width
+/// screen root (`existing_mobile_root`), auto-route to the loop, while
+/// desktop dashboard, web-app, and other prompts on an otherwise-empty/
+/// desktop canvas stay on the orchestrator.
+///
+/// `existing_mobile_root` is the fix for a misroute the prompt text alone
+/// can't see: a continuation turn ("继续生成剩下3个页面") has no ASCII
+/// mobile keyword, but the canvas it's continuing already proves the
+/// product is mobile — that fact must win regardless of what THIS prompt
+/// says.
 ///
 /// The A/B evidence summarized in the openpencil-docs sonar plan validated the
 /// loop as better for mobile/landing work and worse for desktop dashboard work.
 ///
 /// Kept free of I/O so it is unit-testable without env-var flakiness.
-pub fn loop_enabled(experimental: bool, env: Option<&str>, prompt: &str) -> bool {
+pub fn loop_enabled(
+    experimental: bool,
+    env: Option<&str>,
+    prompt: &str,
+    existing_mobile_root: bool,
+) -> bool {
     if experimental {
         return true;
     }
     if let Some(force_loop) = parse_loop_env(env) {
         return force_loop;
     }
-    root_seed_prompt_is_mobile(prompt) || prompt_is_landing(prompt)
+    existing_mobile_root || root_seed_prompt_is_mobile(prompt) || prompt_is_landing(prompt)
 }
 
 /// Returns true when the design-agent loop should run for this turn.
 ///
-/// Explicit settings force one path; otherwise mobile and landing prompts use
-/// the loop. CLI providers never reach this gate — they stay on the orchestrator
-/// path in `launch_if_pending`.
+/// Explicit settings force one path; otherwise mobile and landing prompts, or
+/// an existing mobile-width screen root already on the canvas, use the loop.
+/// CLI providers never reach this gate — they stay on the orchestrator path
+/// in `launch_if_pending`.
 pub(super) fn design_agent_loop_enabled(state: &op_editor_core::EditorState, prompt: &str) -> bool {
     loop_enabled(
         state.editor_ui.agent_settings.experimental_features_enabled,
@@ -93,6 +147,7 @@ pub(super) fn design_agent_loop_enabled(state: &op_editor_core::EditorState, pro
             .ok()
             .as_deref(),
         prompt,
+        canvas_has_mobile_screen_root(state),
     )
 }
 
@@ -198,6 +253,7 @@ pub(super) fn launch_design_loop_turn(
     // `&mut` borrow below.
     let thinking = design_turn_thinking_mode(host);
     let root_seed_mobile = root_seed_prompt_is_mobile(&user_text);
+    let agent_team_size = host.editor_state().chat.agent_team_size;
     let chat = &mut host.editor_state_mut().chat;
     let effort = chat.effort_level;
     let attachments = std::mem::take(&mut chat.pending_attachments);
@@ -214,6 +270,14 @@ pub(super) fn launch_design_loop_turn(
         system_prompt.push_str("\n\n---\n\n");
         system_prompt.push_str(&brief);
         op_ai_skills::append_image_self_check_scope(&mut system_prompt);
+    }
+    // E-lite: tell the model the ⚡Nx setting it's actually operating under
+    // (see `team_size_fact`) — independent of whether a canvas brief exists,
+    // so a fresh-canvas multi-screen ask with team_size > 1 still knows it
+    // may `spawn_agents`.
+    if let Some(fact) = team_size_fact(agent_team_size) {
+        system_prompt.push_str("\n\n---\n\n");
+        system_prompt.push_str(&fact);
     }
     let req = ChatRequest {
         system_prompt,
@@ -286,18 +350,21 @@ mod tests {
     #[test]
     fn loop_enabled_explicit_on_routes_any_prompt_to_loop() {
         let dashboard = "Design an admin analytics dashboard web app";
-        assert!(loop_enabled(true, None, dashboard));
-        assert!(loop_enabled(false, Some("1"), dashboard));
-        assert!(loop_enabled(false, Some("true"), dashboard));
-        assert!(loop_enabled(false, Some(" on "), dashboard));
+        assert!(loop_enabled(true, None, dashboard, false));
+        assert!(loop_enabled(false, Some("1"), dashboard, false));
+        assert!(loop_enabled(false, Some("true"), dashboard, false));
+        assert!(loop_enabled(false, Some(" on "), dashboard, false));
     }
 
     #[test]
     fn loop_enabled_explicit_off_routes_any_prompt_to_orchestrator() {
         let mobile = "Design a mobile fitness app home";
-        assert!(!loop_enabled(false, Some("0"), mobile));
-        assert!(!loop_enabled(false, Some("false"), mobile));
-        assert!(!loop_enabled(false, Some(" off "), mobile));
+        assert!(!loop_enabled(false, Some("0"), mobile, false));
+        assert!(!loop_enabled(false, Some("false"), mobile, false));
+        assert!(!loop_enabled(false, Some(" off "), mobile, false));
+        // An explicit force-off wins even when the canvas already has a
+        // mobile screen root — explicit settings always take precedence.
+        assert!(!loop_enabled(false, Some("0"), mobile, true));
     }
 
     #[test]
@@ -305,7 +372,8 @@ mod tests {
         assert!(loop_enabled(
             false,
             None,
-            "Design a mobile fitness app home"
+            "Design a mobile fitness app home",
+            false
         ));
     }
 
@@ -314,7 +382,8 @@ mod tests {
         assert!(loop_enabled(
             false,
             None,
-            "Design a landing page for a climate SaaS"
+            "Design a landing page for a climate SaaS",
+            false
         ));
     }
 
@@ -323,8 +392,28 @@ mod tests {
         assert!(!loop_enabled(
             false,
             None,
-            "Design an admin analytics dashboard web app"
+            "Design an admin analytics dashboard web app",
+            false
         ));
+    }
+
+    #[test]
+    fn loop_enabled_canvas_mobile_root_routes_ascii_blind_continuation_to_loop() {
+        // "继续生成剩下3个页面" (continue generating the remaining 3 pages)
+        // carries no ASCII mobile keyword `root_seed_prompt_is_mobile` can
+        // match — the multi-screen fan-out break this fixes. When the canvas
+        // already proves the product is mobile, that fact must route the
+        // continuation to the loop regardless of the prompt's own text.
+        assert!(loop_enabled(false, None, "继续生成剩下3个页面", true));
+    }
+
+    #[test]
+    fn loop_enabled_canvas_mobile_root_false_keeps_prior_routing_for_ascii_blind_prompt() {
+        // Regression lock: on an empty/desktop canvas the SAME
+        // ASCII-keyword-blind prompt must keep today's behavior (routed to
+        // the orchestrator) — the canvas signal only ADDS a route, it never
+        // changes the text-only outcome when it's false.
+        assert!(!loop_enabled(false, None, "继续生成剩下3个页面", false));
     }
 
     #[test]
@@ -332,7 +421,8 @@ mod tests {
         assert!(!loop_enabled(
             false,
             None,
-            "Design the dashboard homepage for admin console"
+            "Design the dashboard homepage for admin console",
+            false
         ));
     }
 
@@ -341,7 +431,68 @@ mod tests {
         assert!(!loop_enabled(
             false,
             None,
-            "Design the homepage for a project management web app"
+            "Design the homepage for a project management web app",
+            false
         ));
+    }
+
+    // ── canvas-state mobile-root signal ─────────────────────────────
+    fn mobile_screen_frame(id: &str, width: f64) -> jian_ops_schema::node::PenNode {
+        serde_json::from_value(serde_json::json!({
+            "type": "frame",
+            "id": id,
+            "name": "Home",
+            "width": width,
+            "height": 844,
+            "children": []
+        }))
+        .expect("frame fixture")
+    }
+
+    #[test]
+    fn canvas_has_mobile_screen_root_true_for_390_wide_top_level_frame() {
+        let mut state = op_editor_core::EditorState::new();
+        state.active_children_mut().clear();
+        state
+            .active_children_mut()
+            .push(mobile_screen_frame("home", 390.0));
+        assert!(canvas_has_mobile_screen_root(&state));
+    }
+
+    #[test]
+    fn canvas_has_mobile_screen_root_false_for_empty_canvas() {
+        let mut state = op_editor_core::EditorState::new();
+        state.active_children_mut().clear();
+        assert!(!canvas_has_mobile_screen_root(&state));
+    }
+
+    #[test]
+    fn canvas_has_mobile_screen_root_false_for_desktop_width_frame() {
+        let mut state = op_editor_core::EditorState::new();
+        state.active_children_mut().clear();
+        state
+            .active_children_mut()
+            .push(mobile_screen_frame("home", 1440.0));
+        assert!(!canvas_has_mobile_screen_root(&state));
+    }
+
+    // ── E-lite: team-size system-prompt fact ────────────────────────
+    #[test]
+    fn team_size_fact_is_none_at_the_default_of_one() {
+        // A team of one has nothing to parallelize — injecting the fact
+        // would only add noise to every single-agent turn.
+        assert_eq!(team_size_fact(1), None);
+    }
+
+    #[test]
+    fn team_size_fact_names_the_setting_when_above_one() {
+        assert_eq!(
+            team_size_fact(4).as_deref(),
+            Some("User's parallel-agents setting: 4")
+        );
+        assert_eq!(
+            team_size_fact(6).as_deref(),
+            Some("User's parallel-agents setting: 6")
+        );
     }
 }
