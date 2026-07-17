@@ -6,19 +6,21 @@
 
 use std::collections::BTreeMap;
 
-use op_ai_skills::guideline_for;
 use op_ai_skills::resolve_style::{
     resolve_style, Fonts, ResolveOutcome, Shadow, StyleGuide, StyleParams, TokenMap,
 };
+use op_ai_skills::{guideline_for, guideline_topics};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 /// Read tool that returns the product-design guidelines for `topic`.
 ///
-/// Supported topics include `"web-app"`, `"mobile"`, and `"code-to-design"`.
-/// Unknown topics return the same error envelope shape as `get_style_guide`
-/// on a bad argument — `ToolOutcome::Ok` with an `"error"` key in the result
-/// map (not a JSON-RPC transport error).
+/// Supported topics are exactly `op_ai_skills::guideline_topics()` — the
+/// missing-argument and unknown-topic error hints below are generated from
+/// that list so they can never drift stale as topics are added (see
+/// `guideline_topics_hint`). Unknown topics return the same error envelope
+/// shape as `get_style_guide` on a bad argument — `ToolOutcome::Ok` with an
+/// `"error"` key in the result map (not a JSON-RPC transport error).
 pub struct GetGuidelines;
 
 impl McpTool for GetGuidelines {
@@ -45,13 +47,25 @@ impl McpTool for GetGuidelines {
     }
 }
 
+/// Comma-joined `guideline_topics()`, e.g. `"web-app, mobile, code-to-design,
+/// landing-page, dashboard, slides, form, design-system, interactivity"` —
+/// built fresh from the canonical table each call so a topic added there
+/// (like `interactivity` was) automatically reaches both error hints below,
+/// with no second hardcoded list to fall out of sync.
+fn guideline_topics_hint() -> String {
+    guideline_topics().join(", ")
+}
+
 fn call_guide(args: &BTreeMap<String, String>) -> ToolOutcome {
     let topic = match args.get("topic").map(String::as_str) {
         Some(t) if !t.trim().is_empty() => t.trim(),
         _ => {
             return ToolOutcome::Err(
                 ToolErrorCode::MissingArgument,
-                "topic is required (\"web-app\", \"mobile\", or \"code-to-design\")".into(),
+                format!(
+                    "topic is required. Supported topics: {}.",
+                    guideline_topics_hint()
+                ),
             )
         }
     };
@@ -70,7 +84,8 @@ fn call_guide(args: &BTreeMap<String, String>) -> ToolOutcome {
             out.insert(
                 "error".into(),
                 format!(
-                    "Unknown topic: \"{topic}\". Supported topics: web-app, mobile, code-to-design."
+                    "Unknown topic: \"{topic}\". Supported topics: {}.",
+                    guideline_topics_hint()
                 ),
             );
             ToolOutcome::Ok(out)
@@ -430,6 +445,17 @@ mod tests {
                     msg.contains("unknown-topic"),
                     "error message must name the bad topic: {msg}"
                 );
+                // The hint must be generated from the REAL topic set, not a
+                // second hardcoded list that can silently go stale (a prior
+                // version of this message still said "web-app, mobile,
+                // code-to-design" after five more topics — including
+                // `interactivity` — had already shipped).
+                for topic in op_ai_skills::guideline_topics() {
+                    assert!(
+                        msg.contains(topic),
+                        "unknown-topic hint must name every real topic, missing {topic:?}: {msg}"
+                    );
+                }
             }
             other => panic!("expected Ok(error), got {other:?}"),
         }
@@ -438,9 +464,32 @@ mod tests {
     #[test]
     fn missing_topic_arg_returns_err() {
         let out = get_guidelines_snapshot().call(&BTreeMap::new());
-        assert!(
-            matches!(out, ToolOutcome::Err(ToolErrorCode::MissingArgument, _)),
-            "missing topic must return MissingArgument: {out:?}"
-        );
+        match &out {
+            ToolOutcome::Err(ToolErrorCode::MissingArgument, msg) => {
+                for topic in op_ai_skills::guideline_topics() {
+                    assert!(
+                        msg.contains(topic),
+                        "missing-arg hint must name every real topic, missing {topic:?}: {msg}"
+                    );
+                }
+            }
+            other => panic!("missing topic must return MissingArgument: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn guideline_topics_hint_matches_the_canonical_topic_list_exactly() {
+        // Locks the hint string generator itself to `guideline_topics()` so
+        // the two can never diverge, independent of how `call_guide` uses it.
+        let hint = guideline_topics_hint();
+        assert_eq!(hint, op_ai_skills::guideline_topics().join(", "));
+        // Every listed name must itself resolve — the table backing both
+        // functions can't list a topic `guideline_for` doesn't actually serve.
+        for topic in op_ai_skills::guideline_topics() {
+            assert!(
+                op_ai_skills::guideline_for(topic).is_some(),
+                "listed topic {topic:?} must resolve via guideline_for"
+            );
+        }
     }
 }
