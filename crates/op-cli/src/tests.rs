@@ -132,28 +132,47 @@ fn install_codex_writes_bundle_and_uninstall_removes_it() {
 }
 
 #[test]
-fn install_opencode_updates_plugin_array_and_preserves_other_plugins() {
+fn install_opencode_writes_scanned_skills_dir_and_prunes_legacy_plugin_entry() {
     let home = std::env::temp_dir().join(format!("op-cli-skill-opencode-{}", std::process::id()));
     let config = home.join(".config/opencode/opencode.json");
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(config.parent().unwrap()).expect("config dir");
-    std::fs::write(&config, r#"{"plugin":["other@file"]}"#).expect("seed config");
+    // Seed a config carrying the legacy no-op plugin entry plus a foreign one.
+    std::fs::write(
+        &config,
+        r#"{"plugin":["other@file","openpencil-skill@git+https://github.com/zseven-w/openpencil-skill.git"]}"#,
+    )
+    .expect("seed config");
+
+    // A stale plain file squatting on the discovery entry must be replaced,
+    // not silently kept (it would make install report success while opencode
+    // discovers nothing).
+    let link = home.join(".config/opencode/skills/openpencil-skill");
+    std::fs::create_dir_all(link.parent().unwrap()).expect("skills dir");
+    std::fs::write(&link, "stale").expect("seed stale entry");
 
     skill_install_cli::install_target_at_home("opencode", &home).expect("install opencode");
     skill_install_cli::install_target_at_home("opencode", &home).expect("install is idempotent");
 
+    // The skill lands where opencode's scanner looks:
+    // <config-dir>/skills/**/SKILL.md (symlink into the bundle copy).
+    assert!(
+        link.join("openpencil-design/SKILL.md").exists(),
+        "SKILL.md must be reachable under the scanned skills dir"
+    );
+    assert!(home
+        .join(".config/opencode/openpencil-skill/skills/openpencil-design/SKILL.md")
+        .exists());
+
+    // The legacy plugin entry is pruned; foreign entries survive.
     let installed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config).expect("read config"))
             .expect("json config");
-    let plugins = installed["plugin"].as_array().expect("plugin array");
-    assert_eq!(plugins.len(), 2);
-    assert!(plugins.iter().any(|p| p == "other@file"));
-    assert!(plugins
-        .iter()
-        .any(|p| p.as_str().is_some_and(|s| s.contains("openpencil-skill"))));
+    assert_eq!(installed["plugin"], serde_json::json!(["other@file"]));
 
     skill_install_cli::uninstall_target_at_home("opencode", &home).expect("uninstall opencode");
-
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert!(!home.join(".config/opencode/openpencil-skill").exists());
     let uninstalled: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config).expect("read config"))
             .expect("json config");

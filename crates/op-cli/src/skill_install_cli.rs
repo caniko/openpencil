@@ -8,7 +8,6 @@ const VERSION_SENTINEL: &str = "__OPENPENCIL_VERSION__";
 // Top-level bundle version plus five embedded plugin/package manifest versions.
 const EXPECTED_VERSION_SENTINEL_COUNT: usize = 6;
 const REPO: &str = "zseven-w/openpencil-skill";
-const REPO_URL: &str = "https://github.com/zseven-w/openpencil-skill.git";
 const SKILL_NAME: &str = "openpencil-skill";
 
 #[derive(Debug, Clone)]
@@ -156,7 +155,7 @@ fn install_target(target: Target, home: &Path, bundle: &SkillBundle) -> Result<(
         Target::Gemini => {
             write_bundle_to(&home.join(".gemini/extensions").join(SKILL_NAME), bundle)
         }
-        Target::OpenCode => install_opencode(home),
+        Target::OpenCode => install_opencode(home, bundle),
     }
 }
 
@@ -240,21 +239,39 @@ fn uninstall_codex(home: &Path) -> Result<(), String> {
     remove_path(&home.join(".codex").join(SKILL_NAME))
 }
 
-fn install_opencode(home: &Path) -> Result<(), String> {
-    let config_path = home.join(".config/opencode/opencode.json");
-    let mut config = read_json_object(&config_path)?;
-    let plugin_entry = format!("{SKILL_NAME}@git+{REPO_URL}");
-    let plugins = array_entry(&mut config, "plugin");
-    if !plugins
-        .iter()
-        .any(|value| value.as_str().is_some_and(|p| p.contains(SKILL_NAME)))
-    {
-        plugins.push(Value::String(plugin_entry));
-    }
-    write_json_object(&config_path, &config)
+fn install_opencode(home: &Path, bundle: &SkillBundle) -> Result<(), String> {
+    // opencode discovers skills by scanning its config directory for
+    // `{skill,skills}/**/SKILL.md` (packages/opencode/src/skill/index.ts).
+    // A `plugin` array entry does NOT work for skills: the npm/git package
+    // is installed but never scanned, and this bundle has no JS entrypoint,
+    // so the earlier plugin-entry approach delivered nothing. Mirror the
+    // codex layout instead: bundle beside the config, skills dir linked in.
+    let bundle_dir = home.join(".config/opencode").join(SKILL_NAME);
+    write_bundle_to(&bundle_dir, bundle)?;
+
+    let skills_dir = home.join(".config/opencode/skills");
+    fs::create_dir_all(&skills_dir).map_err(|e| format!("create {}: {e}", skills_dir.display()))?;
+    let link_path = skills_dir.join(SKILL_NAME);
+    let link_target = bundle_dir.join("skills");
+    // The discovery entry is owned by this installer: recreate it on every
+    // install so a stale symlink, plain file, or outdated copied directory
+    // can't shadow the freshly written bundle.
+    remove_path(&link_path)?;
+    link_or_copy_dir(&link_target, &link_path)?;
+    // Prune the legacy no-op plugin entry from configs written by older
+    // versions of this installer.
+    prune_opencode_plugin_entry(home)
 }
 
 fn uninstall_opencode(home: &Path) -> Result<(), String> {
+    remove_path(&home.join(".config/opencode/skills").join(SKILL_NAME))?;
+    remove_path(&home.join(".config/opencode").join(SKILL_NAME))?;
+    prune_opencode_plugin_entry(home)
+}
+
+/// Remove the legacy `openpencil-skill@git+…` plugin entry (older installers
+/// wrote it; opencode installs the package but never loads anything from it).
+fn prune_opencode_plugin_entry(home: &Path) -> Result<(), String> {
     let config_path = home.join(".config/opencode/opencode.json");
     if !config_path.exists() {
         return Ok(());
@@ -351,8 +368,14 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 fn remove_path(path: &Path) -> Result<(), String> {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Ok(());
+    // Only a missing entry is "nothing to remove"; any other metadata error
+    // (permissions, I/O) must propagate — treating it as absence would let a
+    // later create step fail with a misleading error, or silently keep a
+    // stale entry in place.
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("inspect {}: {e}", path.display())),
     };
     if metadata.file_type().is_symlink() {
         remove_symlink_path(path)
@@ -365,11 +388,12 @@ fn remove_path(path: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn remove_symlink_path(path: &Path) -> Result<(), String> {
-    if path.is_dir() {
-        fs::remove_dir(path).map_err(|e| format!("remove {}: {e}", path.display()))
-    } else {
-        fs::remove_file(path).map_err(|e| format!("remove {}: {e}", path.display()))
-    }
+    // Windows removes directory symlinks via remove_dir and file symlinks via
+    // remove_file. `is_dir()` follows the target, so a DANGLING directory
+    // symlink reports false — try both forms instead of classifying.
+    fs::remove_dir(path)
+        .or_else(|_| fs::remove_file(path))
+        .map_err(|e| format!("remove {}: {e}", path.display()))
 }
 
 #[cfg(not(windows))]
