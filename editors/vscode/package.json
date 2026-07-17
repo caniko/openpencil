@@ -1,0 +1,105 @@
+{
+  "name": "openpencil-vscode",
+  "displayName": "OpenPencil",
+  "description": "OpenPencil design-as-code integration for VS Code: .op file editing, MCP configuration, AI skills, and code generation.",
+  "version": "0.0.1",
+  "publisher": "openpencil",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Without trust, .op files show a read-only placeholder; no local daemon is started and no MCP config is written."
+    }
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "openpencil.penEditor",
+        "displayName": "OpenPencil",
+        "selector": [
+          {
+            "filenamePattern": "*.op"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "openpencil.configureMcp",
+        "title": "OpenPencil: Configure MCP"
+      },
+      {
+        "command": "openpencil.removeMcp",
+        "title": "OpenPencil: Remove MCP"
+      },
+      {
+        "command": "openpencil.installSkill",
+        "title": "OpenPencil: Install Skill"
+      },
+      {
+        "command": "openpencil.removeSkill",
+        "title": "OpenPencil: Remove Skill"
+      },
+      {
+        "command": "openpencil.generateCode",
+        "title": "OpenPencil: Generate Code"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "openpencil.assistant",
+        "name": "openpencil",
+        "description": "OpenPencil design assistant"
+      }
+    ],
+    "configuration": {
+      "title": "OpenPencil",
+      "properties": {
+        "openpencil.dev.daemonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the op-host-web-server daemon binary. When empty, probes <workspace>/target/debug/op-host-web-server."
+        },
+        "openpencil.proxy.port": {
+          "type": "number",
+          "default": 0,
+          "description": "Port for the local MCP proxy. 0 selects a port automatically."
+        },
+        "openpencil.codegen.framework": {
+          "type": "string",
+          "enum": [
+            "react",
+            "vue"
+          ],
+          "default": "react",
+          "description": "Target framework for generated code."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint"
+  },
+  "devDependencies": {
+    "@types/vscode": "~1.90",
+    "@types/node": "^20",
+    "@types/bun": "latest",
+    "typescript": "^5",
+    "esbuild": "^0.21",
+    "jsonc-parser": "^3",
+    "oxlint": "latest"
+  }
+}

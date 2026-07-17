@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.oxlintrc.json
+tsconfig.json
+build.mjs
+bun.lock
+bun.lockb
+**/*.map
+**/.eslintrc*
+**/*.ts
+node_modules/**
