@@ -183,6 +183,16 @@ impl WidgetHost {
                         self.mark_dirty();
                         return true;
                     }
+                    AIChatHit::RetrySubtask(..) => {
+                        // Inert on web: the failed-subtask retry pipeline
+                        // (spec retention + single-shot rerun) is desktop
+                        // host machinery; the web design route streams
+                        // straight to the browser with no ChatMessage to
+                        // retain a spec on, so the transcript never paints
+                        // the retry icon here. Unreachable until web grows
+                        // its own retry session storage.
+                        return true;
+                    }
                     AIChatHit::AddAttachment => {
                         // The DOM event loop drains this flag once the
                         // event handler releases its host borrow, opens
