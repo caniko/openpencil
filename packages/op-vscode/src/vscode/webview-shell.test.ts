@@ -39,10 +39,15 @@ test("full HTML enforces both source and origin on inbound page messages", () =>
   expect(html).toContain("e.source === frame.contentWindow && e.origin === IFRAME_ORIGIN");
 });
 
-test("full HTML guards on typeof string and does not forward control messages", () => {
+test("full HTML guards on typeof string and matches control by PARSED type, not substring", () => {
   const html = buildWebviewHtml({ iframeSrc: "http://127.0.0.1:45010/", nonce: "N1" });
   expect(html).toContain('typeof e.data !== "string"');
-  expect(html).toContain('e.data.indexOf("op-shell/") !== -1');
+  // The relay must parse and check the top-level type (so an open-document whose
+  // docJson merely contains "op-shell/" is still forwarded, not dropped).
+  expect(html).toContain("JSON.parse(e.data).type");
+  expect(html).toContain('controlType.indexOf("op-shell/") === 0');
+  // Regression: the naive raw-substring drop must be gone.
+  expect(html).not.toContain('e.data.indexOf("op-shell/") !== -1');
 });
 
 test("nonce is not reused across boot and full unless the caller reuses it", () => {

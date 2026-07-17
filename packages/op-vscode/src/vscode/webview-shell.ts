@@ -66,10 +66,14 @@ export function buildWebviewHtml(opts: { iframeSrc: string; nonce: string }): st
       // page → shell → extension (acquireVsCodeApi is webview→extension only)
       vscode.postMessage(e.data);
     } else if (e.source !== frame.contentWindow) {
-      // extension → shell → iframe. Control messages (op-shell/*) are handled
-      // here; everything else is forwarded to the daemon page with an EXPLICIT
-      // target origin (never "*").
-      if (e.data.indexOf("op-shell/") !== -1) return;
+      // extension → shell → iframe. Skip op-shell/* CONTROL messages (matched on
+      // the parsed top-level type, NOT a substring — a legitimate open-document
+      // whose docJson embeds the text "op-shell/" must still be forwarded, else
+      // the page never opens and the session hangs). Everything else forwards to
+      // the daemon page with an EXPLICIT target origin (never "*").
+      var controlType = null;
+      try { controlType = JSON.parse(e.data).type; } catch (_) { controlType = null; }
+      if (typeof controlType === "string" && controlType.indexOf("op-shell/") === 0) return;
       frame.contentWindow.postMessage(e.data, IFRAME_ORIGIN);
     }
   });
