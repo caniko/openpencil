@@ -93,6 +93,10 @@ pub enum AIChatHit {
     /// Click on tab `i`'s close × glyph — host calls
     /// `state.chat.close_tab(i)`. Wired in MT.3.
     CloseTab(usize),
+    /// Click on a failed subtask row's "Retry" icon —
+    /// `(message_index, activity/source_index)`. Host calls
+    /// `state.chat.begin_subtask_retry(message_index, source_index)`.
+    RetrySubtask(usize, usize),
 }
 
 /// Everything a host needs from the chat panel for a single cursor event,
@@ -154,6 +158,9 @@ impl From<super::ai_chat_transcript::TranscriptHit> for AIChatHit {
             }
             super::ai_chat_transcript::TranscriptHit::ApplyDesignBlock(message_index, text) => {
                 Self::ApplyDesignBlock(message_index, text)
+            }
+            super::ai_chat_transcript::TranscriptHit::RetrySubtask(message_index, source_index) => {
+                Self::RetrySubtask(message_index, source_index)
             }
         }
     }

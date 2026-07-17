@@ -24,14 +24,17 @@ pub enum AgentSettingsTab {
     Mcp,
     Images,
     System,
+    /// Sign-in status + workspace identity (v0.8.2 user system).
+    Account,
 }
 
 impl AgentSettingsTab {
-    pub const ALL: [AgentSettingsTab; 4] = [
+    pub const ALL: [AgentSettingsTab; 5] = [
         AgentSettingsTab::Agents,
         AgentSettingsTab::Mcp,
         AgentSettingsTab::Images,
         AgentSettingsTab::System,
+        AgentSettingsTab::Account,
     ];
 
     pub fn label(self) -> &'static str {
@@ -40,6 +43,7 @@ impl AgentSettingsTab {
             AgentSettingsTab::Mcp => "MCP",
             AgentSettingsTab::Images => "Images",
             AgentSettingsTab::System => "System",
+            AgentSettingsTab::Account => "Account",
         }
     }
 }
@@ -267,7 +271,7 @@ impl BuiltinAgentConfig {
         if kind == BuiltinAgentKind::OpenAiCompat && self.model.starts_with("claude-") {
             self.model = "gpt-5.4".into();
         } else if kind == BuiltinAgentKind::Anthropic && self.model.starts_with("gpt-") {
-            self.model = "claude-sonnet-4-6-20250916".into();
+            self.model = "claude-sonnet-5".into();
         }
     }
 

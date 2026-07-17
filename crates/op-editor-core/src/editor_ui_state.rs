@@ -891,6 +891,16 @@ pub struct EditorUiState {
     pub locale: Locale,
     /// TopBar Globe dropdown state.
     pub locale_picker: jian_widgets::components::select::SelectState,
+    /// User's last-set ⚡Nx parallel-agents team size — an app-level
+    /// preference (persisted via `settings_io`), NOT the per-tab
+    /// `ChatState::agent_team_size` it seeds. `ChatSessions::new_tab`
+    /// carries the ACTIVE tab's current value forward for continuity
+    /// within a session; this field is what re-seeds tab 0's value across
+    /// a full app restart, where no "active tab" from a prior session
+    /// exists to carry forward from. Old `settings.json` files predating
+    /// this field default to `1` (serde default), matching
+    /// `ChatState::default().agent_team_size`.
+    pub preferred_agent_team_size: u32,
 
     // --- File menu --------------------------------------------------
     /// File-menu dropdown open (anchored under folder + chevron).
@@ -1014,6 +1024,24 @@ pub struct EditorUiState {
     /// Draft, caret, selection, and blink state for the focused
     /// settings-modal input.
     pub settings_input: jian_core::text_input::TextInputState,
+
+    // --- Account (v0.8.2 user system: platform + zseven-sso) --------
+    /// Signed-in / signed-out identity. The backend (OIDC Auth Code +
+    /// PKCE via system browser) is not wired yet — see
+    /// `AccountState::dev_fake_signed_in` for the dev-only fast path.
+    pub account: crate::account_state::AccountState,
+    /// TopBar avatar-button dropdown (signed-in state) open.
+    pub account_menu_open: bool,
+    /// Which account-dropdown row the cursor is over.
+    pub account_menu_hover: Option<crate::account_state::AccountMenuRow>,
+    /// Sign-in modal (signed-out state) open.
+    pub login_modal_open: bool,
+    /// Which login-modal control the cursor is over.
+    pub login_modal_hover: Option<crate::account_state::LoginModalButton>,
+    /// Set after the production "Sign in with browser" button is
+    /// clicked — reveals the honest "coming soon" note instead of
+    /// pretending the OIDC flow ran. Untouched by the dev fake-login path.
+    pub login_modal_stub_hint_shown: bool,
 
     // --- Toolbar shape slot ----------------------------------------
     /// Toolbar shape-tool dropdown state.
@@ -1161,6 +1189,12 @@ pub struct EditorUiState {
     /// popover highlights the row under the cursor like the other
     /// property-panel dropdowns.
     pub effect_add_menu_hover: Option<usize>,
+    /// Whether the Interactions section's Navigate/Back/Remove popover
+    /// is open. `false` = closed.
+    pub interaction_menu_open: bool,
+    /// Row index hovered in the open Interactions popover (`None` =
+    /// none).
+    pub interaction_menu_hover: Option<usize>,
     /// Fill/stroke colour-variable dropdown currently open in the
     /// PropertyPanel; `None` means closed.
     pub property_color_variable_picker_open: Option<crate::ui_draft::ColorTarget>,
@@ -1415,6 +1449,7 @@ impl Default for EditorUiState {
             theme_mode: ThemeMode::Dark,
             locale: Locale::ZhCn,
             locale_picker: jian_widgets::components::select::SelectState::default(),
+            preferred_agent_team_size: 1,
             file_menu_open: false,
             file_menu: Default::default(),
             pending_file_action: None,
@@ -1451,6 +1486,12 @@ impl Default for EditorUiState {
             agent_settings: crate::agent_settings::AgentSettings::default(),
             agent_settings_drag: None,
             settings_input: jian_core::text_input::TextInputState::default(),
+            account: crate::account_state::AccountState::default(),
+            account_menu_open: false,
+            account_menu_hover: None,
+            login_modal_open: false,
+            login_modal_hover: None,
+            login_modal_stub_hint_shown: false,
             shape_picker: jian_widgets::components::select::SelectState::default(),
             toolbar_hover: None,
             shape_tool: Tool::Rect,
@@ -1499,6 +1540,8 @@ impl Default for EditorUiState {
             fill_type_picker_index: 0,
             effect_add_picker_open: false,
             effect_add_menu_hover: None,
+            interaction_menu_open: false,
+            interaction_menu_hover: None,
             property_color_variable_picker_open: None,
             image_fill_popover_open: false,
             font_picker: jian_widgets::components::select::SelectState::default(),
@@ -1644,6 +1687,20 @@ impl EditorUiState {
         let was = self.effect_add_picker_open;
         self.effect_add_picker_open = false;
         self.effect_add_menu_hover = None;
+        was
+    }
+
+    /// Toggle the Interactions section's Navigate/Back/Remove popover.
+    pub fn toggle_interaction_menu(&mut self) {
+        self.interaction_menu_open = !self.interaction_menu_open;
+        self.interaction_menu_hover = None;
+    }
+
+    /// Close the Interactions popover. Returns true when it was open.
+    pub fn close_interaction_menu(&mut self) -> bool {
+        let was = self.interaction_menu_open;
+        self.interaction_menu_open = false;
+        self.interaction_menu_hover = None;
         was
     }
 

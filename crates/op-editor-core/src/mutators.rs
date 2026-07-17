@@ -599,6 +599,27 @@ impl EditorState {
         }
     }
 
+    /// Cycle the active tab's ⚡Nx (`chat.agent_team_size`) AND mirror the
+    /// new value into `editor_ui.preferred_agent_team_size` — the sticky
+    /// app preference `settings_io` persists and every future launch's
+    /// tab 0 seeds from (see that field's doc comment). A thin
+    /// `EditorState`-level wrapper over `ChatState::cycle_agent_team_size`
+    /// so the two fields can never drift apart: every host (native + web)
+    /// calls THIS, never the bare `chat` method, when the user changes
+    /// the setting.
+    pub fn cycle_agent_team_size(&mut self) {
+        self.chat.cycle_agent_team_size();
+        self.editor_ui.preferred_agent_team_size = self.chat.agent_team_size;
+    }
+
+    /// Set the active tab's ⚡Nx to an explicit value (the Parallel Agents
+    /// picker's direct choice) and mirror it into `editor_ui.preferred_
+    /// agent_team_size`, same as [`Self::cycle_agent_team_size`].
+    pub fn set_agent_team_size(&mut self, n: u32) {
+        self.chat.agent_team_size = n;
+        self.editor_ui.preferred_agent_team_size = n;
+    }
+
     /// Light invariant check — Err on first violation: out-of-range
     /// active page index, or a duplicate node id.
     pub fn validate(&self) -> Result<(), String> {

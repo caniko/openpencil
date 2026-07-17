@@ -42,6 +42,7 @@ fn image_fill_body_click_opens_the_image_popover() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,

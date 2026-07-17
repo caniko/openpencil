@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "Sistema",
         "settings.autoUpdateDesc" => "Buscar automáticamente nuevas versiones al iniciar",
         "settings.experimental" => "Funciones experimentales",
-        "settings.experimentalDesc" => "Activar el modo de vista previa y la configuración de widgets",
+        "settings.experimentalDesc" => "Activar la configuración de widgets",
         "settings.systemDesktopOnly" => "La configuración del sistema está disponible en la aplicación de escritorio.",
         "settings.envHint" => "Puedes establecer variables de entorno adicionales en {{path}}.",
         "builtin.title" => "Proveedores integrados",

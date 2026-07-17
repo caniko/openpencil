@@ -12,6 +12,9 @@ use crate::widgets::property_panel_inputs::{
     COLOR_VARIABLE_BUTTON_W, COLOR_VARIABLE_GAP, CREATE_COMPONENT_BTN_H, CREATE_COMPONENT_PAD_TOP,
     HEADER_HEIGHT, INPUT_HEIGHT, PAD_X, SECTION_GAP, SECTION_HEADER_HEIGHT, TAB_HEIGHT,
 };
+use crate::widgets::property_panel_interactions::{
+    interactions_section_height, push_interaction_action_rects, InteractionSummary,
+};
 use crate::widgets::property_panel_stroke::{push_stroke_action_rects, stroke_section_body_height};
 use crate::{Point2D, Rect};
 use op_editor_core::{EffectField, FillType};
@@ -211,9 +214,21 @@ pub fn action_button_rects(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[FillSummary],
+    interactions: &InteractionSummary,
 ) -> Vec<(PropertyPanelAction, Rect)> {
     action_button_rects_with_fill_picker(
-        panel_rect, visible, effects, fills, false, 0, false, false, false, false, false,
+        panel_rect,
+        visible,
+        effects,
+        fills,
+        interactions,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
     )
 }
 
@@ -227,12 +242,17 @@ pub fn fill_type_toggle_action_rect(
     fills: &[FillSummary],
     index: usize,
 ) -> Option<Rect> {
-    action_button_rects(panel_rect, visible, effects, fills)
-        .into_iter()
-        .find_map(|(action, rect)| {
-            matches!(action, PropertyPanelAction::ToggleFillTypePicker(i) if i == index)
-                .then_some(rect)
-        })
+    action_button_rects(
+        panel_rect,
+        visible,
+        effects,
+        fills,
+        &InteractionSummary::default(),
+    )
+    .into_iter()
+    .find_map(|(action, rect)| {
+        matches!(action, PropertyPanelAction::ToggleFillTypePicker(i) if i == index).then_some(rect)
+    })
 }
 
 /// Height of one row in an Export-section inline select popup.
@@ -248,9 +268,21 @@ pub fn property_panel_content_height(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[FillSummary],
+    interactions: &InteractionSummary,
 ) -> f32 {
     let actions = action_button_rects_with_fill_picker(
-        panel_rect, visible, effects, fills, false, 0, false, false, false, false, false,
+        panel_rect,
+        visible,
+        effects,
+        fills,
+        interactions,
+        false,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
     );
     let inputs = editable_input_rects(panel_rect, visible, fills);
     let bottom = actions
@@ -274,6 +306,7 @@ pub fn action_button_rects_with_fill_picker(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[FillSummary],
+    interactions: &InteractionSummary,
     fill_picker_open: bool,
     fill_type_picker_index: usize,
     font_picker_open: bool,
@@ -569,6 +602,10 @@ pub fn action_button_rects_with_fill_picker(
             y += 8.0;
         }
         y += SECTION_GAP;
+    }
+    if visible.interactions {
+        push_interaction_action_rects(&mut out, interactions, x0, y, w);
+        y += interactions_section_height(interactions);
     }
     if visible.export {
         // Export section: header + a row of two dropdowns (scale on

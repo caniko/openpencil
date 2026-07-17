@@ -82,7 +82,7 @@ pub(crate) fn effect_add_menu_row_rects(menu: Rect) -> Vec<(PropertyPanelAction,
         .map(|(i, (action, _))| {
             let ry = menu.origin.y + 4.0 + i as f32 * EFFECT_ADD_MENU_ROW_H;
             (
-                *action,
+                action.clone(),
                 Rect {
                     origin: Point2D::new(menu.origin.x, ry),
                     size: Point2D::new(menu.size.x, EFFECT_ADD_MENU_ROW_H),

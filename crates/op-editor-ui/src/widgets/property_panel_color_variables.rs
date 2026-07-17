@@ -10,6 +10,7 @@ use crate::widgets::property_panel::{
     ColorVariableOption, EffectSummary, FillSummary, PropertyPanelAction,
 };
 use crate::widgets::property_panel_inputs::{INPUT_RADIUS, PAD_X};
+use crate::widgets::property_panel_interactions::InteractionSummary;
 use crate::widgets::property_panel_layout::{
     action_button_rects_with_fill_picker, COLOR_VARIABLE_MENU_PAD_Y, COLOR_VARIABLE_MENU_ROW_H,
     COLOR_VARIABLE_MENU_W,
@@ -46,6 +47,7 @@ pub fn paint_color_variable_picker(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[FillSummary],
+    interactions: &InteractionSummary,
     variables: &[ColorVariableOption],
     fill_ref: Option<&str>,
     stroke_ref: Option<&str>,
@@ -64,6 +66,7 @@ pub fn paint_color_variable_picker(
         visible,
         effects,
         fills,
+        interactions,
         target,
         fill_picker_open,
         fill_type_picker_index,
@@ -123,6 +126,7 @@ fn color_variable_anchor(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[FillSummary],
+    interactions: &InteractionSummary,
     target: op_editor_core::ColorTarget,
     fill_picker_open: bool,
     fill_type_picker_index: usize,
@@ -137,6 +141,7 @@ fn color_variable_anchor(
         visible,
         effects,
         fills,
+        interactions,
         fill_picker_open,
         fill_type_picker_index,
         font_picker_open,

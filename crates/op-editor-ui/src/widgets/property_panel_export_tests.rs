@@ -15,6 +15,7 @@ fn export_format_picker_lists_svg_after_webp() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,

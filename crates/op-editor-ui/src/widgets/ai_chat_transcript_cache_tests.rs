@@ -106,6 +106,65 @@ fn transcript_hit_resolves_a_click_on_a_design_block_header() {
     );
 }
 
+/// Build a streaming assistant message with one failed subtask activity —
+/// `content_offset: Some(0)` so it renders through the interleaved
+/// `build_activity_flow` path every classic-orchestrator design turn uses
+/// (`upsert_activity` always stamps an offset).
+fn failed_subtask_message(retryable: bool) -> ChatMessage {
+    let mut m = ChatMessage::assistant_streaming();
+    m.content = "designing".into();
+    m.activities.push(op_editor_core::ChatActivity {
+        id: "hero".into(),
+        title: "Hero".into(),
+        detail: Some("Needs attention".into()),
+        status: op_editor_core::ChatActivityStatus::Error,
+        content_offset: Some(0),
+    });
+    if retryable {
+        m.failed_subtasks.push(op_editor_core::PendingSubtaskRetry {
+            subtask_id: "hero".into(),
+            subtask_json: "{}".into(),
+        });
+    }
+    m
+}
+
+#[test]
+fn transcript_hit_resolves_a_click_on_a_retryable_failed_subtask_rows_retry_icon() {
+    let m = failed_subtask_message(true);
+    let msgs = std::slice::from_ref(&m);
+    let loc = op_editor_core::Locale::EnUs;
+    let icon_rect = crate::widgets::ai_chat_transcript_paint_parts::retry_icon_rect(
+        &build_transcript(msgs, body(), loc)[0].steps[0],
+    )
+    .expect("a retryable row must expose a retry icon rect");
+    let cx = icon_rect.origin.x + icon_rect.size.x / 2.0;
+    let cy = icon_rect.origin.y + icon_rect.size.y / 2.0;
+    assert_eq!(
+        transcript_hit(&canonical_at_body(msgs), body(), cx, cy, 0.0),
+        Some(TranscriptHit::RetrySubtask(0, 0))
+    );
+}
+
+#[test]
+fn transcript_hit_never_retries_a_failed_row_with_no_persisted_spec() {
+    // Same failed activity, but no matching `failed_subtasks` entry — e.g.
+    // every activity flipped to `Error` by a whole-run catastrophic failure
+    // (no `RunSummary`, nothing persisted). No retry icon must be exposed —
+    // clicking where it would have been must not silently start a phantom
+    // retry via a stale/coincidental hit.
+    let m = failed_subtask_message(false);
+    let msgs = std::slice::from_ref(&m);
+    let loc = op_editor_core::Locale::EnUs;
+    let built = build_transcript(msgs, body(), loc);
+    let step = &built[0].steps[0];
+    assert!(!step.retryable);
+    assert!(
+        crate::widgets::ai_chat_transcript_paint_parts::retry_icon_rect(step).is_none(),
+        "a non-retryable row must expose no retry icon rect"
+    );
+}
+
 #[test]
 fn transcript_hit_misses_when_the_click_is_not_on_a_header() {
     let m = ChatMessage::assistant("plain answer, no thinking, no tools");

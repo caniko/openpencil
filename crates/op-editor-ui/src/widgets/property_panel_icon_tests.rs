@@ -56,6 +56,7 @@ fn visible_for(panel: &PropertyPanel) -> sections::VisibleSections {
         export: caps.export,
         fill_type: panel.fill_type,
         gradient_stop_count: panel.snapshot.gradient_stops.len(),
+        interactions: caps.interactions,
     }
 }
 
@@ -74,6 +75,7 @@ fn text_size_section_does_not_emit_clip_content_action() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,
@@ -112,6 +114,7 @@ fn icon_font_selection_exposes_icon_picker_action() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,

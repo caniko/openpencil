@@ -119,6 +119,7 @@ fn fill_type_picker_hit_anchors_to_instance_toggle_action_rect() {
         visible,
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
     )
     .into_iter()
     .find_map(|(action, rect)| {
@@ -156,6 +157,7 @@ fn stacked_fills_emit_add_and_per_index_remove_actions() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,
@@ -183,6 +185,7 @@ fn three_fill_rows_emit_exact_boundary_move_actions_in_row_order() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
     )
     .into_iter()
     .filter_map(|(action, _)| {
@@ -211,6 +214,7 @@ fn fill_move_action_rect_centres_hit_the_exact_emitted_actions() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
     )
     .into_iter()
     .filter(|(action, _)| matches!(action, PropertyPanelAction::MoveFill { .. }))

@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "Система",
         "settings.autoUpdateDesc" => "Автоматически проверять наличие новых версий при запуске",
         "settings.experimental" => "Экспериментальные функции",
-        "settings.experimentalDesc" => "Включить режим предпросмотра и настройку виджетов",
+        "settings.experimentalDesc" => "Включить настройку виджетов",
         "settings.systemDesktopOnly" => "Системные настройки доступны в настольном приложении.",
         "settings.envHint" => "Вы можете задать дополнительные переменные окружения в {{path}}.",
         "builtin.title" => "Встроенные провайдеры",

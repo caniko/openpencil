@@ -1,5 +1,6 @@
 use super::ai_chat_transcript::ACTION_STEP_H;
 use super::ai_chat_transcript_cache::CanonicalTranscript;
+use super::ai_chat_transcript_paint_parts::retry_icon_rect;
 use crate::{Point2D, Rect};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +12,11 @@ pub enum TranscriptHit {
     SetActionStepExpanded(usize, usize, bool),
     CopyDesignBlock(String),
     ApplyDesignBlock(usize, String),
+    /// Click on a failed subtask row's "Retry" icon —
+    /// `(message_index, activity/source_index)`. Only ever produced for a
+    /// row `ActionStep::retryable` marked true (a persisted
+    /// `ChatMessage::failed_subtasks` entry backs it).
+    RetrySubtask(usize, usize),
 }
 
 pub(crate) fn transcript_hit(
@@ -61,6 +67,18 @@ pub(crate) fn transcript_hit(
             }
         }
         for step in &item.steps {
+            // Retry icon takes precedence over the header's own expand
+            // toggle — it occupies a small sub-region of the SAME header
+            // band, so it must be checked first or the broader header hit
+            // below would swallow the click.
+            if let Some(icon_rect) = retry_icon_rect(step) {
+                if icon_rect.contains(p) {
+                    return Some(TranscriptHit::RetrySubtask(
+                        item.msg_index,
+                        step.source_index,
+                    ));
+                }
+            }
             // Only the header band toggles — clicking a detail line must not
             // collapse. Detail-less structured activities are status rows, not
             // disclosure controls, so they deliberately have no hit target.

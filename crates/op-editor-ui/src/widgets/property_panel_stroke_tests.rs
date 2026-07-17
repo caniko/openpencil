@@ -63,6 +63,7 @@ fn stroke_mode_popover_emits_mode_actions() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         false,
         0,
         false,

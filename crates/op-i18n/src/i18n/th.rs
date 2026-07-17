@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "ระบบ",
         "settings.autoUpdateDesc" => "ตรวจสอบเวอร์ชันใหม่โดยอัตโนมัติเมื่อเริ่มต้น",
         "settings.experimental" => "ฟีเจอร์ทดลอง",
-        "settings.experimentalDesc" => "เปิดใช้งานโหมดตัวอย่างและการตั้งค่าวิดเจ็ต",
+        "settings.experimentalDesc" => "เปิดใช้งานการตั้งค่าวิดเจ็ต",
         "settings.systemDesktopOnly" => "การตั้งค่าระบบใช้ได้ในแอปเดสก์ท็อป",
         "settings.envHint" => "คุณสามารถตั้งค่าตัวแปรสภาพแวดล้อมเพิ่มเติมได้ใน {{path}}",
         "builtin.title" => "ผู้ให้บริการในตัว",

@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "Hệ thống",
         "settings.autoUpdateDesc" => "Tự động kiểm tra phiên bản mới khi khởi động",
         "settings.experimental" => "Tính năng thử nghiệm",
-        "settings.experimentalDesc" => "Bật chế độ xem trước và cấu hình Widget",
+        "settings.experimentalDesc" => "Bật cấu hình Widget",
         "settings.systemDesktopOnly" => "Cài đặt hệ thống khả dụng trong ứng dụng máy tính.",
         "settings.envHint" => "Bạn có thể đặt thêm biến môi trường trong {{path}}.",
         "builtin.title" => "Nhà cung cấp tích hợp",

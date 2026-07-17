@@ -30,7 +30,7 @@ fn default_settings_are_quiescent() {
 
 #[test]
 fn tab_and_cli_arrays_cover_all_variants() {
-    assert_eq!(AgentSettingsTab::ALL.len(), 4);
+    assert_eq!(AgentSettingsTab::ALL.len(), 5);
     assert_eq!(McpCli::ALL.len(), 8);
 }
 
@@ -41,7 +41,7 @@ fn settings_tab_fallback_labels_match_ts_order() {
         .map(|tab| tab.label())
         .collect();
 
-    assert_eq!(labels, vec!["Agents", "MCP", "Images", "System"]);
+    assert_eq!(labels, vec!["Agents", "MCP", "Images", "System", "Account"]);
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn add_builtin_agent_prefills_ts_provider_presets_first() {
             (
                 "Anthropic",
                 BuiltinAgentKind::Anthropic,
-                "claude-sonnet-4-6-20250916",
+                "claude-sonnet-5",
                 "https://api.anthropic.com",
                 "",
             ),

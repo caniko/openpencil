@@ -18,6 +18,7 @@ pub(super) fn tab_i18n_label(ui: &EditorUiState, tab: AgentSettingsTab) -> &'sta
         AgentSettingsTab::Mcp => t_settings(ui, "settings.tab.mcp"),
         AgentSettingsTab::Images => t_settings(ui, "settings.tab.images"),
         AgentSettingsTab::System => t_settings(ui, "settings.tab.system"),
+        AgentSettingsTab::Account => t_settings(ui, "settings.tab.account"),
     }
 }
 

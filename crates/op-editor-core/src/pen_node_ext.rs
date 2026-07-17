@@ -69,6 +69,26 @@ pub trait PenNodeExt {
     fn id_str(&self) -> &str {
         &self.base().id
     }
+
+    /// Borrow this node's `events` block, if authored — every variant
+    /// carries an `events: Option<EventHandlers>` field in the
+    /// canonical schema (the interaction-wiring passes + the property
+    /// panel's Interactions section both key off it).
+    fn events(&self) -> Option<&jian_ops_schema::events::EventHandlers>;
+
+    /// Authored `onTap` action list, if any — shorthand for
+    /// `events().and_then(|e| e.on_tap.as_deref())`.
+    fn on_tap(&self) -> Option<&[jian_ops_schema::events::Action]> {
+        self.events()?.on_tap.as_deref()
+    }
+
+    /// Authored `screen` route path. Only `FrameNode` carries this
+    /// field (screen-projection contract — see
+    /// `op-orchestrator::wire_screen_navigation`); every other variant
+    /// returns `None`.
+    fn screen(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Macro body — every variant routes `base` / `base_mut` to its
@@ -97,6 +117,34 @@ macro_rules! base_arms {
             PenNode::Progress(n) => &n.base,
             PenNode::Tabs(n) => &n.base,
             PenNode::Ref(n) => &n.base,
+        }
+    };
+}
+
+macro_rules! events_arms {
+    ($self:ident) => {
+        match $self {
+            PenNode::Frame(n) => n.events.as_ref(),
+            PenNode::Group(n) => n.events.as_ref(),
+            PenNode::Rectangle(n) => n.events.as_ref(),
+            PenNode::Ellipse(n) => n.events.as_ref(),
+            PenNode::Line(n) => n.events.as_ref(),
+            PenNode::Polygon(n) => n.events.as_ref(),
+            PenNode::Path(n) => n.events.as_ref(),
+            PenNode::Text(n) => n.events.as_ref(),
+            PenNode::TextInput(n) => n.events.as_ref(),
+            PenNode::Image(n) => n.events.as_ref(),
+            PenNode::IconFont(n) => n.events.as_ref(),
+            PenNode::TextArea(n) => n.events.as_ref(),
+            PenNode::Select(n) => n.events.as_ref(),
+            PenNode::Switch(n) => n.events.as_ref(),
+            PenNode::Checkbox(n) => n.events.as_ref(),
+            PenNode::Slider(n) => n.events.as_ref(),
+            PenNode::RadioGroup(n) => n.events.as_ref(),
+            PenNode::NumberInput(n) => n.events.as_ref(),
+            PenNode::Progress(n) => n.events.as_ref(),
+            PenNode::Tabs(n) => n.events.as_ref(),
+            PenNode::Ref(n) => n.events.as_ref(),
         }
     };
 }
@@ -136,6 +184,17 @@ impl PenNodeExt for PenNode {
 
     fn base_mut(&mut self) -> &mut PenNodeBase {
         base_mut_arms!(self)
+    }
+
+    fn events(&self) -> Option<&jian_ops_schema::events::EventHandlers> {
+        events_arms!(self)
+    }
+
+    fn screen(&self) -> Option<&str> {
+        match self {
+            PenNode::Frame(n) => n.screen.as_deref(),
+            _ => None,
+        }
     }
 
     fn children(&self) -> Option<&Vec<PenNode>> {

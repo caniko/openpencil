@@ -115,6 +115,13 @@ pub(crate) struct ActionStep {
     pub done: bool,
     pub active: bool,
     pub failed: bool,
+    /// True only for a failed row backed by a persisted
+    /// `ChatMessage::failed_subtasks` entry — gates the row's "Retry" icon
+    /// so it never paints a dead button for a failure with nothing to
+    /// replay (e.g. every activity flipped to `Error` by a whole-run
+    /// catastrophic failure, which produces no `RunSummary` and therefore
+    /// no persisted subtask spec).
+    pub retryable: bool,
 }
 
 /// The answer-text bubble of a message. `typing` is set on an
@@ -319,6 +326,17 @@ pub(crate) fn build_item(
             .flatten()
             .unwrap_or(active);
         let step_h = action_step_height(expanded, details.len());
+        // `i` only aligns with `msg.activities`' own index when the
+        // structured (non-interleaved) path built `progress_steps` directly
+        // from `msg.activities` (see the `activity_step` map above) — the
+        // interleaved tool-loop path's `i` indexes a different reconstructed
+        // list, so retry must stay off there regardless of `failed`.
+        let retryable = failed
+            && !activity_interleave
+            && msg
+                .activities
+                .get(i)
+                .is_some_and(|a| msg.failed_subtasks.iter().any(|p| p.subtask_id == a.id));
         steps.push(ActionStep {
             rect: Rect::xywh(x, y, bubble_w, step_h),
             source_index: i,
@@ -328,6 +346,7 @@ pub(crate) fn build_item(
             done,
             active,
             failed,
+            retryable,
         });
         y += step_h + ACTION_STEP_GAP;
     }

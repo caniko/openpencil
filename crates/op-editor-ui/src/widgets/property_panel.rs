@@ -31,6 +31,7 @@ use crate::widgets::property_panel_sections as sections;
 use crate::widgets::{LayoutBox, LayoutCx, PaintCx, Widget, WidgetId};
 use crate::{Point2D, Rect};
 use jian_widgets::components::select::{SelectHit, SelectState};
+use op_editor_core::pen_node_ext::PenNodeExt;
 use op_editor_core::PropertyFocus;
 
 use op_editor_core::EditorState;
@@ -50,6 +51,7 @@ pub use crate::widgets::property_panel_action::{
 // alongside `VisibleSections` (the section-visibility mask it
 // feeds); re-exported so `property_panel::SectionCapabilities`
 // resolves unchanged.
+use crate::widgets::property_panel_interactions::InteractionMenuHit;
 pub(crate) use crate::widgets::property_panel_layout::SectionCapabilities;
 use crate::widgets::property_panel_snapshot::color_from_hex;
 pub use crate::widgets::property_panel_snapshot::{
@@ -111,7 +113,7 @@ fn apply_resolved_variable_colors(
 }
 
 /// Result of hit-testing the Effects "+" add-menu popover.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EffectAddMenuHit {
     /// A choice row was clicked — apply this action, then close.
     Row(PropertyPanelAction),
@@ -157,6 +159,16 @@ pub struct PropertyPanel {
     /// Whether the Effects "+" add-menu (Drop Shadow / Layer Blur) is
     /// open.
     pub effect_add_picker_open: bool,
+    /// Whether the Interactions section's Navigate/Back/Remove popover
+    /// is open.
+    pub interaction_menu_open: bool,
+    /// Row index hovered in the open Interactions popover (`None` =
+    /// none).
+    pub interaction_menu_hover: Option<usize>,
+    /// Every `screen` route path authored on the active page's
+    /// top-level frames — the Interactions popover's "Navigate to…"
+    /// row source (see `property_panel_interactions::document_screen_paths`).
+    pub screen_paths: Vec<String>,
     pub color_variable_picker_open: Option<op_editor_core::ColorTarget>,
     pub color_variables: Vec<ColorVariableOption>,
     pub fill_variable_ref: Option<String>,
@@ -360,7 +372,15 @@ impl PropertyPanel {
             };
             let fill_ref = variable_name(op_editor_core::first_solid_fill_hex(node));
             let stroke_ref = variable_name(op_editor_core::first_solid_stroke_hex(node));
-            let mut snapshot = NodeSnapshot::from_node(node);
+            // Only a page-root child's `screen` marker is ever
+            // meaningful (`wire_screen_navigation`'s contract) — check
+            // the AUTHORED selection anchor, not the resolved instance
+            // display node, against the active page's top-level ids.
+            let is_top_level = state
+                .active_children()
+                .iter()
+                .any(|n| n.id_str() == state.selection.anchor.as_str());
+            let mut snapshot = NodeSnapshot::from_node(node, is_top_level);
             if !state.editor_ui.agent_settings.experimental_features_enabled {
                 // The Widget section is an experimental surface. Hide it
                 // unless opted in — the section's paint AND height both key
@@ -491,6 +511,9 @@ impl PropertyPanel {
             fill_type_picker: ui.fill_type_picker.clone(),
             fill_type_picker_index: ui.fill_type_picker_index,
             effect_add_picker_open: ui.effect_add_picker_open,
+            interaction_menu_open: ui.interaction_menu_open,
+            interaction_menu_hover: ui.interaction_menu_hover,
+            screen_paths: crate::widgets::property_panel_interactions::document_screen_paths(state),
             color_variable_picker_open: ui.property_color_variable_picker_open,
             color_variables,
             fill_variable_ref,
@@ -623,6 +646,7 @@ impl PropertyPanel {
             self.visible_sections(),
             &self.snapshot.effects,
             &self.snapshot.fills,
+            &self.snapshot.interactions,
             self.fill_type_picker.open,
             self.fill_type_picker_index,
             self.font_picker.open,
@@ -633,6 +657,82 @@ impl PropertyPanel {
         )
         .into_iter()
         .find(|(a, _)| matches!(a, PropertyPanelAction::AddEffect))
+        .map(|(_, r)| r)
+    }
+
+    /// Whether the Interactions popover's "Remove" row shows — only
+    /// when there is an existing single `onTap` action to remove (the
+    /// empty "+ Add interaction" state has nothing to remove; a
+    /// multi-action `onTap` doesn't open this popover at all — see
+    /// `interaction_menu_anchor_rect`).
+    fn interaction_menu_removable(&self) -> bool {
+        self.snapshot.interactions.on_tap.len() == 1
+    }
+
+    /// Hit-test the Interactions section's Navigate/Back/Remove popover
+    /// against `point` (panel space). Mirrors [`Self::effect_add_menu_hit`].
+    pub fn interaction_menu_hit(&self, panel_rect: Rect, point: Point2D) -> InteractionMenuHit {
+        let Some(anchor) = self.interaction_menu_anchor_rect(self.scrolled_rect(panel_rect)) else {
+            return InteractionMenuHit::Outside;
+        };
+        let rows = crate::widgets::property_panel_interactions::interaction_menu_rows(
+            self.locale,
+            &self.screen_paths,
+            self.interaction_menu_removable(),
+        );
+        let menu =
+            crate::widgets::property_panel_interactions::interaction_menu_rect(anchor, rows.len());
+        for (action, row) in
+            crate::widgets::property_panel_interactions::interaction_menu_row_rects(menu, &rows)
+        {
+            if row.contains(point) {
+                return InteractionMenuHit::Row(action);
+            }
+        }
+        if menu.contains(point) {
+            InteractionMenuHit::Inside
+        } else {
+            InteractionMenuHit::Outside
+        }
+    }
+
+    /// Row index under `point` in the open Interactions popover — drives
+    /// the hover highlight (mirrors [`Self::effect_add_menu_row_at`]).
+    pub fn interaction_menu_row_at(&self, panel_rect: Rect, point: Point2D) -> Option<usize> {
+        let anchor = self.interaction_menu_anchor_rect(self.scrolled_rect(panel_rect))?;
+        let rows = crate::widgets::property_panel_interactions::interaction_menu_rows(
+            self.locale,
+            &self.screen_paths,
+            self.interaction_menu_removable(),
+        );
+        let menu =
+            crate::widgets::property_panel_interactions::interaction_menu_rect(anchor, rows.len());
+        crate::widgets::property_panel_interactions::interaction_menu_row_rects(menu, &rows)
+            .into_iter()
+            .position(|(_, row)| row.contains(point))
+    }
+
+    /// The Interactions section's clickable tap-row rect
+    /// (`ToggleInteractionMenu`'s rect) — the popover drops from here.
+    /// `None` when the current `onTap` list has more than one action
+    /// (only "Remove all" is clickable then — no popover).
+    pub(crate) fn interaction_menu_anchor_rect(&self, scrolled: Rect) -> Option<Rect> {
+        sections::action_button_rects_with_fill_picker(
+            scrolled,
+            self.visible_sections(),
+            &self.snapshot.effects,
+            &self.snapshot.fills,
+            &self.snapshot.interactions,
+            self.fill_type_picker.open,
+            self.fill_type_picker_index,
+            self.font_picker.open,
+            self.font_weight_picker_open,
+            self.export_scale_picker_open,
+            self.export_format_picker_open,
+            self.padding_mode_popover_open,
+        )
+        .into_iter()
+        .find(|(a, _)| matches!(a, PropertyPanelAction::ToggleInteractionMenu))
         .map(|(_, r)| r)
     }
 
@@ -652,6 +752,7 @@ impl PropertyPanel {
             self.visible_sections(),
             &self.snapshot.effects,
             &self.snapshot.fills,
+            &self.snapshot.interactions,
         )
     }
 
@@ -706,6 +807,7 @@ impl PropertyPanel {
             export: caps.export,
             fill_type: self.fill_type,
             gradient_stop_count: self.snapshot.gradient_stops.len(),
+            interactions: caps.interactions,
         }
     }
 
@@ -799,6 +901,13 @@ impl PropertyPanel {
                 EffectAddMenuHit::Outside => {}
             }
         }
+        if self.interaction_menu_open {
+            match self.interaction_menu_hit(panel_rect, point) {
+                InteractionMenuHit::Row(action) => return Some(action),
+                InteractionMenuHit::Inside => return None,
+                InteractionMenuHit::Outside => {}
+            }
+        }
         if !self.point_in_section_viewport(panel_rect, point) {
             return None;
         }
@@ -807,6 +916,7 @@ impl PropertyPanel {
             self.visible_sections(),
             &self.snapshot.effects,
             &self.snapshot.fills,
+            &self.snapshot.interactions,
             self.fill_type_picker.open,
             self.fill_type_picker_index,
             self.font_picker.open,
@@ -844,6 +954,7 @@ impl PropertyPanel {
             self.visible_sections(),
             &self.snapshot.effects,
             &self.snapshot.fills,
+            &self.snapshot.interactions,
             self.fill_type_picker.open,
             self.fill_type_picker_index,
             self.font_picker.open,
@@ -949,6 +1060,7 @@ impl PropertyPanel {
             self.visible_sections(),
             &self.snapshot.effects,
             &self.snapshot.fills,
+            &self.snapshot.interactions,
             self.fill_type_picker.open,
             self.fill_type_picker_index,
             self.font_picker.open,
@@ -1329,6 +1441,17 @@ impl Widget for PropertyPanel {
                 w,
             );
         }
+        if caps.interactions {
+            y = sections::paint_interactions_section(
+                cx,
+                &self.theme,
+                &self.snapshot.interactions,
+                self.locale,
+                x,
+                y,
+                w,
+            );
+        }
         if caps.export {
             let _ = sections::paint_export_section(
                 cx,
@@ -1349,6 +1472,23 @@ impl Widget for PropertyPanel {
                     &self.theme,
                     add_rect,
                     self.effect_add_menu_hover,
+                );
+            }
+        }
+        // Interactions section's Navigate/Back/Remove popover.
+        if caps.interactions && self.interaction_menu_open {
+            if let Some(anchor) = self.interaction_menu_anchor_rect(scrolled) {
+                let rows = crate::widgets::property_panel_interactions::interaction_menu_rows(
+                    self.locale,
+                    &self.screen_paths,
+                    self.interaction_menu_removable(),
+                );
+                crate::widgets::property_panel_interactions::paint_interaction_menu(
+                    cx,
+                    &self.theme,
+                    anchor,
+                    &rows,
+                    self.interaction_menu_hover,
                 );
             }
         }
@@ -1450,6 +1590,7 @@ impl Widget for PropertyPanel {
                 self.visible_sections(),
                 &self.snapshot.effects,
                 &self.snapshot.fills,
+                &self.snapshot.interactions,
                 self.export_scale_picker_open,
                 self.export_format_picker_open,
                 self.export_scale,
@@ -1465,6 +1606,7 @@ impl Widget for PropertyPanel {
                 self.visible_sections(),
                 &self.snapshot.effects,
                 &self.snapshot.fills,
+                &self.snapshot.interactions,
                 &self.color_variables,
                 self.fill_variable_ref.as_deref(),
                 self.stroke_variable_ref.as_deref(),
@@ -1489,6 +1631,7 @@ impl Widget for PropertyPanel {
                 self.visible_sections(),
                 &self.snapshot.effects,
                 &self.snapshot.fills,
+                &self.snapshot.interactions,
                 self.fill_type_picker.open,
                 self.fill_type_picker_index,
                 self.font_picker.open,

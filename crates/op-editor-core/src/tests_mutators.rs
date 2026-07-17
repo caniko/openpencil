@@ -636,6 +636,30 @@ fn select_chat_model_bad_index_still_closes_picker() {
 }
 
 #[test]
+fn cycle_agent_team_size_mirrors_into_preferred_agent_team_size() {
+    let mut s = sample();
+    assert_eq!(s.editor_ui.preferred_agent_team_size, 1);
+
+    s.cycle_agent_team_size();
+
+    assert_eq!(s.chat.agent_team_size, 2);
+    assert_eq!(
+        s.editor_ui.preferred_agent_team_size, 2,
+        "the sticky preference must track the picker's live value"
+    );
+}
+
+#[test]
+fn set_agent_team_size_mirrors_into_preferred_agent_team_size() {
+    let mut s = sample();
+
+    s.set_agent_team_size(5);
+
+    assert_eq!(s.chat.agent_team_size, 5);
+    assert_eq!(s.editor_ui.preferred_agent_team_size, 5);
+}
+
+#[test]
 fn rebuild_chat_models_syncs_agent_to_selected_model_provider() {
     let mut s = sample();
     s.chat.discovered_models = vec![crate::ModelEntry::new(

@@ -83,13 +83,18 @@ impl ChatSessions {
     /// registry from the tab it was opened from: model discovery is
     /// app-level state that the provider probe writes into the active
     /// tab, so a defaulted tab showed "No models connected" until the
-    /// next probe cycle (measured on the "+" button).
+    /// next probe cycle (measured on the "+" button). It also inherits
+    /// `agent_team_size` (⚡Nx) — unlike `thinking_mode`/`effort_level`,
+    /// which stay per-tab-default by design, a silent reset of the
+    /// parallel-agents count on "+" reads as the setting randomly
+    /// forgetting itself mid-session.
     pub fn new_tab(&mut self) -> usize {
         let mut fresh = ChatState::default();
         let from = &self.tabs[self.active];
         fresh.discovered_models = from.discovered_models.clone();
         fresh.available_models = from.available_models.clone();
         fresh.selected_model = from.selected_model;
+        fresh.agent_team_size = from.agent_team_size;
         self.tabs.push(fresh);
         self.active = self.tabs.len() - 1;
         self.active
@@ -114,12 +119,14 @@ impl ChatSessions {
         }
         if self.tabs.len() == 1 {
             // Closing the only tab: reset in place rather than removing —
-            // carrying the model registry over, same as `new_tab`.
+            // carrying the model registry + agent_team_size over, same as
+            // `new_tab`.
             let mut fresh = ChatState::default();
             let from = &self.tabs[0];
             fresh.discovered_models = from.discovered_models.clone();
             fresh.available_models = from.available_models.clone();
             fresh.selected_model = from.selected_model;
+            fresh.agent_team_size = from.agent_team_size;
             self.tabs[0] = fresh;
             self.active = 0;
             return;
@@ -425,6 +432,24 @@ mod tests {
         s.close_tab(1);
         s.close_tab(0);
         assert_eq!(s.available_models.len(), 1);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn new_tab_inherits_agent_team_size() {
+        // Regression: a user-set ⚡Nx silently reset to 1x on "+" — the
+        // parallel-agents count is a sticky preference within a session,
+        // not a per-tab-default like thinking_mode/effort_level.
+        let mut s = ChatSessions::default();
+        s.agent_team_size = 3;
+
+        s.new_tab();
+        assert_eq!(s.agent_team_size, 3, "fresh tab keeps the team size");
+
+        // Closing the last tab resets in place but keeps the team size too.
+        s.close_tab(1);
+        s.close_tab(0);
+        assert_eq!(s.agent_team_size, 3);
     }
 
     #[test]

@@ -39,3 +39,23 @@ pub struct ChatCompletion {
     pub failed: u32,
     pub nodes: u32,
 }
+
+/// A failed orchestrator subtask's spec, persisted so the progress panel's
+/// per-row "Retry" button can re-run EXACTLY that subtask later instead of a
+/// re-derived approximation (see the failed-subtask-remediation plan).
+///
+/// Stored as an opaque `serde_json`-encoded string rather than the concrete
+/// `op_orchestrator::plan::Subtask` type: `op-editor-core` cannot depend on
+/// `op-orchestrator` (the dependency runs the other way — orchestrator
+/// depends on editor-core — so a concrete-type field here would be
+/// circular). The host layer (`op-host-desktop`, which already depends on
+/// `op-orchestrator`) serializes this at capture time and deserializes it
+/// back at retry-click time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSubtaskRetry {
+    /// Matches the originating `ChatActivity.id` — the same key a retry
+    /// click resolves through `activities[source_index].id`.
+    pub subtask_id: String,
+    /// `serde_json`-encoded `op_orchestrator::plan::Subtask`.
+    pub subtask_json: String,
+}

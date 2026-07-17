@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "Sistem",
         "settings.autoUpdateDesc" => "Periksa versi baru secara otomatis saat memulai",
         "settings.experimental" => "Fitur eksperimental",
-        "settings.experimentalDesc" => "Aktifkan mode pratinjau dan konfigurasi Widget",
+        "settings.experimentalDesc" => "Aktifkan konfigurasi Widget",
         "settings.systemDesktopOnly" => "Pengaturan sistem tersedia di aplikasi desktop.",
         "settings.envHint" => "Anda dapat mengatur variabel lingkungan tambahan di {{path}}.",
         "builtin.title" => "Penyedia Bawaan",

@@ -294,7 +294,25 @@ impl TopBar {
             self.is_hovered(TopBarButton::ToggleLocale),
             self.is_pressed(TopBarButton::ToggleLocale),
         );
-        // `rx` now points at the LEFT edge of the globe button —
+        // `rx` now points at the LEFT edge of the globe button.
+
+        // User-avatar button — sits between the Globe and the agent
+        // chip (TS layout spot: "between the agents chip and the
+        // globe/theme icons"). Desktop-only (`ACCOUNT_BUTTON_AVAILABLE`)
+        // — the web build has no sign-in flow to open yet.
+        if ACCOUNT_BUTTON_AVAILABLE {
+            rx -= ICON_BUTTON;
+            paint_account_button(
+                cx,
+                &self.theme,
+                &self.account,
+                rx,
+                center_y,
+                self.is_hovered(TopBarButton::OpenAccount),
+                self.is_pressed(TopBarButton::OpenAccount),
+            );
+        }
+        // `rx` now points at the LEFT edge of the chip's anchor —
         // the chip anchors immediately to its left (small gap).
 
         // Agent chip — two states:
@@ -407,9 +425,69 @@ impl TopBar {
         cx.backend
             .draw_text(&chip_label, Point2D::new(text_x, center_y + 4.0));
 
-        // Divider between the agent chip and the globe button — groups
-        // the status chip apart from the locale/theme/fullscreen controls.
+        // Divider between the agent chip and the avatar button — groups
+        // the status chip apart from the account/locale/theme/fullscreen
+        // controls.
         paint_divider(cx, &self.theme, rx - DIVIDER_GAP - DIVIDER_W, center_y);
+    }
+}
+
+/// User-avatar button: a generic outline glyph when signed out, or a
+/// filled initial-letter circle when signed in. Shares the same
+/// hover/press ghost background as its icon-button siblings (Sun /
+/// Globe / Maximize) so it reads consistently in the chrome row.
+pub(super) fn paint_account_button(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    account: &op_editor_core::AccountState,
+    x: f32,
+    center_y: f32,
+    hovered: bool,
+    pressed: bool,
+) {
+    let button_rect = Rect {
+        origin: Point2D::new(x, center_y - ICON_BUTTON / 2.0),
+        size: Point2D::new(ICON_BUTTON, ICON_BUTTON),
+    };
+    let color = paint_hover_bg(cx, theme, button_rect, hovered, pressed);
+    match account {
+        op_editor_core::AccountState::Anonymous => {
+            draw_icon(
+                cx.backend,
+                Icon::User,
+                Point2D::new(
+                    x + (ICON_BUTTON - ICON_SIZE) / 2.0,
+                    glyph_top(center_y, ICON_SIZE),
+                ),
+                ICON_SIZE,
+                color,
+                1.4,
+            );
+        }
+        op_editor_core::AccountState::SignedIn { .. } => {
+            const AVATAR: f32 = 20.0;
+            let avatar_rect = Rect {
+                origin: Point2D::new(x + (ICON_BUTTON - AVATAR) / 2.0, center_y - AVATAR / 2.0),
+                size: Point2D::new(AVATAR, AVATAR),
+            };
+            cx.backend.fill_oval(avatar_rect, theme.primary);
+            let letter = account.initial().to_string();
+            let letter_w = cx.backend.measure_text(&letter, 11.0);
+            let label = TextLayout::single_run(
+                &letter,
+                "system-ui",
+                11.0,
+                (theme.primary_foreground).to_jian(),
+                Point2D::new(0.0, 0.0),
+            );
+            cx.backend.draw_text(
+                &label,
+                Point2D::new(
+                    avatar_rect.origin.x + (AVATAR - letter_w) / 2.0,
+                    center_y + 4.0,
+                ),
+            );
+        }
     }
 }
 

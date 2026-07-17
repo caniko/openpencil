@@ -77,6 +77,7 @@ fn property_action_pressed_uses_shared_feedback() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
         panel.fill_type_picker.open,
         panel.fill_type_picker_index,
         panel.font_picker.open,

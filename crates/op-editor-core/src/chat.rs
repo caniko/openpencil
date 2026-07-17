@@ -13,7 +13,7 @@
 /// pending image / file the user staged for the next turn.
 pub use op_ai::chat_provider::{ChatAttachment, EffortLevel, ThinkingMode};
 
-use crate::chat_activity::{ChatActivity, ChatCompletion};
+use crate::chat_activity::{ChatActivity, ChatActivityStatus, ChatCompletion, PendingSubtaskRetry};
 use crate::chat_title::{suggest_chat_title, DEFAULT_CHAT_TITLE};
 use jian_core::text_input::{prev_char_boundary, Selection, TextInputState};
 
@@ -238,6 +238,17 @@ pub struct ChatMessage {
     pub action_step_expanded_overrides: Vec<Option<bool>>,
     /// True while this (assistant) message's turn streams in.
     pub streaming: bool,
+    /// The turn's original `op_orchestrator::types::DesignRequest`,
+    /// `serde_json`-encoded, captured once at launch — the manual retry
+    /// entry point needs it to re-run a failed subtask with the same
+    /// prompt/model/append-context the turn originally used. `None` for
+    /// non-design turns (plain chat) and user messages.
+    pub design_request_json_for_retry: Option<String>,
+    /// One entry per zero-node subtask failure this message's turn
+    /// produced, keyed by the matching `ChatActivity.id` — the progress
+    /// panel's per-row "Retry" button resolves through this list. Empty
+    /// until a design-turn summary reports a failure.
+    pub failed_subtasks: Vec<PendingSubtaskRetry>,
 }
 
 impl ChatMessage {
@@ -259,6 +270,8 @@ impl ChatMessage {
             design_block_expanded_overrides: Vec::new(),
             action_step_expanded_overrides: Vec::new(),
             streaming: false,
+            design_request_json_for_retry: None,
+            failed_subtasks: Vec::new(),
         }
     }
 
@@ -281,6 +294,8 @@ impl ChatMessage {
             design_block_expanded_overrides: Vec::new(),
             action_step_expanded_overrides: Vec::new(),
             streaming: false,
+            design_request_json_for_retry: None,
+            failed_subtasks: Vec::new(),
         }
     }
 
@@ -444,6 +459,13 @@ pub struct ChatState {
     /// stages the chosen file via `add_attachment`. Mirrors the
     /// `pending_send` host-drain pattern.
     pub pending_attachment_pick: bool,
+    /// Raised by [`ChatState::begin_subtask_retry`] when the user clicks a
+    /// failed row's "Retry" button: `(message index, subtask id)`. The
+    /// desktop host drains this each frame, looks up the matching
+    /// [`PendingSubtaskRetry`] + [`ChatMessage::design_request_json_for_retry`],
+    /// and launches a single-subtask retry worker. Mirrors the
+    /// `pending_send` / `codegen.pending_regenerate` host-drain pattern.
+    pub pending_subtask_retry: Option<(usize, String)>,
 }
 
 /// Process-global allocator for [`ChatImage::id`]. A *global* counter
@@ -487,6 +509,7 @@ impl Default for ChatState {
             agents_running: (0, 0),
             pending_attachments: Vec::new(),
             pending_attachment_pick: false,
+            pending_subtask_retry: None,
         }
     }
 }
@@ -834,6 +857,38 @@ impl ChatState {
                 .resize(step_idx + 1, None);
         }
         msg.action_step_expanded_overrides[step_idx] = Some(expanded);
+    }
+
+    /// Begin a manual retry for the failed subtask row at
+    /// `activities[source_index]` in message `msg_idx` — the click handler
+    /// for the progress panel's per-row "Retry" button. Flips that
+    /// activity's status back to `Running` and clears its stale "Needs
+    /// attention" detail so the row shows a spinner immediately, then
+    /// raises `pending_subtask_retry` for the desktop host to drain.
+    ///
+    /// No-ops (leaves everything untouched) when the message/activity index
+    /// is out of range, or when that activity has no persisted
+    /// [`PendingSubtaskRetry`] entry — a row with nothing to retry (e.g. it
+    /// never actually failed) must not silently start a phantom turn.
+    pub fn begin_subtask_retry(&mut self, msg_idx: usize, source_index: usize) {
+        let Some(msg) = self.messages.get_mut(msg_idx) else {
+            return;
+        };
+        let Some(subtask_id) = msg.activities.get(source_index).map(|a| a.id.clone()) else {
+            return;
+        };
+        if !msg
+            .failed_subtasks
+            .iter()
+            .any(|p| p.subtask_id == subtask_id)
+        {
+            return;
+        }
+        if let Some(activity) = msg.activities.get_mut(source_index) {
+            activity.status = ChatActivityStatus::Running;
+            activity.detail = None;
+        }
+        self.pending_subtask_retry = Some((msg_idx, subtask_id));
     }
 
     /// Advance the thinking-mode selector one step:
@@ -1276,6 +1331,73 @@ mod tests {
             chat.messages[0].action_step_expanded_overrides,
             vec![None, Some(true)]
         );
+    }
+
+    /// End-to-end proof of the failed-subtask remediation data model, from
+    /// the click handler's own perspective: a message carrying BOTH a
+    /// persisted request (`design_request_json_for_retry`, stashed at
+    /// launch — either desktop route) AND a persisted failed-subtask spec
+    /// (`failed_subtasks`, captured by `pump_progress` from the RunSummary)
+    /// must let `begin_subtask_retry` find it, flip the row to `Running`,
+    /// clear its stale detail, and raise `pending_subtask_retry`.
+    #[test]
+    fn begin_subtask_retry_finds_a_fully_persisted_row_and_raises_the_pending_flag() {
+        let mut chat = ChatState::default();
+        let mut msg = ChatMessage::assistant("designing");
+        msg.design_request_json_for_retry = Some("{\"prompt\":\"p\"}".into());
+        msg.activities.push(ChatActivity {
+            id: "hero".into(),
+            title: "Hero".into(),
+            detail: Some("Needs attention".into()),
+            status: ChatActivityStatus::Error,
+            content_offset: Some(0),
+        });
+        msg.failed_subtasks
+            .push(crate::chat_activity::PendingSubtaskRetry {
+                subtask_id: "hero".into(),
+                subtask_json: "{\"id\":\"hero\"}".into(),
+            });
+        chat.messages.push(msg);
+
+        chat.begin_subtask_retry(0, 0);
+
+        assert_eq!(
+            chat.messages[0].activities[0].status,
+            ChatActivityStatus::Running
+        );
+        assert_eq!(chat.messages[0].activities[0].detail, None);
+        assert_eq!(
+            chat.pending_subtask_retry,
+            Some((0, "hero".into())),
+            "the desktop host drains this to launch the retry worker"
+        );
+    }
+
+    #[test]
+    fn begin_subtask_retry_is_a_noop_without_a_persisted_spec() {
+        // Mirrors a whole-run catastrophic failure: every activity flips to
+        // Error but no RunSummary ever landed, so nothing is in
+        // `failed_subtasks` — clicking must not raise a phantom retry.
+        let mut chat = ChatState::default();
+        let mut msg = ChatMessage::assistant("designing");
+        msg.design_request_json_for_retry = Some("{\"prompt\":\"p\"}".into());
+        msg.activities.push(ChatActivity {
+            id: "hero".into(),
+            title: "Hero".into(),
+            detail: Some("Needs attention".into()),
+            status: ChatActivityStatus::Error,
+            content_offset: Some(0),
+        });
+        chat.messages.push(msg);
+
+        chat.begin_subtask_retry(0, 0);
+
+        assert_eq!(
+            chat.messages[0].activities[0].status,
+            ChatActivityStatus::Error,
+            "the row must stay Error, not flip to a phantom Running"
+        );
+        assert_eq!(chat.pending_subtask_retry, None);
     }
 
     #[test]

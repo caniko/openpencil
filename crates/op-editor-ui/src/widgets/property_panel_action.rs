@@ -152,7 +152,10 @@ pub enum CodegenAction {
 /// after the text-input hit-test misses.
 ///
 /// `PartialEq` only (not `Eq`) — `AdjustEffectParam` carries an `f32`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// No longer `Copy` — `SetInteractionNavigate` carries a `String`
+/// (an owned route path); every call site now clones or moves rather
+/// than relying on an implicit bitwise copy.
+#[derive(Debug, Clone, PartialEq)]
 pub enum PropertyPanelAction {
     /// User clicked a tab in the pinned Design / Code strip — the host
     /// switches `editor_ui.property_tab`.
@@ -361,6 +364,23 @@ pub enum PropertyPanelAction {
     /// / Checkbox node — host flips the literal `checked` bool to
     /// `new_value`.
     ToggleWidgetChecked(bool),
+    /// User clicked the Interactions section's tap row (or its
+    /// "+ Add interaction" empty state) — host toggles the small
+    /// Navigate/Back/Remove popover open (`editor_ui.interaction_menu_open`).
+    ToggleInteractionMenu,
+    /// User picked "Navigate to <path>" in the popover — host writes
+    /// `events.onTap = [{"replace": "\"<path>\""}]` via
+    /// `PatchNodeData` (see `property_panel_interactions::navigate_patch_json`).
+    SetInteractionNavigate {
+        path: String,
+    },
+    /// User picked "Back (pop)" in the popover — host writes
+    /// `events.onTap = [{"pop": null}]`.
+    SetInteractionPop,
+    /// User picked "Remove" in the popover, or the multi-action row's
+    /// "Remove all" — host clears the node's `onTap` handler (and the
+    /// whole `events` field when nothing else is left in it).
+    RemoveInteraction,
     /// Code panel action — see `CodegenAction`.
     Codegen(CodegenAction),
 }

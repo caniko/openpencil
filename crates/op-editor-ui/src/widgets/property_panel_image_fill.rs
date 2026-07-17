@@ -7,6 +7,7 @@ use crate::theme::Theme;
 use crate::widgets::icons::{draw_icon, Icon};
 use crate::widgets::property_panel::{FillSummary, NodeSnapshot, PropertyPanelAction};
 use crate::widgets::property_panel_image_preview::paint_image_preview;
+use crate::widgets::property_panel_interactions::InteractionSummary;
 use crate::widgets::property_panel_layout::{
     action_button_rects_with_fill_picker, VisibleSections,
 };
@@ -47,6 +48,7 @@ fn image_body_rect(
         visible,
         &[],
         fills,
+        &InteractionSummary::default(),
         false,
         0,
         false,

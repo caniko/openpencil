@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "Sistem",
         "settings.autoUpdateDesc" => "Başlangıçta yeni sürümleri otomatik olarak kontrol et",
         "settings.experimental" => "Deneysel özellikler",
-        "settings.experimentalDesc" => "Önizleme modunu ve Widget yapılandırmasını etkinleştir",
+        "settings.experimentalDesc" => "Widget yapılandırmasını etkinleştir",
         "settings.systemDesktopOnly" => "Sistem ayarları masaüstü uygulamasında kullanılabilir.",
         "settings.envHint" => "{{path}} dosyasında ek ortam değişkenleri ayarlayabilirsiniz.",
         "builtin.title" => "Yerleşik Sağlayıcılar",

@@ -94,10 +94,10 @@ fn agent_chip_hit_area_tracks_measured_text_width() {
 
 #[test]
 fn maximize_button_hit_tests_to_toggle_fullscreen() {
-    // The Play button only appears with experimental features on; this
-    // test asserts the full Maximize | Play | Sun cluster layout.
-    let mut bar = TopBar::untitled();
-    bar.experimental_enabled = true;
+    // The Play button is unconditionally available (desktop-only, not
+    // experimental-gated); this test asserts the full Maximize | Play |
+    // Sun cluster layout.
+    let bar = TopBar::untitled();
     let rect = Rect {
         origin: Point2D::new(0.0, 0.0),
         size: Point2D::new(1000.0, TOP_BAR_HEIGHT),
@@ -124,28 +124,26 @@ fn maximize_button_hit_tests_to_toggle_fullscreen() {
     );
 }
 
+/// Preview graduated out of the experimental-features gate (2026-07):
+/// the Play button is now a regular always-on affordance on any host that
+/// has `PREVIEW_BUTTON_AVAILABLE` (desktop, not wasm) — no
+/// `EditorUiState.agent_settings.experimental_features_enabled` opt-in
+/// required. `TopBar` no longer even carries an `experimental_enabled`
+/// field; a fresh `TopBar` shows the button unconditionally.
 #[test]
-fn preview_button_hidden_unless_experimental_enabled() {
+fn preview_button_is_always_visible_regardless_of_experimental_toggle() {
     let rect = Rect {
         origin: Point2D::new(0.0, 0.0),
         size: Point2D::new(1000.0, TOP_BAR_HEIGHT),
     };
     let cy = 8.0 + ICON_BUTTON / 2.0;
-    // The slot 2nd-from-right (where Play sits when shown).
+    // The slot 2nd-from-right (where Play sits).
     let play_cx = 1000.0 - PAD - ICON_BUTTON - ICON_BUTTON / 2.0;
     let probe = Point2D::new(play_cx, cy);
 
-    // Default (gate off): no Play button, so the cluster collapses to
-    // put the theme toggle in that slot.
-    let off = TopBar::untitled();
-    assert!(!off.preview_button_visible());
-    assert_eq!(off.hit_test(rect, probe), Some(TopBarHit::ToggleTheme));
-
-    // Gate on: the Play button occupies the slot.
-    let mut on = TopBar::untitled();
-    on.experimental_enabled = true;
-    assert!(on.preview_button_visible());
-    assert_eq!(on.hit_test(rect, probe), Some(TopBarHit::TogglePreview));
+    let bar = TopBar::untitled();
+    assert!(bar.preview_button_visible());
+    assert_eq!(bar.hit_test(rect, probe), Some(TopBarHit::TogglePreview));
 }
 
 #[test]
@@ -297,4 +295,40 @@ fn chip_with_only_builtin_agents_reserves_no_icon_cluster() {
         bar.agent_icons_span() > 0.0,
         "a connected CLI provider brings the cluster back"
     );
+}
+
+/// The user-avatar button sits directly left of the Globe button —
+/// between the agent chip and the locale/theme cluster.
+#[test]
+fn account_button_hit_tests_and_sits_left_of_globe() {
+    let bar = TopBar::untitled();
+    let rect = Rect {
+        origin: Point2D::new(0.0, 0.0),
+        size: Point2D::new(1000.0, TOP_BAR_HEIGHT),
+    };
+    let account = bar.account_button_rect(rect);
+    let globe = bar.globe_rect(rect);
+    assert!(
+        nearly_eq(account.origin.x + account.size.x, globe.origin.x),
+        "avatar button should abut the globe button's left edge"
+    );
+    let center = Point2D::new(
+        account.origin.x + account.size.x / 2.0,
+        account.origin.y + account.size.y / 2.0,
+    );
+    assert_eq!(bar.hit_test(rect, center), Some(TopBarHit::Account));
+}
+
+#[test]
+fn for_editor_ui_carries_signed_in_account() {
+    let ui = EditorUiState {
+        account: op_editor_core::AccountState::SignedIn {
+            display_name: "Fini".to_string(),
+            handle: "fini".to_string(),
+        },
+        ..EditorUiState::default()
+    };
+    let bar = TopBar::for_editor_ui(&ui);
+    assert!(bar.account.is_signed_in());
+    assert_eq!(bar.account.initial(), 'F');
 }

@@ -41,6 +41,12 @@ pub(super) const GIT_BUTTON_AVAILABLE: bool = !cfg!(target_arch = "wasm32");
 /// has no equivalent runtime/measurement bridge, so hide the button there
 /// rather than exposing a non-interactive preview flag.
 pub(super) const PREVIEW_BUTTON_AVAILABLE: bool = !cfg!(target_arch = "wasm32");
+/// The v0.8.2 sign-in flow (OIDC Auth Code + PKCE via the system
+/// browser) is desktop-only. The web build has no equivalent, so the
+/// avatar button (and its layout slot) is compiled out there rather
+/// than painting a click that goes nowhere (same pattern as
+/// `GIT_BUTTON_AVAILABLE` / `PREVIEW_BUTTON_AVAILABLE`).
+pub const ACCOUNT_BUTTON_AVAILABLE: bool = !cfg!(target_arch = "wasm32");
 /// Stacked agent-icon metrics — mirror TS `top-bar.tsx`
 /// (`w-5 h-5 rounded-md bg-foreground/10 ring-1 ring-card` chips
 /// overlapped by `-space-x-1.5`).
@@ -64,19 +70,6 @@ pub(super) const TRAFFIC_CLUSTER_W: f32 = if cfg!(target_os = "macos") {
     TRAFFIC_STEP * 2.0 + TRAFFIC_DOT + 16.0
 };
 
-/// A window-control dot in the TopBar's left cluster. Resolved by
-/// [`TopBar::window_control_at`]; the desktop runner maps each onto
-/// the matching winit `Window` call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowControl {
-    /// Red dot — close the window / quit.
-    Close,
-    /// Yellow dot — minimise the window.
-    Minimize,
-    /// Green dot — toggle maximised.
-    Maximize,
-}
-
 /// What a click in the top bar resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopBarHit {
@@ -99,6 +92,9 @@ pub enum TopBarHit {
     ToggleFullscreen,
     /// Play / Stop icon — enter / exit canvas Preview (Play) mode.
     TogglePreview,
+    /// User-avatar button — open the sign-in modal (signed out) or the
+    /// account dropdown (signed in).
+    Account,
 }
 
 pub struct TopBar {
@@ -142,9 +138,6 @@ pub struct TopBar {
     /// Whether the canvas is in Preview (Play) mode — drives the
     /// Play/Stop toggle glyph (Square when active, Play when idle).
     pub preview_active: bool,
-    /// Opt-in gate: the Preview (Play) button only paints / hit-tests
-    /// when experimental features are enabled in Settings → System.
-    pub experimental_enabled: bool,
     /// Which chrome button the cursor is over — drives the per-button
     /// `theme.button_hover` wash. `None` = no hover.
     pub hover: Option<op_editor_core::TopBarButton>,
@@ -156,6 +149,9 @@ pub struct TopBar {
     /// exactly. `None` (the wasm build, or before a measure pass) →
     /// `hit_test` falls back to a char-count estimate.
     pub chip_text_w: Option<f32>,
+    /// Sign-in state — drives the avatar button's glyph (generic user
+    /// outline when signed out, an initial-letter circle when signed in).
+    pub account: op_editor_core::AccountState,
 }
 
 impl TopBar {
@@ -178,10 +174,10 @@ impl TopBar {
             theme_mode: op_editor_core::ThemeMode::Dark,
             git_branch: None,
             preview_active: false,
-            experimental_enabled: false,
             hover: None,
             pressed: None,
             chip_text_w: None,
+            account: op_editor_core::AccountState::Anonymous,
         }
     }
 
@@ -233,13 +229,13 @@ impl TopBar {
             theme_mode: ui.theme_mode,
             git_branch: ui.git_panel.branch.clone(),
             preview_active: ui.preview_mode,
-            experimental_enabled: ui.agent_settings.experimental_features_enabled,
             hover: ui.topbar_button_hover,
             pressed: match ui.pressed_button {
                 Some(op_editor_core::ButtonPressTarget::TopBar(button)) => Some(button),
                 _ => None,
             },
             chip_text_w: None,
+            account: ui.account.clone(),
         }
     }
 
@@ -259,36 +255,6 @@ impl TopBar {
 
     pub(super) fn is_pressed(&self, button: op_editor_core::TopBarButton) -> bool {
         self.pressed == Some(button)
-    }
-
-    /// Left-edge reservation for the window controls. Collapses to
-    /// `0` in fullscreen on macOS — the native traffic lights hide
-    /// then, so the gap would be dead space. Other platforms keep
-    /// the custom-dot cluster's inset in every mode.
-    pub(super) fn left_inset_for(fullscreen: bool) -> f32 {
-        if fullscreen && cfg!(target_os = "macos") {
-            0.0
-        } else {
-            TRAFFIC_CLUSTER_W
-        }
-    }
-
-    pub(super) fn left_inset(&self) -> f32 {
-        if self.show_traffic_controls {
-            Self::left_inset_for(self.fullscreen)
-        } else {
-            0.0
-        }
-    }
-
-    /// Bounds of the 3-dot window-control cluster — the host's
-    /// cursor-move handler uses this to drive `topbar_traffic_hover`
-    /// (the glyph reveal).
-    pub fn traffic_cluster_rect(top_bar_rect: Rect) -> Rect {
-        Rect {
-            origin: Point2D::new(top_bar_rect.origin.x + PAD, top_bar_rect.origin.y),
-            size: Point2D::new(TRAFFIC_STEP * 2.0 + TRAFFIC_DOT, top_bar_rect.size.y),
-        }
     }
 
     /// Width of the chip's leading-icon cluster: the single
@@ -391,13 +357,16 @@ impl TopBar {
         }
     }
 
-    /// Whether the Preview (Play) button paints / hit-tests. Gated by
-    /// the host capability (`PREVIEW_BUTTON_AVAILABLE`, desktop-only) AND
-    /// the experimental-features opt-in. The right-cluster layout
-    /// collapses when this is false, so paint, hit-test, and the
-    /// globe-anchored locale picker all key off this one predicate.
+    /// Whether the Preview (Play) button paints / hit-tests. Gated only by
+    /// the host capability (`PREVIEW_BUTTON_AVAILABLE`, desktop-only) —
+    /// preview interaction graduated out of the experimental-features gate
+    /// (widget-config and other experimental items stay gated separately;
+    /// see `EditorUiState::agent_settings.experimental_features_enabled`).
+    /// The right-cluster layout collapses when this is false, so paint,
+    /// hit-test, and the globe-anchored locale picker all key off this one
+    /// predicate.
     pub fn preview_button_visible(&self) -> bool {
-        PREVIEW_BUTTON_AVAILABLE && self.experimental_enabled
+        PREVIEW_BUTTON_AVAILABLE
     }
 
     pub fn globe_rect(&self, top_bar_rect: Rect) -> Rect {
@@ -415,6 +384,32 @@ impl TopBar {
         Rect {
             origin: Point2D::new(globe_x, top_bar_rect.origin.y + 8.0),
             size: Point2D::new(GLOBE_BUTTON_WIDTH, ICON_BUTTON),
+        }
+    }
+
+    /// User-avatar button — anchored directly left of the Globe button,
+    /// between the locale/theme cluster and the agent-status chip's
+    /// divider (TS parity spot: "between the agents chip and the
+    /// globe/theme icons"). Derived from [`Self::globe_rect`] so the two
+    /// can never drift apart.
+    pub fn account_button_rect(&self, top_bar_rect: Rect) -> Rect {
+        let globe = self.globe_rect(top_bar_rect);
+        Rect {
+            origin: Point2D::new(globe.origin.x - ICON_BUTTON, globe.origin.y),
+            size: Point2D::new(ICON_BUTTON, ICON_BUTTON),
+        }
+    }
+
+    /// Left edge the agent chip's divider hangs off — the avatar
+    /// button's left edge when it's available (desktop), else directly
+    /// the Globe button's (web, where `ACCOUNT_BUTTON_AVAILABLE` is
+    /// false and the button doesn't paint). Shared by paint + hit-test
+    /// so the chip anchor can't drift from whichever layout is active.
+    pub(super) fn chip_right_anchor_x(&self, top_bar_rect: Rect) -> f32 {
+        if ACCOUNT_BUTTON_AVAILABLE {
+            self.account_button_rect(top_bar_rect).origin.x
+        } else {
+            self.globe_rect(top_bar_rect).origin.x
         }
     }
 
@@ -504,44 +499,6 @@ impl TopBar {
         Some(r.origin.x + r.size.x / 2.0)
     }
 
-    /// Resolve a press on the left-edge window-control dots.
-    /// `None` for a press anywhere else (including the app's own
-    /// buttons). The desktop runner consults this before its normal
-    /// TopBar hit-test so a dot click drives the window, not the app.
-    pub fn window_control_at(&self, rect: Rect, point: Point2D) -> Option<WindowControl> {
-        // macOS uses the native traffic-light buttons — the custom
-        // dots (and this hit-test) exist only for Windows / Linux.
-        // Returning `None` here also avoids a false positive in
-        // macOS fullscreen, where the left inset collapses and the
-        // app's own icons would otherwise sit in the dot region.
-        if !self.show_traffic_controls || cfg!(target_os = "macos") {
-            return None;
-        }
-        if !(rect).contains(point) {
-            return None;
-        }
-        let cy = rect.origin.y + rect.size.y / 2.0;
-        let first_cx = rect.origin.x + PAD + TRAFFIC_DOT / 2.0;
-        for (i, ctl) in [
-            WindowControl::Close,
-            WindowControl::Minimize,
-            WindowControl::Maximize,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let dot_cx = first_cx + i as f32 * TRAFFIC_STEP;
-            // Square slop around the dot — adjacent zones tile
-            // without overlap (±TRAFFIC_STEP/2 in x).
-            if (point.x - dot_cx).abs() <= TRAFFIC_STEP / 2.0
-                && (point.y - cy).abs() <= rect.size.y / 2.0
-            {
-                return Some(ctl);
-            }
-        }
-        None
-    }
-
     /// Hit-test the title bar at `point`. Recognised buttons:
     ///   - PanelLeft (left edge) → ToggleSidebar
     ///   - Sun (third from right) → ToggleTheme
@@ -611,6 +568,12 @@ impl TopBar {
         if (globe).contains(point) {
             return Some(TopBarHit::ToggleLocale);
         }
+        if ACCOUNT_BUTTON_AVAILABLE {
+            let account = self.account_button_rect(rect);
+            if (account).contains(point) {
+                return Some(TopBarHit::Account);
+            }
+        }
         // Agent chip hit area — slightly larger than the painted
         // chip so off-by-a-few-pixels clicks still register. The
         // exact paint geometry uses skia text measurement which the
@@ -641,7 +604,7 @@ impl TopBar {
         let chip_w = 8.0 + self.agent_icons_span() + dot_w + text_w + 12.0;
         let chip_rect = Rect {
             origin: Point2D::new(
-                globe.origin.x - chip_w - (DIVIDER_GAP * 2.0 + DIVIDER_W),
+                self.chip_right_anchor_x(rect) - chip_w - (DIVIDER_GAP * 2.0 + DIVIDER_W),
                 rect.origin.y + 4.0,
             ),
             size: Point2D::new(chip_w, rect.size.y - 8.0),

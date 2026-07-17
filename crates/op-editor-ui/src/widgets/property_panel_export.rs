@@ -8,6 +8,7 @@ use crate::theme::Theme;
 use crate::widgets::icons::{draw_icon, Icon};
 use crate::widgets::property_panel::{EffectSummary, PropertyPanelAction};
 use crate::widgets::property_panel_inputs::{paint_section_label, INPUT_HEIGHT, PAD_X};
+use crate::widgets::property_panel_interactions::InteractionSummary;
 use crate::widgets::property_panel_layout::{
     action_button_rects_with_fill_picker, VisibleSections,
 };
@@ -118,6 +119,7 @@ pub fn paint_export_picker(
     visible: VisibleSections,
     effects: &[EffectSummary],
     fills: &[crate::widgets::property_panel::FillSummary],
+    interactions: &InteractionSummary,
     scale_open: bool,
     format_open: bool,
     current_scale: f32,
@@ -130,6 +132,7 @@ pub fn paint_export_picker(
         visible,
         effects,
         fills,
+        interactions,
         false,
         0,
         false,

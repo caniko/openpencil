@@ -18,6 +18,13 @@ pub(crate) struct SectionCapabilities {
     pub(crate) stroke: bool,
     pub(crate) effects: bool,
     pub(crate) export: bool,
+    /// Whether the Interactions section (screen marker + `events.onTap`)
+    /// paints for this kind. Every canonical `PenNode` variant carries
+    /// an `events` field, so this is `true` everywhere single-select
+    /// paints sections at all — `false` only for the multi-select
+    /// aggregate (broadcasting one node's `events` edit across a
+    /// selection is a follow-up).
+    pub(crate) interactions: bool,
 }
 
 impl SectionCapabilities {
@@ -33,6 +40,7 @@ impl SectionCapabilities {
             stroke: false,
             effects: true,
             export: true,
+            interactions: false,
         }
     }
 
@@ -50,6 +58,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Group => Self {
                 create_component: true,
@@ -62,6 +71,7 @@ impl SectionCapabilities {
                 stroke: false,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Other(tag) if tag == "image" => Self {
                 create_component: false,
@@ -74,6 +84,7 @@ impl SectionCapabilities {
                 stroke: false,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Other(tag) if tag == "icon_font" => Self {
                 create_component: false,
@@ -86,6 +97,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: false,
                 export: true,
+                interactions: true,
             },
             K::Other(tag) if tag == "ref" => Self {
                 create_component: true,
@@ -98,6 +110,7 @@ impl SectionCapabilities {
                 stroke: false,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Other(_) => Self {
                 create_component: false,
@@ -110,6 +123,7 @@ impl SectionCapabilities {
                 stroke: false,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Rect => Self {
                 create_component: true,
@@ -122,6 +136,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Ellipse | K::Polygon => Self {
                 create_component: false,
@@ -134,6 +149,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Line => Self {
                 create_component: false,
@@ -146,6 +162,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Path => Self {
                 create_component: false,
@@ -158,6 +175,7 @@ impl SectionCapabilities {
                 stroke: true,
                 effects: true,
                 export: true,
+                interactions: true,
             },
             K::Text => Self {
                 create_component: false,
@@ -170,6 +188,7 @@ impl SectionCapabilities {
                 stroke: false,
                 effects: true,
                 export: true,
+                interactions: true,
             },
         }
     }
@@ -240,6 +259,9 @@ pub struct VisibleSections {
     pub export: bool,
     pub fill_type: FillType,
     pub gradient_stop_count: usize,
+    /// Whether the Interactions section paints — see
+    /// [`SectionCapabilities::interactions`].
+    pub interactions: bool,
 }
 
 impl VisibleSections {
@@ -279,5 +301,6 @@ impl VisibleSections {
         export: true,
         fill_type: FillType::Solid,
         gradient_stop_count: 0,
+        interactions: true,
     };
 }

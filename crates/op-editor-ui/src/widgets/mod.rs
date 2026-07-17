@@ -75,6 +75,7 @@ pub mod property_panel_input_layout;
 pub mod property_panel_inputs;
 #[cfg(test)]
 mod property_panel_instance_tests;
+pub mod property_panel_interactions;
 pub mod property_panel_layer;
 pub mod property_panel_layout;
 #[cfg(test)]
@@ -163,6 +164,8 @@ mod icons_data;
 pub mod brand_icons;
 
 // Step 4 — extra editor-chrome widgets (TS app parity).
+pub mod account_menu;
+pub mod agent_settings_account;
 pub mod agent_settings_acp;
 mod agent_settings_acp_helpers;
 pub mod agent_settings_builtin;
@@ -257,6 +260,7 @@ mod git_panel_tracked_picker_tests;
 pub mod icon_picker_panel;
 pub mod ime_preedit_overlay;
 pub mod locale_picker;
+pub mod login_modal;
 mod property_panel_color_variables;
 pub mod shape_picker;
 pub mod status_bar;
@@ -264,6 +268,7 @@ pub mod top_bar;
 mod top_bar_paint;
 #[cfg(test)]
 mod top_bar_tests;
+mod top_bar_window_control;
 pub mod variables_panel;
 mod variables_preset_menu;
 
@@ -273,6 +278,7 @@ pub use tree::{TreeItem, TreeWidget};
 
 pub use layer_panel::{LayerItem, LayerPanel};
 pub use property_panel::{EffectAddMenuHit, FontWeightChoice, PropertyPanel, PropertyPanelAction};
+pub use property_panel_interactions::InteractionMenuHit;
 pub use toolbar::Toolbar;
 
 pub use canvas_layout_transition::{CanvasLayoutTransition, CANVAS_LAYOUT_TRANSITION_MS};
@@ -309,7 +315,8 @@ pub use icon_picker_panel::{
 pub use locale_picker::{LocalePicker, LOCALE_PICKER_WIDTH};
 pub use shape_picker::{ShapeChoice, ShapePicker, SHAPE_PICKER_WIDTH};
 pub use status_bar::{StatusBar, STATUS_BAR_HEIGHT, STATUS_BAR_WIDTH};
-pub use top_bar::{TopBar, TopBarHit, WindowControl, TOP_BAR_HEIGHT};
+pub use top_bar::{TopBar, TopBarHit, TOP_BAR_HEIGHT};
+pub use top_bar_window_control::WindowControl;
 // Re-export panel/toolbar width constants + hit enums so the host
 // can size them consistently and route hits.
 pub use layer_panel::{DropPosition, DropTarget, LayerPanelHit, LAYER_PANEL_WIDTH};

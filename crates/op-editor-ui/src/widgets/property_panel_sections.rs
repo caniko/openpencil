@@ -29,6 +29,7 @@ pub use crate::widgets::property_panel_image_fill::{
     paint_image_fill_popover,
 };
 pub use crate::widgets::property_panel_inputs::format_color_hex as _format_color_hex_compat;
+pub use crate::widgets::property_panel_interactions::paint_interactions_section;
 pub use crate::widgets::property_panel_layer::paint_layer_section;
 
 /// Hit-result for a click on the property panel — payload is the

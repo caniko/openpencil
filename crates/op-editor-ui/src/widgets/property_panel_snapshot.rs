@@ -135,6 +135,12 @@ pub struct NodeSnapshot {
     /// The node's visual effects, in paint order — drives the
     /// Effects section's rows + param inputs.
     pub effects: Vec<EffectSummary>,
+    /// Screen marker + `events.onTap` rows — drives the Interactions
+    /// section. Empty (no screen, no actions) is the common case;
+    /// `screen` is only ever populated for a top-level Frame (set by
+    /// the caller, which alone knows whether the selection is a
+    /// page-root child — see `PropertyPanel::for_selection_nodes`).
+    pub interactions: crate::widgets::property_panel_interactions::InteractionSummary,
     /// Drives per-kind section filtering (Line hides fill, etc.).
     pub kind_variant: crate::layout_scene::NodeKind,
     /// True when the selection is a component INSTANCE (`Ref`) shown
@@ -536,6 +542,8 @@ impl NodeSnapshot {
             gradient_stops: Vec::new(),
             image_fill: None,
             effects: Vec::new(),
+            interactions: crate::widgets::property_panel_interactions::InteractionSummary::default(
+            ),
             // Neutral default — the Code tab never consults the
             // kind-driven capability mask.
             kind_variant: NodeKind::Frame,
@@ -601,6 +609,11 @@ impl NodeSnapshot {
             // Multi-select shows no per-effect rows — the Effects
             // section paints just its header + the add affordance.
             effects: Vec::new(),
+            // Multi-select hides Interactions entirely (see
+            // `SectionCapabilities::for_multi`) — editing one node's
+            // `events` across a broadcast selection is a follow-up.
+            interactions: crate::widgets::property_panel_interactions::InteractionSummary::default(
+            ),
             // `kind_variant` is informational for the snapshot
             // header label only — the paint capability mask is
             // driven by `SectionCapabilities::for_multi()` instead
@@ -615,7 +628,11 @@ impl NodeSnapshot {
     /// Build the snapshot from a canonical `PenNode`. Geometry uses
     /// `aggregate_bounds` so Group / unbounded container nodes report
     /// the visual extent of their subtree instead of "0 × 0".
-    pub(crate) fn from_node(node: &PenNode) -> Self {
+    /// `is_top_level` gates the Interactions section's Screen row —
+    /// only a page-root child's `screen` marker is ever meaningful
+    /// (see `wire_screen_navigation`'s contract); the caller alone
+    /// knows the selection's position in the tree.
+    pub(crate) fn from_node(node: &PenNode, is_top_level: bool) -> Self {
         let base = node.base();
         let kind = node_kind_of(node);
         let bounds = op_editor_core::aggregate_bounds(node);
@@ -690,6 +707,10 @@ impl NodeSnapshot {
                 .iter()
                 .map(EffectSummary::from_pen_effect)
                 .collect(),
+            interactions: crate::widgets::property_panel_interactions::interactions_of(
+                node,
+                is_top_level,
+            ),
             kind_variant: kind,
             is_instance: false,
             is_reusable: matches!(node, PenNode::Frame(f) if f.reusable == Some(true)),

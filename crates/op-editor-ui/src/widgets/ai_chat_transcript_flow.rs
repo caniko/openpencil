@@ -100,6 +100,17 @@ pub(crate) fn build_activity_flow(
                 .flatten()
                 .unwrap_or(active);
             let height = action_step_height(expanded, details.len());
+            // `index` is a direct `msg.activities` index here (unlike the
+            // legacy thinking-text-derived steps in `build_item`), so the
+            // retry lookup is exact — this is the path a real design-turn
+            // message actually renders through: `upsert_activity` always
+            // stamps `content_offset`, so `should_interleave_activities` is
+            // true for every classic-orchestrator turn.
+            let retryable = failed
+                && msg
+                    .failed_subtasks
+                    .iter()
+                    .any(|p| p.subtask_id == msg.activities[index].id);
             steps.push(ActionStep {
                 rect: Rect::xywh(x, y, width, height),
                 source_index,
@@ -109,6 +120,7 @@ pub(crate) fn build_activity_flow(
                 done,
                 active,
                 failed,
+                retryable,
             });
             y += height + ACTION_STEP_GAP;
         }

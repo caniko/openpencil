@@ -10,6 +10,36 @@ use crate::widgets::icons::{draw_icon, Icon};
 use crate::widgets::PaintCx;
 use crate::{Point2D, Rect};
 
+/// Extra right-reserve width carved out for a retryable failed row's "Retry"
+/// icon, on top of the base reserve (28 without details / 52 with — the
+/// expander's own space). Kept separate from the shared
+/// `paint_activity_chrome`/`TranscriptActivityChrome` — that chrome is also
+/// used by tool-call cards, which never retry.
+const RETRY_ICON_EXTRA_RESERVE: f32 = 24.0;
+const RETRY_ICON_SIZE: f32 = 14.0;
+
+fn base_right_reserve(step: &ActionStep) -> f32 {
+    if step.details.is_empty() {
+        28.0
+    } else {
+        52.0
+    }
+}
+
+/// The retry icon's paint/hit rect for a retryable failed row — `None` when
+/// the row has nothing to retry (see `ActionStep::retryable`). Exposed
+/// `pub(crate)` so the transcript hit-test uses the SAME rect the paint
+/// below draws, instead of a second hand-derived copy that could drift.
+pub(crate) fn retry_icon_rect(step: &ActionStep) -> Option<Rect> {
+    if !step.retryable {
+        return None;
+    }
+    let right_reserve = base_right_reserve(step) + RETRY_ICON_EXTRA_RESERVE;
+    let x = step.rect.origin.x + step.rect.size.x - right_reserve + 4.0;
+    let y = step.rect.origin.y + (ACTION_STEP_H - RETRY_ICON_SIZE) / 2.0;
+    Some(Rect::xywh(x, y, RETRY_ICON_SIZE, RETRY_ICON_SIZE))
+}
+
 pub(crate) fn paint_action_step(
     cx: &mut PaintCx<'_>,
     theme: &Theme,
@@ -47,10 +77,25 @@ pub(crate) fn paint_action_step(
             border: theme.border,
             status,
             expanded: (!step.details.is_empty()).then_some(step.expanded),
-            right_reserve: if step.details.is_empty() { 28.0 } else { 52.0 },
+            right_reserve: base_right_reserve(step)
+                + if step.retryable {
+                    RETRY_ICON_EXTRA_RESERVE
+                } else {
+                    0.0
+                },
         },
         now_ms,
     );
+    if let Some(retry_rect) = retry_icon_rect(step) {
+        draw_icon(
+            cx.backend,
+            Icon::RefreshCw,
+            retry_rect.origin,
+            RETRY_ICON_SIZE,
+            theme.muted_foreground,
+            1.4,
+        );
+    }
 
     if step.expanded && !step.details.is_empty() {
         cx.backend.stroke_line(

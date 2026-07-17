@@ -7,6 +7,7 @@
 //! editor-only state (selection, tool, viewport, history, transient
 //! UI drafts).
 
+pub mod account_state;
 pub mod agent_indicators;
 mod agent_indicators_tests;
 mod agent_provider_wire;
@@ -182,6 +183,7 @@ mod tests_pages;
 #[cfg(test)]
 mod translate_equivalence_tests;
 
+pub use account_state::{AccountMenuRow, AccountState, LoginModalButton};
 pub use agent_settings::{
     AcpAgentConfig, AcpAgentConnectOutcome, AcpAgentConnectPhase, AcpAgentConnection,
     AcpAgentField, AcpConnectionType, AgentSettings, AgentSettingsDrag, AgentSettingsTab,
@@ -200,7 +202,7 @@ pub use chat::{
     AgentProvider, ChatAnchor, ChatImage, ChatMessage, ChatRole, ChatState, ChatToolCall,
     ModelEntry,
 };
-pub use chat_activity::{ChatActivity, ChatActivityStatus, ChatCompletion};
+pub use chat_activity::{ChatActivity, ChatActivityStatus, ChatCompletion, PendingSubtaskRetry};
 pub use chat_button_state::{ChatFooterButton, ChatHeaderButton};
 pub use chat_sessions::{adjust_running_tab_after_close, ChatSessions};
 pub use color_picker::{hsv_to_rgb, parse_hex_alpha, parse_hex_rgb, rgb_to_hex, rgb_to_hsv};

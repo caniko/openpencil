@@ -1,6 +1,7 @@
 //! Multi-tab settings modal opened via `Cmd+,`.
 
 use crate::theme::Theme;
+use crate::widgets::agent_settings_account::{self, AccountTabHit};
 use crate::widgets::agent_settings_acp::{self, AcpHit};
 use crate::widgets::agent_settings_builtin::{self, BuiltinHit};
 use crate::widgets::agent_settings_i18n::t as t_settings;
@@ -137,6 +138,10 @@ pub enum AgentSettingsHit {
     /// Pick a pencil-cursor silhouette (Settings > System).
     SelectPencilCursor(op_editor_core::PencilCursorStyle),
     FocusMcpPort,
+    /// Account tab, signed out: opens the sign-in modal.
+    OpenLoginModal,
+    /// Account tab, signed in: clears the account back to `Anonymous`.
+    SignOutAccount,
     Outside,
     Inside,
 }
@@ -344,6 +349,13 @@ impl<'a> AgentSettingsPanel<'a> {
                     SystemHit::None => {}
                 }
             }
+            AgentSettingsTab::Account => {
+                match agent_settings_account::hit_test(content_rect(panel), self.ui, scrolled) {
+                    AccountTabHit::SignIn => return AgentSettingsHit::OpenLoginModal,
+                    AccountTabHit::SignOut => return AgentSettingsHit::SignOutAccount,
+                    AccountTabHit::None => {}
+                }
+            }
         }
         AgentSettingsHit::Inside
     }
@@ -466,6 +478,7 @@ impl<'a> AgentSettingsPanel<'a> {
             AgentSettingsTab::Mcp => agent_settings_mcp::content_height(&self.settings),
             AgentSettingsTab::Images => agent_settings_images::content_height(&self.settings),
             AgentSettingsTab::System => agent_settings_system::content_height(),
+            AgentSettingsTab::Account => agent_settings_account::content_height(),
         }
     }
 }
@@ -547,6 +560,9 @@ fn paint_panel(
         AgentSettingsTab::System => {
             agent_settings_system::paint_system_tab(cx, theme, settings, _ui, content_rect)
         }
+        AgentSettingsTab::Account => {
+            agent_settings_account::paint_account_tab(cx, theme, _ui, content_rect)
+        }
     }
     cx.backend.restore();
     paint_close(cx, theme, settings, _ui, panel);
@@ -597,6 +613,7 @@ fn paint_sidebar(
             AgentSettingsTab::Mcp => Icon::Terminal,
             AgentSettingsTab::Images => Icon::Image,
             AgentSettingsTab::System => Icon::Settings,
+            AgentSettingsTab::Account => Icon::User,
         };
         let icon_color = if selected {
             theme.foreground

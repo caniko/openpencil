@@ -69,6 +69,7 @@ pub(super) fn visible_for(panel: &PropertyPanel) -> sections::VisibleSections {
         export: caps.export,
         fill_type: panel.fill_type,
         gradient_stop_count: panel.snapshot.gradient_stops.len(),
+        interactions: caps.interactions,
     }
 }
 

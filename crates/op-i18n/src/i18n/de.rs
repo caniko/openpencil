@@ -391,7 +391,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.system" => "System",
         "settings.autoUpdateDesc" => "Beim Start automatisch nach neuen Versionen suchen",
         "settings.experimental" => "Experimentelle Funktionen",
-        "settings.experimentalDesc" => "Vorschaumodus und Widget-Konfiguration aktivieren",
+        "settings.experimentalDesc" => "Widget-Konfiguration aktivieren",
         "settings.systemDesktopOnly" => "Systemeinstellungen sind in der Desktop-App verfügbar.",
         "settings.envHint" => "Sie können zusätzliche Umgebungsvariablen in {{path}} festlegen.",
         "builtin.title" => "Integrierte Anbieter",

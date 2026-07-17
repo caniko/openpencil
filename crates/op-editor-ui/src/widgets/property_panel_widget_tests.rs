@@ -200,6 +200,7 @@ fn checkbox_selection_emits_toggle_checked_action() {
         visible_for(&panel),
         &panel.snapshot.effects,
         &panel.snapshot.fills,
+        &panel.snapshot.interactions,
     )
     .into_iter()
     .map(|(a, _)| a)
