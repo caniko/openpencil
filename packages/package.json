@@ -8,6 +8,7 @@
     "email": "xkayshen@gmail.com"
   },
   "workspaces": [
+    "op-vscode",
     "op-web-sdk",
     "op-web-sdk-react",
     "op-web-sdk-vue"

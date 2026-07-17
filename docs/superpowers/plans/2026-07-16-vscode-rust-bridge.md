@@ -1271,5 +1271,5 @@ Task 3-5 ─► Task 9 (integration smoke)
 
 ## Plan 2/3 预告（不在本 plan 内）
 
-- **Plan 2 — TS 插件本体**（`openpencil/editors/vscode/`）：DaemonPool、CustomEditorProvider（消费本 plan 桥协议，含冲突二选一对话框——`sync-conflict` → 弹窗 → `resolve-conflict`）、McpProxy、McpConfigurator、AiPanel、codegen 编排。
+- **Plan 2 — TS 插件本体**（`openpencil/packages/op-vscode/`）：DaemonPool、CustomEditorProvider（消费本 plan 桥协议，含冲突二选一对话框——`sync-conflict` → 弹窗 → `resolve-conflict`）、McpProxy、McpConfigurator、AiPanel、codegen 编排。
 - **Plan 3 — 打包与发布**：平台矩阵 vsix、二进制/资产装配、Marketplace/OpenVSX/Trae 发布、CI。
