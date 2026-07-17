@@ -52,6 +52,12 @@ const DEFAULT_PROFILE: ModelProfile = ModelProfile {
 const MODEL_PROFILES: &[Entry] = &[
     // Full tier
     e(
+        Match::Sub("claude-fable"),
+        ModelTier::Full,
+        false,
+        "Claude Fable",
+    ),
+    e(
         Match::Sub("claude-opus"),
         ModelTier::Full,
         false,
@@ -138,6 +144,10 @@ const MODEL_PROFILES: &[Entry] = &[
         timeout_multiplier: 2.0,
         label: "GLM-5.2 (Coding Plan)",
     },
+    // Kimi K3（及以后）—— 用户判定 K3 起算强；K2.x 不命中这条 → 落 default
+    // Standard。与 GLM 同理是推理模型,关思考防烧 content;时长无实测数据,先 ×1,
+    // 慢再调。未来 K4 等更高代际届时各加一条 matcher。
+    e(Match::Sub("kimi-k3"), ModelTier::Full, true, "Kimi K3"),
     e(
         Match::Sub("deepseek-v4-flash"),
         ModelTier::Standard,
@@ -234,6 +244,15 @@ mod tests {
 
     #[test]
     fn full_tier_models() {
+        let fable = resolve_model_profile("claude-fable-5");
+        assert_eq!(fable.tier, ModelTier::Full);
+        assert!(!fable.thinking_disabled);
+        assert_eq!(resolve_model_profile("kimi-k3").tier, ModelTier::Full);
+        // K2.x stays below the strong line (falls to the unknown default).
+        assert_eq!(
+            resolve_model_profile("kimi-k2.5").tier,
+            ModelTier::Standard
+        );
         assert_eq!(
             resolve_model_profile("claude-opus-4-1").tier,
             ModelTier::Full
