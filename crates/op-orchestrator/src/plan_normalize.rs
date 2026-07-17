@@ -10,6 +10,12 @@ use crate::dashboard_columns::{
 use crate::plan::{OrchestratorPlan, Region, Subtask};
 use crate::types::DesignRequest;
 
+// multiscreen-fanout-break fix (item A) — screen-grouping tests, split out
+// to keep this file's inline `mod tests` from crossing the 800-line cap.
+#[cfg(test)]
+#[path = "plan_normalize_screen_groups_tests.rs"]
+mod tests_screen_groups;
+
 /// 规范化产出的派生信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NormInfo {
@@ -179,9 +185,34 @@ pub fn normalize(plan: &mut OrchestratorPlan, req: &DesignRequest) -> NormInfo {
     let dashboard_like = is_dashboard_like_prompt(&req.prompt, plan);
 
     let root_id = plan.root_frame.id.clone();
+
+    // Screen grouping (multiscreen-fanout-break fix, item A): a plan whose
+    // subtasks span ≥2 distinct `screen` labels must NOT collapse onto the
+    // one shared `root_id` — each group gets its OWN placeholder root-frame
+    // id (`run.rs`'s scaffold phase later builds one real scaffold root per
+    // group and OVERWRITES this placeholder with the post-insert id, exactly
+    // like the single-root path already does for `root_id`). Zero screen
+    // labels, or every subtask sharing the SAME one, both yield
+    // `groups.len() <= 1` — the `else` branch below, byte-identical to
+    // today's single-root assignment (regression lock).
+    let groups = crate::screen_groups::group_subtasks_by_screen(&plan.subtasks);
+    if groups.len() > 1 {
+        for group in &groups {
+            let group_root_id = format!("{root_id}-{}", group.screen);
+            for &idx in &group.indices {
+                if let Some(st) = plan.subtasks.get_mut(idx) {
+                    st.parent_frame_id = Some(group_root_id.clone());
+                }
+            }
+        }
+    } else {
+        for st in &mut plan.subtasks {
+            st.parent_frame_id = Some(root_id.clone());
+        }
+    }
+
     for st in &mut plan.subtasks {
         st.id_prefix = st.id.clone();
-        st.parent_frame_id = Some(root_id.clone());
 
         if dashboard_like {
             let inferred_width = infer_dashboard_section_width(st, root_width);

@@ -66,6 +66,7 @@ pub(crate) mod role_layout_post_pass;
 pub mod role_post_pass;
 pub mod run;
 pub mod scaffold;
+pub mod screen_groups;
 pub(crate) mod sidebar_archetype;
 pub mod spacing_repair;
 pub mod spawn_concurrent;

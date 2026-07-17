@@ -276,8 +276,8 @@ fn build_root_frame_node(
 
 /// 从 subtask 的 label 剥去括号后缀并 trim,用作 frame 名 fallback。
 /// Port of `firstSt.label.replace(/\s*[（(].+$/, '').trim() || firstSt.label`
-/// in `orchestrator.ts:888`.
-#[allow(dead_code)]
+/// in `orchestrator.ts:888`. Consumed by
+/// [`build_screen_group_scaffold`]'s per-group frame-name fallback.
 fn short_label(st: &Subtask) -> String {
     let stripped = if let Some(pos) = st.label.find(['（', '(']) {
         st.label[..pos].trim().to_string()
@@ -386,6 +386,111 @@ fn build_scaffold_root_node_at(
         &fill_hex,
         is_mobile,
     )
+}
+
+/// Horizontal gap between adjacent screen-group root frames — mirrors the
+/// gap `run::next_root_insert_position` already uses to land a single
+/// follow-on root beside existing canvas content, so every sibling screen
+/// (pre-existing canvas content, group 0, group 1, …) reads with one
+/// consistent gutter instead of two different magic numbers for the same
+/// "next screen goes here" idea.
+pub(crate) const SCREEN_GROUP_GAP: f64 = 80.0;
+
+/// `(commands, placeholder_ids, baselines)` — mirrors the deleted concurrent
+/// path's own `ConcurrentScaffoldResult` alias (same shape, same reason:
+/// clippy's `type_complexity` on the raw 3-tuple-of-Vecs).
+pub(crate) type ScreenGroupScaffoldResult = (Vec<EditorCommand>, Vec<String>, Vec<usize>);
+
+/// Build one scaffold root PER screen group (multiscreen-fanout-break fix,
+/// item A) — the per-screen N-root structure `aca0d3a0` deleted alongside
+/// the concurrent worker machinery it was bundled with. This revival is
+/// STRUCTURE ONLY: `run.rs` still runs every group's subtasks strictly
+/// SEQUENTIALLY (no concurrency revived), so this just returns N `InsertSubtree`
+/// commands, one per group, laid out left-to-right starting at `(start_x, y)`.
+///
+/// Each root inherits `plan.root_frame`'s width/height/layout/gap/fill
+/// VERBATIM (no per-group size inference) — a screen-group scaffold is
+/// exactly the single-root scaffold, just repeated per screen, so the
+/// existing `adjust_root_height_to_content` finalize pass sizes it the same
+/// way it already sizes the single-root case.
+///
+/// Returns `(commands, placeholder_ids, baselines)`:
+/// - `placeholder_ids[g]` is the id stamped on group `g`'s node BEFORE
+///   insertion (`"{rootFrame.id}-{screen}"`) — the caller resolves the REAL
+///   post-insert id by diffing `active_children()` before/after, exactly
+///   like the single-root path already does for its one root.
+/// - `baselines[g]` is that root's scaffold-only descendant count (0, or 1
+///   for the injected mobile status bar) — the pre-subtask content floor
+///   `run.rs`'s zero-content check subtracts off per root.
+pub(crate) fn build_screen_group_scaffold(
+    plan: &OrchestratorPlan,
+    groups: &[crate::screen_groups::ScreenGroup],
+    is_mobile: bool,
+    start_x: f64,
+    y: f64,
+) -> Result<ScreenGroupScaffoldResult, String> {
+    let rf = &plan.root_frame;
+    let layout = rf.layout.as_deref().unwrap_or("vertical");
+    let fill_hex = rf
+        .first_solid_hex()
+        .unwrap_or_else(|| "#FFFFFF".to_string());
+
+    let mut cmds = Vec::with_capacity(groups.len());
+    let mut placeholder_ids = Vec::with_capacity(groups.len());
+    let mut baselines = Vec::with_capacity(groups.len());
+    let mut next_x = start_x;
+
+    for group in groups {
+        // Placeholder id: `{root_frame.id}-{screen}` — mirrors the deleted
+        // concurrent path's `original_id` scheme. Only used as a join key
+        // until the caller remaps it to the real post-insert id.
+        let placeholder_id = format!("{}-{}", rf.id, group.screen);
+
+        // Frame name: the screen label, UNLESS this group's first subtask
+        // has no `screen` of its own (the untagged-subtasks-fall-back-to-
+        // first_screen case in `group_subtasks_by_screen`) — then fall back
+        // to that subtask's own short label, so a synthetic "page" default
+        // group never paints as a frame literally named "page". Port of
+        // `orchestrator.ts:886-888`.
+        let frame_name = group
+            .indices
+            .first()
+            .and_then(|&i| plan.subtasks.get(i))
+            .map(|first_st| {
+                if first_st.screen.is_some() {
+                    group.screen.clone()
+                } else {
+                    short_label(first_st)
+                }
+            })
+            .unwrap_or_else(|| group.screen.clone());
+
+        let node = build_root_frame_node(
+            &placeholder_id,
+            &frame_name,
+            next_x,
+            y,
+            rf.width,
+            rf.height,
+            layout,
+            resolve_section_gap(rf.gap),
+            &fill_hex,
+            is_mobile,
+        )?;
+
+        cmds.push(EditorCommand::InsertSubtree {
+            nodes: vec![node],
+            parent_id: NodeId::NONE,
+            page_id: None,
+        });
+        placeholder_ids.push(placeholder_id);
+        // Baseline: mobile root has 1 scaffold child (status bar); desktop
+        // has 0 — mirrors the deleted concurrent path's identical baseline.
+        baselines.push(usize::from(is_mobile));
+        next_x += rf.width + SCREEN_GROUP_GAP;
+    }
+
+    Ok((cmds, placeholder_ids, baselines))
 }
 
 /// Fixed left-column width for a pre-built dashboard app-shell. Mirrors

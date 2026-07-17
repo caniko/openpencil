@@ -4,9 +4,12 @@
 //! 副作用全经 [`DocSink`] / [`LlmClient`]。
 //! 错误 / abort / 零内容语义见 spec §6。
 //!
-//! 单一顺序路径:多屏(原并发 screen-group)与 dashboard(原 sidebar+main
-//! 专用 scaffold)都收敛进这条路径 —— 它们的 per-subtask 产出与确定性后处理
-//! 完全一致,仅差并发并行度 / scaffold 形状(默认 + 基准路径都没用上)。
+//! 单一顺序执行路径(无并发)—— dashboard(原 sidebar+main 专用 scaffold)
+//! 收敛进单根路径:它的 per-subtask 产出与确定性后处理跟通用路径完全一致,
+//! 只差 scaffold 形状(基准路径没用上)。**多屏不再收敛**(2026-07-17 修复
+//! multiscreen-fanout-break item A):plan 的 subtask 若带 ≥2 个不同
+//! `screen` 标签,`insert_screen_group_roots` 建 N 个顶层 root(每屏一个),
+//! 各组 subtask 仍按 plan 顺序**依次**(非并发)执行 —— 结构复活,并发未复活。
 //! `concurrency` 字段仍由独立的 `spawn_agents` 扇出(`spawn_concurrent.rs`)消费。
 
 use crate::append::apply_append_context_to_plan;
@@ -18,6 +21,7 @@ use crate::plan_repair::parse_orchestrator_response;
 use crate::prompt::build_orchestrator_prompt;
 use crate::retry::is_non_retryable;
 use crate::scaffold::{build_scaffold_at, build_scaffold_reusing};
+use crate::screen_groups::group_subtasks_by_screen;
 use crate::subagent::{apply_command_with_reveal, reveal_now_millis, run_subtask_with_reveal_at};
 use crate::types::{
     AbortFlag, DesignRequest, DocSink, LlmChunk, LlmClient, OrchestratorError, PlanningMode,
@@ -27,6 +31,10 @@ use crate::validation::run_post_generation_validation;
 use crate::variables::{rollback, seed_commands, snapshot_plan_vars};
 use futures::StreamExt;
 use op_editor_core::{EditorCommand, EditorState, NodeId, PenNodeExt};
+
+#[path = "run_screen_groups.rs"]
+mod run_screen_groups;
+use run_screen_groups::insert_screen_group_roots;
 
 /// TS `replaceEmptyFrame` parity: detect a single EMPTY top-level frame (the
 /// fresh-canvas starter) that can be REUSED as the design root instead of
@@ -173,108 +181,146 @@ impl Orchestrator {
                 .next()
         };
 
-        let (root_id, scaffold_baseline) = if append_result.skip_root_insertion {
+        let (root_ids, scaffold_baselines): (Vec<String>, Vec<usize>) = if append_result
+            .skip_root_insertion
+        {
             let target_id = plan.root_frame.id.clone();
             for subtask in &mut plan.subtasks {
                 subtask.parent_frame_id = Some(target_id.clone());
             }
             let baseline = descendant_count(sink.state(), &target_id);
             on_progress(Progress::ScaffoldDone);
-            (target_id, baseline)
+            (vec![target_id], vec![baseline])
         } else {
             let effective_is_mobile = norm.is_mobile && !append_result.skip_status_bar;
-            // TS `replaceEmptyFrame` parity: when the canvas is a single empty
-            // top-level frame (the fresh-canvas starter), REUSE it as the design
-            // root (ReplaceSubtree in place) instead of inserting a brand-new
-            // root — which the host would otherwise clear + re-add, the visible
-            // "delete then re-draw" flash the user flagged.
-            let reuse_id = detect_reusable_empty_frame(sink.state());
-            let (insert_x, insert_y) =
-                next_root_insert_position(sink.state(), plan.root_frame.width);
-            let scaffold_cmds = match reuse_id.as_deref() {
-                Some(id) => build_scaffold_reusing(&plan, effective_is_mobile, id),
-                None => build_scaffold_at(&plan, effective_is_mobile, insert_x, insert_y),
-            };
-            match scaffold_cmds {
-                Ok(cmds) => {
-                    for cmd in cmds {
-                        if !apply_command_with_reveal(
-                            sink,
-                            cmd,
-                            self.agent_indicator_epoch,
-                            reveal_now_millis(),
-                        ) {
-                            rollback(sink, &var_snapshot);
-                            sink.end_undo_batch();
-                            return Err(OrchestratorError::Internal(
-                                "scaffold insert rejected by document".into(),
-                            ));
-                        }
+
+            // Screen grouping (multiscreen-fanout-break fix, item A): a plan
+            // whose subtasks span ≥2 distinct `screen` labels gets one
+            // scaffold root PER GROUP instead of one shared root. Zero
+            // labels, or every subtask sharing the SAME one, both give
+            // `groups.len() <= 1` — the single-root path below runs
+            // byte-identical to today (regression lock). Multi-root is
+            // mutually exclusive with the empty-canvas-reuse path (a truly
+            // blank canvas + a multi-screen-tagged plan is not a case any
+            // existing test exercises, and reuse only replaces ONE frame in
+            // place — see `insert_screen_group_roots`'s doc).
+            let groups = group_subtasks_by_screen(&plan.subtasks);
+
+            if groups.len() > 1 {
+                match insert_screen_group_roots(
+                    &mut plan,
+                    &groups,
+                    effective_is_mobile,
+                    sink,
+                    &scaffold_root_ids_before,
+                    self.agent_indicator_epoch,
+                    sequential_identity.as_ref(),
+                ) {
+                    Ok((ids, baselines)) => {
+                        on_progress(Progress::ScaffoldDone);
+                        (ids, baselines)
+                    }
+                    Err(e) => {
+                        rollback(sink, &var_snapshot);
+                        sink.end_undo_batch();
+                        return Err(OrchestratorError::Internal(e));
                     }
                 }
-                Err(e) => {
-                    // scaffold 模板 bug —— 收尾后报内部错误。
+            } else {
+                // TS `replaceEmptyFrame` parity: when the canvas is a single empty
+                // top-level frame (the fresh-canvas starter), REUSE it as the design
+                // root (ReplaceSubtree in place) instead of inserting a brand-new
+                // root — which the host would otherwise clear + re-add, the visible
+                // "delete then re-draw" flash the user flagged.
+                let reuse_id = detect_reusable_empty_frame(sink.state());
+                let (insert_x, insert_y) =
+                    next_root_insert_position(sink.state(), plan.root_frame.width);
+                let scaffold_cmds = match reuse_id.as_deref() {
+                    Some(id) => build_scaffold_reusing(&plan, effective_is_mobile, id),
+                    None => build_scaffold_at(&plan, effective_is_mobile, insert_x, insert_y),
+                };
+                match scaffold_cmds {
+                    Ok(cmds) => {
+                        for cmd in cmds {
+                            if !apply_command_with_reveal(
+                                sink,
+                                cmd,
+                                self.agent_indicator_epoch,
+                                reveal_now_millis(),
+                            ) {
+                                rollback(sink, &var_snapshot);
+                                sink.end_undo_batch();
+                                return Err(OrchestratorError::Internal(
+                                    "scaffold insert rejected by document".into(),
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // scaffold 模板 bug —— 收尾后报内部错误。
+                        rollback(sink, &var_snapshot);
+                        sink.end_undo_batch();
+                        return Err(OrchestratorError::Internal(e));
+                    }
+                }
+                let Some(rid) = sink.state().active_children().iter().find_map(|n| {
+                    let id = n.id_str();
+                    (!scaffold_root_ids_before.iter().any(|old| old == id)).then(|| id.to_string())
+                }) else {
                     rollback(sink, &var_snapshot);
                     sink.end_undo_batch();
-                    return Err(OrchestratorError::Internal(e));
-                }
-            }
-            let Some(rid) = sink.state().active_children().iter().find_map(|n| {
-                let id = n.id_str();
-                (!scaffold_root_ids_before.iter().any(|old| old == id)).then(|| id.to_string())
-            }) else {
-                rollback(sink, &var_snapshot);
-                sink.end_undo_batch();
-                return Err(OrchestratorError::Internal(format!(
-                    "scaffold root `{planned_root_id}` was not inserted"
-                )));
-            };
-            // Route subtasks into the scaffold. For a pre-built two-column
-            // dashboard shell, the sidebar subtask fills the (260-wide) left
-            // column and every other subtask fills the content column; the
-            // column ids were remapped on insert, so re-resolve them by name.
-            // Any other plan keeps the single-root behaviour (all → root).
-            let two_col = crate::scaffold::plan_is_sidebar_dashboard(&plan, effective_is_mobile)
-                .then(|| {
-                    let sb = find_child_id_by_name(
-                        sink.state(),
-                        &rid,
-                        crate::scaffold::SIDEBAR_COLUMN_NAME,
-                    );
-                    let ct = find_child_id_by_name(
-                        sink.state(),
-                        &rid,
-                        crate::scaffold::CONTENT_COLUMN_NAME,
-                    );
-                    sb.zip(ct)
-                })
-                .flatten();
-            for subtask in &mut plan.subtasks {
-                let parent = match &two_col {
-                    Some((sidebar_id, content_id)) => {
-                        if crate::dashboard_columns::is_sidebar_subtask(subtask) {
-                            sidebar_id.clone()
-                        } else {
-                            content_id.clone()
-                        }
-                    }
-                    None => rid.clone(),
+                    return Err(OrchestratorError::Internal(format!(
+                        "scaffold root `{planned_root_id}` was not inserted"
+                    )));
                 };
-                subtask.parent_frame_id = Some(parent);
+                // Route subtasks into the scaffold. For a pre-built two-column
+                // dashboard shell, the sidebar subtask fills the (260-wide) left
+                // column and every other subtask fills the content column; the
+                // column ids were remapped on insert, so re-resolve them by name.
+                // Any other plan keeps the single-root behaviour (all → root).
+                let two_col =
+                    crate::scaffold::plan_is_sidebar_dashboard(&plan, effective_is_mobile)
+                        .then(|| {
+                            let sb = find_child_id_by_name(
+                                sink.state(),
+                                &rid,
+                                crate::scaffold::SIDEBAR_COLUMN_NAME,
+                            );
+                            let ct = find_child_id_by_name(
+                                sink.state(),
+                                &rid,
+                                crate::scaffold::CONTENT_COLUMN_NAME,
+                            );
+                            sb.zip(ct)
+                        })
+                        .flatten();
+                for subtask in &mut plan.subtasks {
+                    let parent = match &two_col {
+                        Some((sidebar_id, content_id)) => {
+                            if crate::dashboard_columns::is_sidebar_subtask(subtask) {
+                                sidebar_id.clone()
+                            } else {
+                                content_id.clone()
+                            }
+                        }
+                        None => rid.clone(),
+                    };
+                    subtask.parent_frame_id = Some(parent);
+                }
+                if let (Some(epoch), Some(identity)) =
+                    (self.agent_indicator_epoch, sequential_identity.as_ref())
+                {
+                    op_editor_core::agent_indicators::add_frame(
+                        epoch,
+                        &rid,
+                        &identity.color,
+                        &identity.name,
+                    );
+                }
+                let baseline = descendant_count(sink.state(), &rid);
+                on_progress(Progress::ScaffoldDone);
+                (vec![rid], vec![baseline])
             }
-            if let (Some(epoch), Some(identity)) =
-                (self.agent_indicator_epoch, sequential_identity.as_ref())
-            {
-                op_editor_core::agent_indicators::add_frame(
-                    epoch,
-                    &rid,
-                    &identity.color,
-                    &identity.name,
-                );
-            }
-            let baseline = descendant_count(sink.state(), &rid);
-            on_progress(Progress::ScaffoldDone);
-            (rid, baseline)
         };
 
         // -- 阶段 3:顺序子 agent(C3: 3-attempt tier-gated retry ladder) --
@@ -519,14 +565,28 @@ impl Orchestrator {
         // `NoContent`. Cleanup only RESTRUCTURES (never adds content), so the
         // pre-cleanup count is the correct "did the subtasks produce content"
         // signal. See `reshaped_dashboard_root_is_not_a_false_no_content`.
-        let zero_content = descendant_count(sink.state(), &root_id) <= scaffold_baseline;
+        //
+        // Multi-root (screen groups): SUM the per-root added-content across
+        // every group instead of a single root's count. Every term is ≥0
+        // (subtasks only ever ADD nodes), so a zero SUM implies every
+        // individual root is ALSO empty — the all-roots-empty deletion below
+        // is therefore never a false positive against a partially-successful
+        // group.
+        let zero_content = root_ids
+            .iter()
+            .zip(scaffold_baselines.iter())
+            .map(|(id, baseline)| descendant_count(sink.state(), id).saturating_sub(*baseline))
+            .sum::<usize>()
+            == 0;
         if zero_content {
-            // 错误路径才移除空 scaffold root;abort / 正常零内容只回滚变量。
+            // 错误路径才移除空 scaffold root(s);abort / 正常零内容只回滚变量。
             if zero_node_failure {
-                sink.apply(EditorCommand::DeleteNode {
-                    node_id: NodeId::new(root_id.clone()),
-                    page_id: None,
-                });
+                for id in &root_ids {
+                    sink.apply(EditorCommand::DeleteNode {
+                        node_id: NodeId::new(id.clone()),
+                        page_id: None,
+                    });
+                }
             }
             rollback(sink, &var_snapshot);
             sink.end_undo_batch();
@@ -567,7 +627,17 @@ impl Orchestrator {
                 .collect();
             finalize_design(sink, &plan, &new_roots);
         } else {
-            finalize_design(sink, &plan, &[&root_id]);
+            // Every screen-group root (not just the first) goes in — this is
+            // the co-op point with `wire_screen_navigation` (Track A of the
+            // interactive-preview plan): `run_cleanup_passes` runs it LAST,
+            // over `sink.state()` as a whole, so as long as every new root is
+            // actually IN the document by now (it is — they're inserted
+            // above, before any subtask runs) it links all of them into App
+            // Mode navigation regardless of which root_ids are passed here.
+            // Passing them all is still correct scoping for the OTHER
+            // whole-root cleanup passes (dedup / avatar-repair / etc.).
+            let root_id_refs: Vec<&str> = root_ids.iter().map(String::as_str).collect();
+            finalize_design(sink, &plan, &root_id_refs);
         }
         on_progress(Progress::CleanupDone);
         sink.end_undo_batch();
@@ -590,7 +660,10 @@ impl Orchestrator {
 
         let total_nodes = outcomes.iter().map(|o| o.node_count).sum();
         Ok(RunSummary {
-            root_frame_id: root_id,
+            // First surviving root is the "primary" root_frame_id — mirrors
+            // the deleted concurrent path's identical convention so this
+            // field's meaning never changed shape for existing callers.
+            root_frame_id: root_ids.first().cloned().unwrap_or_default(),
             subtasks: outcomes,
             total_nodes,
         })
@@ -702,3 +775,8 @@ mod tests_d1;
 #[cfg(test)]
 #[path = "run_tests_f5.rs"]
 mod tests_f5;
+
+// multiscreen-fanout-break fix (item A) — screen-group scaffold tests.
+#[cfg(test)]
+#[path = "run_tests_screen_groups.rs"]
+mod tests_screen_groups;
