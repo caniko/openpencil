@@ -591,6 +591,9 @@ D("ghost")"##
 #[path = "batch_program_image_tests.rs"]
 mod image_tests;
 
+#[path = "batch_program_interactivity_tests.rs"]
+mod interactivity_tests;
+
 #[test]
 fn post_process_flag_marks_the_envelope() {
     let state = sample();

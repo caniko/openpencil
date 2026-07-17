@@ -72,13 +72,17 @@ Supported event hook keys (camelCase, `#[serde(rename_all = "camelCase")]`):
 
 Action vocabulary (body shape per action):
 
-| Action   | Body                                                             | Effect                                   |
-|----------|------------------------------------------------------------------|------------------------------------------|
-| `set`    | `{ "<path>": "<expr>" }` map of assignments                     | Write one or more state variables         |
-| `toggle` | `"<path>"` — the bool variable to flip                           | Toggle a bool state variable              |
-| `toast`  | `"<message expr>"` string or template literal                    | Show a transient notification             |
-| `push`   | `"<route path>"` string                                          | Navigate to a named route                 |
-| `if`     | `{ "expr": "<condition>", "then": [...], "else": [...] }`        | Conditional action branch (`else` optional) |
+| Action    | Body                                                             | Effect                                   |
+|-----------|------------------------------------------------------------------|------------------------------------------|
+| `set`     | `{ "<path>": "<expr>" }` map of assignments                     | Write one or more state variables         |
+| `toggle`  | `"<path>"` — the bool variable to flip                           | Toggle a bool state variable              |
+| `toast`   | `"<message expr>"` string or template literal                    | Show a transient notification             |
+| `push`    | `"\"<route path>\""` — a JSON string whose VALUE is itself `"<route path>"`, quotes included | Drill into a screen (keeps the caller reachable via back/pop) |
+| `replace` | `"\"<route path>\""` — same quote-literal shape as `push`         | Switch to a sibling screen (tab bar / sidebar — no back entry) |
+| `pop`     | `null` — no body                                                  | Return to the previous screen             |
+| `if`      | `{ "expr": "<condition>", "then": [...], "else": [...] }`        | Conditional action branch (`else` optional) |
+
+`push` / `replace` bodies compile as a Tier-1 EXPRESSION, not a literal path — an unquoted `/stats` lexes as a division token and fails to compile. Always wrap the route path in an extra pair of escaped quotes: `{ "push": "\"/stats\"" }`, never `{ "push": "/stats" }`.
 
 Examples (grounded in `full-jian-extensions.op` + `form.op`):
 
@@ -89,7 +93,7 @@ Examples (grounded in `full-jian-extensions.op` + `form.op`):
     {
       "if": {
         "expr": "$app.count >= $app.target",
-        "then": [{ "toast": "Done!" }, { "push": "/stats" }]
+        "then": [{ "toast": "Done!" }, { "push": "\"/stats\"" }]
       }
     }
   ]
@@ -115,6 +119,37 @@ EXPRESSION LANGUAGE:
 - Template literals (backtick, resolved by the expression parser):
   `` `Count: ${$app.count}` ``
 
+MULTI-SCREEN NAVIGATION (App Mode preview) — `screen` marker + tap-to-switch:
+
+A document with 2+ screens becomes a tappable, navigable app in Preview once
+its top-level screen frames carry a `screen` route path and its nav elements
+bind `push` / `replace` / `pop` as above. Mark exactly ONE top-level frame
+`"screen": "/"` (the entry); every other screen gets a unique `/slug`, unique
+across the whole document:
+
+```json
+{ "type": "frame", "id": "home", "name": "Home", "screen": "/" }
+{ "type": "frame", "id": "profile", "name": "Profile", "screen": "/profile" }
+```
+
+Bind a bottom-tab-bar / sidebar item with `replace` (lateral move between
+sibling screens); bind a card/row that opens a detail screen with `push`
+(the user expects to come back FROM it); bind a header back-arrow with `pop`:
+
+```json
+{ "events": { "onTap": [ { "replace": "\"/profile\"" } ] } }
+```
+
+```json
+{ "events": { "onTap": [ { "pop": null } ] } }
+```
+
+`screen` is valid ONLY on a top-level frame — a nested frame's `screen` value
+is ignored by the routing projection. Never write a `route` field instead of
+`events.onTap`: `route` is schema-only surface metadata the tap dispatcher
+does not read, so a node with `route` but no `events.onTap` does nothing
+when tapped.
+
 PLACEMENT RULES:
 
 - Declare `state` on the **lowest common ancestor** node that all bindings /
@@ -138,6 +173,10 @@ CORRECTNESS CHECKLIST:
   separate array elements).
 - `set` body is an object mapping variable paths to expression strings.
 - `toggle` body is a single string (the variable path), not an object.
-- `push` body is a route path string, not an object.
+- `push` / `replace` bodies are the quote-literal string `"\"<path>\""`, not a
+  bare path string and not an object — a bare `/path` fails to compile.
+- `pop` body is `null`, never a path.
 - `if` body has an `expr` string plus `then` array; `else` is optional.
 - Expression strings are plain JSON strings — no special encoding needed.
+- `screen` is a plain string on a top-level frame, never `route` — `route`
+  is not consumed by the tap dispatcher.

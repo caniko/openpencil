@@ -193,6 +193,13 @@ pub fn execute_design_tool_with_root_seed_guard(
             );
         }
         let empty_shells = scan_empty_shells(state.active_children());
+        // Track B of the interactive-preview plan: an intent-shaped echo (not
+        // an auto-fix — see `op_orchestrator::nav_issues` module doc) naming
+        // any nav-tab item that name-matches an already screen-marked frame
+        // but has no `events.onTap` bound yet. `wire_screen_navigation`
+        // (Track A) is the deterministic backstop if the model never gets to
+        // it before the design ends.
+        let nav_issues = op_orchestrator::nav_issues::scan_nav_issues(state);
         let design_diagnostics =
             crate::design_agent_diagnostics::collect_batch_design_diagnostics(state);
         layout_issues.extend(design_diagnostics.layout_issues);
@@ -207,6 +214,7 @@ pub fn execute_design_tool_with_root_seed_guard(
             || !intent_questions.is_empty()
             || !variable_issues.is_empty()
             || !image_slot_candidates.is_empty()
+            || !nav_issues.is_empty()
             || root_seed_hint.is_some()
         {
             if let Ok(mut envelope) = serde_json::from_str::<serde_json::Value>(&result.content) {
@@ -251,6 +259,9 @@ pub fn execute_design_tool_with_root_seed_guard(
                         );
                         obj.insert("contrastIssues".into(), serde_json::json!(contrast_issues));
                     }
+                    if !nav_issues.is_empty() {
+                        obj.insert("navIssues".into(), serde_json::json!(nav_issues));
+                    }
                     let mut hints = Vec::new();
                     if !layout_issues.is_empty() {
                         hints.push(
@@ -279,6 +290,12 @@ pub fn execute_design_tool_with_root_seed_guard(
                     if !image_slot_candidates.is_empty() {
                         hints.push(
                             "imageSlots lists unresolved media slots. Resolve them before continuing: default G requires the exact EMPTY slot id, never its row/card container; if an image is already a direct sibling, use M(imageId, slotId) only when explicit parent/slot hierarchy assigns it there. Do not decide from image subject, aesthetics, or perceived quality."
+                                .to_string(),
+                        );
+                    }
+                    if !nav_issues.is_empty() {
+                        hints.push(
+                            "navIssues: this is a multi-screen app - the listed nav tabs are not wired to switch screens yet. Bind each one's events.onTap exactly as shown; do not guess a different destination."
                                 .to_string(),
                         );
                     }

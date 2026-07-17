@@ -222,6 +222,28 @@ When the canvas already holds one or more screens, a new screen (a profile page 
 4. **Same frame contract.** The new screen root uses the SAME width/height class as its siblings and opens to the RIGHT (`find_empty_space`).
 5. **Different content, same skeleton vocabulary.** Vary the content architecture to the screen's purpose, but compose it from the same component vocabulary (same card style, same list-row anatomy, same button hierarchy) the first screen established.
 
+## Multi-Screen Interactivity (App Mode Preview)
+
+When the canvas holds **2 or more screens**, the preview engine can turn them into a tappable, navigable app if — and only if — you mark them. This is optional groundwork you do yourself; nothing else in the tool loop requires it, but skipping it means Preview stays a flat scrolling page instead of switching screens on tap.
+
+1. **Mark every top-level screen frame with `screen`.** Exactly ONE screen is the entry, marked `"screen": "/"`; every other screen gets a unique `/slug` (e.g. `"/profile"`, `"/settings"`) — unique across the WHOLE document. Set it directly on the frame node, e.g. `I(null, {type:"frame", name:"Profile", screen:"/profile", ...})` or `U(profileFrameId, {screen:"/profile"})`.
+2. **Bind every tappable navigation element to `events.onTap`.** A bottom-tab-bar item, a sidebar-nav row, or a card that opens a detail screen all bind the same way — a wire-format action object whose body is the JSON STRING `"\"/path\""` (the quote characters are literally part of the string value; this compiles as a Tier-1 expression, a bare `/path` does not):
+
+   ```json
+   { "events": { "onTap": [ { "replace": "\"/profile\"" } ] } }
+   ```
+   ```json
+   { "events": { "onTap": [ { "push": "\"/detail/42\"" } ] } }
+   ```
+
+   Use `replace` for tab-bar / sidebar switches (lateral navigation between sibling screens); use `push` for drilling into a detail view a user expects to come back FROM. A header/back-arrow control binds `{"pop": null}` (no path):
+
+   ```json
+   { "events": { "onTap": [ { "pop": null } ] } }
+   ```
+3. **Never write a `route` field.** `route` is schema-only surface metadata the preview engine's tap dispatcher does not consume — only `events.onTap` drives navigation. Writing `route` instead of `events.onTap` looks plausible but does nothing when tapped.
+4. If a `batch_design` result carries `navIssues`, it is naming nav-tab items that already sit on a screen you marked but are not yet bound — bind each one exactly as shown in the issue; do not guess a different destination.
+
 ## Parallel Work — `spawn_agents`
 
 For a large multi-screen task (more than 3–4 screens):

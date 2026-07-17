@@ -57,6 +57,7 @@ pub(crate) mod cleanup_typography;
 pub mod concurrent;
 pub mod geometry_validation;
 pub mod loop_finalize;
+pub mod nav_issues;
 pub mod prompt;
 pub mod radial_repair;
 pub mod role_defaults;
@@ -72,6 +73,7 @@ pub mod stub_repair;
 pub mod subagent;
 pub mod table_repair;
 pub mod tree_heuristics;
+pub mod wire_screen_navigation;
 
 #[cfg(test)]
 mod cleanup_mobile_chrome_nav_wrapper_tests;

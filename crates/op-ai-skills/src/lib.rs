@@ -56,13 +56,63 @@ pub fn append_image_self_check_scope(prompt: &mut String) {
     prompt.push_str(&block);
 }
 
+/// Single source of truth for `guideline_for`'s dispatch AND for every
+/// caller (e.g. `op-mcp`'s `get_guidelines` unknown-topic error) that wants
+/// to name the full supported-topic set without hardcoding a second,
+/// driftable copy. Each row is `(primary_name, aliases, skill_names)`: the
+/// primary name plus its aliases all resolve to the same composed guideline,
+/// built by concatenating `skill_names` in order (see [`compose_skills`]).
+///
+/// Adding a topic is a ONE-LINE change here — `guideline_for` and
+/// [`guideline_topics`] both read this table, so neither can go stale
+/// relative to the other.
+const GUIDELINE_TOPICS: &[(&str, &[&str], &[&str])] = &[
+    (
+        "web-app",
+        &["webapp"],
+        &["product-principles", "web-app", "design-principles"],
+    ),
+    ("mobile", &["mobile-app"], &["mobile-app"]),
+    ("code-to-design", &[], &["code-to-design"]),
+    (
+        "landing-page",
+        &["landing"],
+        &["landing-page", "design-principles"],
+    ),
+    (
+        "dashboard",
+        &["table"],
+        &["dashboard", "product-principles"],
+    ),
+    ("slides", &["deck", "presentation"], &["slides"]),
+    ("form", &["form-ui"], &["form-ui"]),
+    ("design-system", &[], &["design-system"]),
+    ("interactivity", &[], &["interactivity"]),
+];
+
+/// Compose the named skills (in order) into one coherent guideline doc,
+/// skipping any that are absent. `None` if nothing resolved.
+fn compose_skills(names: &[&str]) -> Option<String> {
+    let parts: Vec<&str> = names
+        .iter()
+        .filter_map(|&n| get_skill_by_name(n).map(|s| s.content.trim()))
+        .filter(|c| !c.is_empty())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// Return the product-design guideline text for `topic`, composed from the
 /// embedded skill corpus. Mirrors Pencil's `get_guidelines(guide, …)`: each
 /// topic resolves to its focused task guide plus the principle skills that
 /// complete it. All content is local (embedded via `include_dir!`) — there is
 /// no remote fetch.
 ///
-/// Supported topics (aliases in parens):
+/// Supported topics (aliases in parens) — see [`GUIDELINE_TOPICS`] for the
+/// canonical table; [`guideline_topics`] returns the flattened name list:
 /// - `"web-app"` (`webapp`) — product principles + web-app depth laws + design craft
 /// - `"mobile"` (`mobile-app`) — the mobile-app three-section architecture
 /// - `"code-to-design"` — agent workflow for converting frontend codebases
@@ -71,35 +121,25 @@ pub fn append_image_self_check_scope(prompt: &mut String) {
 /// - `"slides"` (`deck`, `presentation`) — slide layout contracts
 /// - `"form"` (`form-ui`) — form-ui domain
 /// - `"design-system"` — design-system composition
+/// - `"interactivity"` — multi-screen navigation contract (`screen` markers
+///   + `events.onTap` actions) for tappable App Mode preview
 ///
 /// Returns `None` for any unrecognised topic so callers can produce a typed
 /// "unknown topic" error without special-casing the string themselves.
 pub fn guideline_for(topic: &str) -> Option<String> {
-    // Compose the named skills (in order) into one coherent guideline doc,
-    // skipping any that are absent. `None` if nothing resolved.
-    fn compose(names: &[&str]) -> Option<String> {
-        let parts: Vec<&str> = names
-            .iter()
-            .filter_map(|&n| get_skill_by_name(n).map(|s| s.content.trim()))
-            .filter(|c| !c.is_empty())
-            .collect();
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("\n\n"))
-        }
-    }
-    match topic {
-        "web-app" | "webapp" => compose(&["product-principles", "web-app", "design-principles"]),
-        "mobile" | "mobile-app" => compose(&["mobile-app"]),
-        "code-to-design" => compose(&["code-to-design"]),
-        "landing-page" | "landing" => compose(&["landing-page", "design-principles"]),
-        "dashboard" | "table" => compose(&["dashboard", "product-principles"]),
-        "slides" | "deck" | "presentation" => compose(&["slides"]),
-        "form" | "form-ui" => compose(&["form-ui"]),
-        "design-system" => compose(&["design-system"]),
-        _ => None,
-    }
+    let (_, _, skill_names) = GUIDELINE_TOPICS
+        .iter()
+        .find(|(name, aliases, _)| *name == topic || aliases.contains(&topic))?;
+    compose_skills(skill_names)
+}
+
+/// The primary name of every topic [`guideline_for`] accepts, in table
+/// order — for callers that need to name the full supported-topic set (e.g.
+/// an "unknown topic" error hint) without hardcoding a copy that can drift
+/// out of sync as topics are added. Aliases are omitted; each is a synonym
+/// for the primary name already listed.
+pub fn guideline_topics() -> Vec<&'static str> {
+    GUIDELINE_TOPICS.iter().map(|(name, _, _)| *name).collect()
 }
 
 /// Return the system prompt for the design agentic tool-loop.
@@ -378,6 +418,33 @@ mod tests {
         assert!(
             guideline_for("presentation").is_some(),
             "presentation alias resolves"
+        );
+    }
+
+    #[test]
+    fn guideline_for_interactivity_teaches_screen_and_on_tap_contract() {
+        let content =
+            guideline_for("interactivity").expect("interactivity guideline must be present");
+        assert!(
+            content.contains("\"screen\""),
+            "must teach the screen marker"
+        );
+        assert!(
+            content.contains("events.onTap") || content.contains("onTap"),
+            "must teach the events.onTap binding"
+        );
+        assert!(
+            content.contains(r#"{ "replace": "\"/profile\"" } "#)
+                || content.contains(r#"{ "replace": "\"/profile\"" }"#),
+            "must show the exact quote-literal replace example: {content:?}"
+        );
+        assert!(
+            content.contains(r#"{"pop": null}"#) || content.contains(r#"{ "pop": null }"#),
+            "must show the pop (no-path) example"
+        );
+        assert!(
+            content.contains("`route` field") && content.contains("schema-only"),
+            "must forbid the schema-only route field: {content:?}"
         );
     }
 

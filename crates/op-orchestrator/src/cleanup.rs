@@ -1449,6 +1449,16 @@ pub fn run_cleanup_passes(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_
     // where that section belongs is intent — the geometry echo handles it.
     anchor_bottom_nav_last_for_all_roots(sink);
     crate::mobile_reflow::repair_mobile_trailing_nav_reflow_in_sink(sink);
+
+    // Track A of the interactive-preview plan: mark screen-shaped top-level
+    // frames + wire their nav tabs / back buttons, so a multi-screen document
+    // enters App Mode preview with zero model cooperation. Runs LAST — after
+    // bottom-nav anchoring/dedup/distribution above have settled the final
+    // nav shape, so tab-item discovery sees the real tree, not an
+    // in-progress one. Whole-doc (scans `sink.state()`, not `root_ids`) so
+    // it also links PRE-EXISTING screens from earlier turns, matching
+    // `avatar_repair` above.
+    crate::wire_screen_navigation::wire_screen_navigation(sink);
 }
 
 /// Apply a whole-root transform (the serialize → mutate → deserialize round-trip
