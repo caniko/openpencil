@@ -142,6 +142,7 @@ mod canvas_viewport_text;
 mod canvas_viewport_widget;
 pub mod preview_device_switcher;
 pub mod scene_paint_options;
+pub mod screen_switcher_pills;
 
 // Phase 6 — shell-core-side `theme()` / `t()` derivations over
 // `op_editor_core::EditorUiState` for widgets ported off `Document`.
@@ -283,6 +284,7 @@ pub use canvas_viewport_paint::paint_scene_page;
 pub use canvas_viewport_widget::widget_text_inset_left;
 pub use preview_device_switcher::PreviewDeviceSwitcher;
 pub use scene_paint_options::{paint_scene_page_with, paint_scene_subtree, PaintSceneOptions};
+pub use screen_switcher_pills::ScreenSwitcherPills;
 
 pub use icons::{draw_icon, draw_icon_catalog_entry, draw_icon_data, Icon, IconPathData};
 

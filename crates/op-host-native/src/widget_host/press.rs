@@ -528,6 +528,9 @@ impl WidgetHostNative {
         // runtime (taps on switches / buttons, caret placement) and is
         // swallowed so no editor selection / node-creation fires.
         if self.preview.is_some() {
+            if self.screen_switcher_press(x, y, viewport_width, viewport_height) {
+                return true;
+            }
             if self.preview_switcher_press(x, y, viewport_width, viewport_height) {
                 return true;
             }

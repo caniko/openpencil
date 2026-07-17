@@ -1136,6 +1136,9 @@ mod chat_intent_host_tests;
 #[cfg(test)]
 mod main_tests;
 
+#[cfg(test)]
+mod keyboard_shortcut_tests;
+
 // Serializes tests that touch the process-global `agent_indicators`
 // registry against tests that assert an exact animation deadline. The
 // registry is shared across every test in this binary running in

@@ -58,10 +58,12 @@
 //! `private_interfaces` on the `AppMode` type).
 
 mod app_mode;
+mod auto_wire;
 mod binding_sites;
 mod input;
 mod present;
 mod scene_helpers;
+mod transition;
 // Gated off Windows: preview tests exercise runtime layout through
 // `jian_skia::SkiaMeasure`, which hits DirectWrite in Windows CI and aborts
 // with STATUS_ACCESS_VIOLATION before Rust can report a normal failure.
@@ -76,6 +78,8 @@ mod tests_bindings;
 mod tests_device_frame;
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests_geometry_parity;
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests_transition;
 
 use app_mode::AppMode;
 use binding_sites::{collect_binding_sites, BindingSite};
@@ -84,6 +88,7 @@ use scene_helpers::{apply_widget_state, display_string, format_warning};
 #[allow(unused_imports)]
 pub(crate) use present::PinnedPaint;
 
+use jian_core::action::services::Router;
 use jian_core::widget_state::WidgetState;
 use jian_core::Runtime;
 use jian_ops_schema::compat::{load_str_with, LoadOptions};
@@ -159,6 +164,15 @@ pub struct PreviewSession {
     /// bounds doesn't remap through a neighbour. `None` between
     /// gestures or when the `Down` hit no mapped node.
     gesture_mapping: Option<(Rect, Rect)>,
+    /// Track C-3: the in-flight screen-transition animation, set by
+    /// `app_mode::reconcile` on every screen switch. `None` when idle
+    /// (including the entire classic workbench-mode session, which never
+    /// switches screens).
+    transition: Option<transition::ScreenTransition>,
+    /// The last value passed to [`Self::set_now_ms`] — `transition`'s
+    /// idle input dispatch guard (`input.rs`) needs "now" but the
+    /// dispatch methods don't take a clock param of their own.
+    last_now_ms: u64,
 }
 
 impl PreviewSession {
@@ -206,6 +220,18 @@ impl PreviewSession {
         preserve_authored_geometry: bool,
     ) -> Result<Self, String> {
         let _ = canvas_size; // layout is root-derived, not canvas-derived.
+
+        // Track C-1: if the document has no authored `screen` marker at
+        // all, auto-wire a preview-only clone with Track A's deterministic
+        // screen/nav pass before anything else runs, so a hand-drawn or
+        // pre-Track-A multi-screen document still enters App Mode. `doc`
+        // is a local binding for the rest of `enter` — it either points at
+        // the caller's document (untouched) or at `auto_wired` (owned
+        // here); either way the CALLER's document is never mutated. See
+        // `auto_wire`'s module doc for the "any marker → skip entirely"
+        // rationale.
+        let auto_wired = auto_wire::auto_wire_for_preview(doc, active_page_index);
+        let doc: &jian_ops_schema::PenDocument = auto_wired.as_ref().unwrap_or(doc);
 
         // Prepare the document EXACTLY as the design canvas does before
         // it lays out + paints (`op_pen_loader::layout_scene::
@@ -311,8 +337,10 @@ impl PreviewSession {
                 table.entry_path(),
                 table.paths(),
             ));
+            let mounted_stack = router.current().stack;
             app = Some(AppMode {
                 current_path: table.entry_path().to_owned(),
+                mounted_stack,
                 page_idx: 0,
                 theme: active_theme.clone(),
                 promoted_doc: promoted_doc.clone(),
@@ -371,6 +399,8 @@ impl PreviewSession {
             binding_sites,
             app,
             gesture_mapping: None,
+            transition: None,
+            last_now_ms: 0,
         })
     }
 
@@ -383,6 +413,7 @@ impl PreviewSession {
     /// Push the host clock so the runtime can drive caret blink etc.
     pub fn set_now_ms(&mut self, now_ms: u64) {
         self.runtime.set_now_ms(now_ms);
+        self.last_now_ms = now_ms;
     }
 
     /// Resize hook for the host's `Resized` handler. Layout is derived

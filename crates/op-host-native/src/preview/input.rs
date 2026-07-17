@@ -17,6 +17,12 @@
 //! gesture anchors that pair at `Down` and reuses it for every held
 //! `Move` and the `Up` (pointer capture), so a drag never remaps
 //! through a neighbour mid-gesture.
+//!
+//! ## Track C-3: input gate during a screen transition
+//!
+//! `dispatch_pointer_phase` / `dispatch_wheel` DISCARD their event
+//! outright while `transition_active()` — see that method's doc
+//! (`crate::preview::transition`) for why discard, not queue.
 
 use super::PreviewSession;
 
@@ -76,6 +82,12 @@ impl PreviewSession {
     ) -> bool {
         use jian_core::geometry::point;
         use jian_core::gesture::pointer::{MouseButtons, PointerEvent, PointerKind};
+        // Track C-3: discard pointer input while a screen-transition
+        // animation plays — see `transition_active`'s doc for why discard
+        // (not queue) is the right call here.
+        if self.transition_active() {
+            return false;
+        }
         let (rt_x, rt_y) = self.resolve_runtime_point(scene_x, scene_y, phase);
         let mut ev = PointerEvent::simple(1, phase, point(rt_x, rt_y));
         ev.kind = PointerKind::Mouse;
@@ -118,6 +130,9 @@ impl PreviewSession {
     pub fn dispatch_wheel(&mut self, scene_x: f32, scene_y: f32, dx: f32, dy: f32) -> bool {
         use jian_core::geometry::point;
         use jian_core::gesture::pointer::WheelEvent;
+        if self.transition_active() {
+            return false;
+        }
         let (rt_x, rt_y) = self.scene_to_runtime(scene_x, scene_y);
         let ev = WheelEvent::simple(point(rt_x, rt_y), point(dx, dy));
         !self.runtime.dispatch_wheel(ev).is_empty()

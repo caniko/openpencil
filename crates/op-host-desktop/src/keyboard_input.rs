@@ -208,6 +208,20 @@ impl DesktopApp {
                             self.mark_document_saved();
                         }
                     }
+                    // Track C-6: Cmd+P toggles Preview — parity with the
+                    // TopBar Play button (`press.rs`'s `TopBarHit::TogglePreview`).
+                    // Plain Cmd+P (no Shift) is otherwise unbound; Cmd+Shift+P
+                    // is Export Image, a distinct chord below. Allowed even
+                    // while a settings/Git input is focused (same tier as
+                    // Cmd+S / Cmd+O above) so it can also EXIT preview from
+                    // anywhere — preview's own keyboard takeover (Tab/arrows,
+                    // gated on `preview_active()`) only claims unmodified
+                    // named keys, never a Cmd chord, so this always reaches
+                    // `toggle_preview_with_cached_viewport` regardless of
+                    // whether preview currently owns the keyboard.
+                    "p" => {
+                        consumed = self.host.toggle_preview_with_cached_viewport();
+                    }
                     // Cmd+C / X / V / A operate on whichever text input
                     // owns the keyboard (chat / settings / git / property
                     // / rename / variables / model-picker / canvas text

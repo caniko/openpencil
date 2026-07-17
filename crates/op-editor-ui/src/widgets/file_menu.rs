@@ -515,7 +515,15 @@ fn paint_recent_row(
 /// `…` when characters are dropped. Uses the backend's measurer so
 /// CJK glyph widths are honoured (a 13-px ASCII "pencil-demo.op" and
 /// the equivalent CJK string have very different advances).
-fn truncate_to_width(cx: &mut PaintCx<'_>, s: &str, font_size: f32, max_w: f32) -> String {
+///
+/// `pub(crate)` (not private) — `screen_switcher_pills.rs` reuses it to
+/// ellipsize a screen name into a fixed-width pill.
+pub(crate) fn truncate_to_width(
+    cx: &mut PaintCx<'_>,
+    s: &str,
+    font_size: f32,
+    max_w: f32,
+) -> String {
     if cx.backend.measure_text(s, font_size) <= max_w {
         return s.to_string();
     }

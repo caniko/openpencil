@@ -1000,6 +1000,13 @@ pub struct EditorUiState {
     /// Switcher segment currently pressed (activates on RELEASE
     /// inside the same segment).
     pub preview_switcher_pressed: Option<PreviewDeviceKind>,
+    /// APP MODE screen-switcher pill under the cursor (hover wash),
+    /// indexed into the session's current screen list. `None` outside
+    /// hover and outside APP MODE. Never serialized.
+    pub screen_switcher_hover: Option<usize>,
+    /// APP MODE screen-switcher pill currently pressed (activates on
+    /// RELEASE inside the same pill, mirroring `preview_switcher_pressed`).
+    pub screen_switcher_pressed: Option<usize>,
     /// Floating `Cmd+,` agent-settings modal open.
     pub agent_settings_open: bool,
     pub agent_settings: crate::agent_settings::AgentSettings,
@@ -1438,6 +1445,8 @@ impl Default for EditorUiState {
             preview_device: None,
             preview_switcher_hover: None,
             preview_switcher_pressed: None,
+            screen_switcher_hover: None,
+            screen_switcher_pressed: None,
             agent_settings_open: false,
             agent_settings: crate::agent_settings::AgentSettings::default(),
             agent_settings_drag: None,
@@ -1604,6 +1613,8 @@ impl EditorUiState {
         self.preview_device = None;
         self.preview_switcher_hover = None;
         self.preview_switcher_pressed = None;
+        self.screen_switcher_hover = None;
+        self.screen_switcher_pressed = None;
     }
 
     /// Flip Preview mode on/off. Returns the new state (`true` =
@@ -2000,10 +2011,14 @@ mod tests {
         c.preview_device = Some(PreviewDeviceKind::Phone);
         c.preview_switcher_hover = Some(PreviewDeviceKind::Desktop);
         c.preview_switcher_pressed = Some(PreviewDeviceKind::Canvas);
+        c.screen_switcher_hover = Some(1);
+        c.screen_switcher_pressed = Some(2);
         c.exit_preview();
         assert_eq!(c.preview_device, None);
         assert_eq!(c.preview_switcher_hover, None);
         assert_eq!(c.preview_switcher_pressed, None);
+        assert_eq!(c.screen_switcher_hover, None);
+        assert_eq!(c.screen_switcher_pressed, None);
     }
 
     #[test]

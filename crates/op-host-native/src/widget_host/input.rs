@@ -591,6 +591,7 @@ impl WidgetHostNative {
         // off-canvas moves fall through so top-bar hover still works
         // while previewing.
         if self.preview.is_some() {
+            self.screen_switcher_hover(x, y, self.last_viewport_w, self.last_viewport_h);
             self.preview_switcher_hover(x, y, self.last_viewport_w, self.last_viewport_h);
             if self.preview_dispatch_move(x, y) {
                 return true;
@@ -1427,6 +1428,9 @@ impl WidgetHostNative {
     /// Mouse-release — ends active drag; chat-panel snaps corner.
     pub fn apply_release_with_viewport(&mut self, viewport_w: f32, viewport_h: f32) -> bool {
         let pressed_released = self.release_pressed_feedback();
+        if self.screen_switcher_release() {
+            return true;
+        }
         if self.preview_switcher_release() {
             return true;
         }

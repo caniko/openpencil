@@ -113,6 +113,17 @@ op-pen-loader = { path = "../op-pen-loader" }
 # `EditorState`. Already a transitive dep via op-editor-core.
 jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
 
+# Track C-1 of the interactive-preview plan: `preview::auto_wire` runs the
+# orchestrator's Track A deterministic screen/nav wiring pass
+# (`wire_screen_navigation`) over a preview-only `EditorState` clone on
+# `enter_preview`, so a document with no authored `screen` marker still
+# enters App Mode. Safe to add here — verified no cycle (`op-orchestrator`'s
+# own deps never reach back to `op-host-native`) and `op-orchestrator` is a
+# pure-logic crate with no skia/winit/wasm surface, gated outside wasm32
+# alongside the rest of the non-wasm native stack (this crate is never
+# built for wasm32 — `op-host-web` does not depend on it).
+op-orchestrator = { path = "../op-orchestrator" }
+
 # Cross-platform widget render stack (desktop + mobile, NOT wasm).
 #
 # 2026-05-10 mobile extension (per user note that jian will eventually

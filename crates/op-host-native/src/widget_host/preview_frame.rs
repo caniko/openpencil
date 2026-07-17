@@ -402,7 +402,10 @@ impl super::WidgetHostNative {
                         paint_origin: pinned.paint_origin,
                         nav_scene_origin: pinned.node_scene.origin,
                     });
-            session.paint_framed(
+            // Track C-3: routes to the plain single-layer `paint_framed`
+            // when idle, or composites the outgoing/entering screens for
+            // an in-flight push/pop/replace transition.
+            session.paint_framed_animated(
                 frame_backend,
                 &root_id,
                 content_clip,

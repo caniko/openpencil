@@ -112,6 +112,9 @@ mod pen_press;
 mod pen_press_tests;
 mod press;
 mod press_helpers;
+mod preview_edge_swipe;
+#[cfg(all(test, not(target_os = "windows")))]
+mod preview_edge_swipe_tests;
 mod preview_frame;
 #[cfg(all(test, not(target_os = "windows")))]
 mod preview_frame_tests;
@@ -121,6 +124,9 @@ mod property_layout_dispatch;
 mod property_panel_press_tests;
 mod property_popovers;
 mod release_feedback;
+mod screen_switcher;
+#[cfg(all(test, not(target_os = "windows")))]
+mod screen_switcher_tests;
 mod scroll;
 #[cfg(test)]
 mod scroll_tests;
@@ -340,6 +346,13 @@ pub struct WidgetHostNative {
     /// Last preview pointer position in DOCUMENT space — the release
     /// dispatches its Up here (the OS reports release without coords).
     pub(in crate::widget_host) preview_last_doc: Option<(f32, f32)>,
+    /// Track C-4: the SCREEN-space x a preview press started at, when
+    /// that press began within the edge-swipe dead zone (device-frame
+    /// content-local x < 24px) — the iOS-style "swipe from the left
+    /// edge to go back" candidate. `None` when no candidate is being
+    /// tracked (press started elsewhere, or preview isn't in App Mode /
+    /// there's nowhere to pop to).
+    pub(in crate::widget_host) preview_edge_swipe_start_x: Option<f32>,
     /// Stable, process-unique id scoping this host's chat-panel transcript
     /// cache. Allocated once at construction and stamped onto every
     /// `AIChatPlaceholder` this host builds (`.owned_by`), so the display-frame
@@ -677,6 +690,7 @@ impl WidgetHostNative {
             preview_surface_capture: None,
             preview_press_active: false,
             preview_last_doc: None,
+            preview_edge_swipe_start_x: None,
             chat_panel_owner: op_editor_ui::widgets::AIChatPlaceholder::next_owner(),
             layer_panel_owner: op_editor_ui::widgets::LayerPanel::next_layer_panel_owner(),
             last_chat_session_index,
@@ -846,6 +860,20 @@ impl WidgetHostNative {
         }
     }
 
+    /// Track C-6 (`Cmd+P`): [`Self::toggle_preview`] using the host's own
+    /// cached viewport (`last_viewport_w/h`) instead of a caller-supplied
+    /// size — the keyboard shortcut's entry point (`op-host-desktop`,
+    /// which has no access to this crate's private canvas-region math)
+    /// is otherwise identical to the TopBar Play button's `press.rs` call
+    /// site. `last_viewport_w/h` can be a frame stale right after a
+    /// resize (same caveat `center_canvas_on`'s doc already accepts for
+    /// this cache), which only affects entry centering, never whether
+    /// preview toggles.
+    pub fn toggle_preview_with_cached_viewport(&mut self) -> bool {
+        let (_cx0, _cy0, cw, ch) = self.canvas_region(self.last_viewport_w, self.last_viewport_h);
+        self.toggle_preview((cw, ch))
+    }
+
     /// Resize hook called from the desktop runner's `Resized` handler.
     /// Preview layout is now derived per-root from the document (not the
     /// canvas region), so resizing only changes the paint transform, not
@@ -916,6 +944,12 @@ impl WidgetHostNative {
         self.capture_device_preview_surface(screen_x, screen_y);
         self.preview_press_active = true;
         self.preview_last_doc = Some((doc.x, doc.y));
+        // Track C-4: arm an edge-swipe candidate when this press started
+        // in the device frame's left-edge dead zone. Forwarding Down to
+        // the runtime as usual is deliberate: a genuine edge-swipe moves
+        // well past the tap-gesture's own same-spot Down/Up tolerance
+        // before the pop fires, so it never completes as a stray tap.
+        self.arm_edge_swipe_candidate(screen_x);
         let handled = self
             .preview
             .as_mut()
@@ -941,6 +975,16 @@ impl WidgetHostNative {
         let Some(doc) = self.preview_doc_point(screen_x, screen_y, vw, vh) else {
             return false;
         };
+        // Track C-4: a held drag that crosses the edge-swipe threshold
+        // fires `pop` and cancels the underlying gesture instead of
+        // completing as a normal Move — checked BEFORE updating
+        // `preview_last_doc` so the cancel dispatches at the gesture's
+        // last real position, not this frame's.
+        if self.preview_press_active && self.maybe_fire_edge_swipe(screen_x) {
+            self.cancel_preview_gesture_for_edge_swipe();
+            self.mark_dirty();
+            return true;
+        }
         let phase = if self.preview_press_active {
             PointerPhase::Move
         } else {
@@ -963,6 +1007,7 @@ impl WidgetHostNative {
     pub fn preview_dispatch_release(&mut self) -> bool {
         use jian_core::gesture::pointer::PointerPhase;
         self.preview_surface_capture = None;
+        self.disarm_edge_swipe();
         if !self.preview_press_active {
             return false;
         }

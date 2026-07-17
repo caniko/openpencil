@@ -88,7 +88,7 @@ fn preview_uses_active_page_for_runtime() {
 /// holds the typed value (`jian_core::screens::reconcile_screens`
 /// preserves `$app`/`$state` across a mounted-document swap; only the
 /// per-node `WidgetStateStore` entry is pruned and needs a re-seed).
-const TWO_SCREEN_DOC_JSON: &str = r##"{
+pub(super) const TWO_SCREEN_DOC_JSON: &str = r##"{
     "version": "1.1",
     "formatVersion": "1.1",
     "id": "x",
@@ -195,7 +195,7 @@ fn tap_push_switches_screen_via_reconcile() {
     let (bx, by) = go_button_center_for_test(&session);
     session.dispatch_tap(bx, by);
     assert!(
-        session.reconcile().switched,
+        session.reconcile(1_000).switched,
         "push must reconcile into a switch"
     );
     assert!(session.is_app_mode());
@@ -210,7 +210,10 @@ fn unknown_push_appends_warning_and_stays() {
         PreviewSession::enter(&doc, (1200.0, 800.0), &Default::default(), 0, false).unwrap();
     session.router_for_test().push("/missing");
     let before = session.warnings().len();
-    assert!(session.reconcile().repaint, "rejection appends a warning");
+    assert!(
+        session.reconcile(1_000).repaint,
+        "rejection appends a warning"
+    );
     assert_eq!(session.current_path_for_test(), "/");
     assert!(session.warnings().len() > before);
 }
@@ -221,7 +224,7 @@ fn warning_only_reconcile_reports_no_switch() {
     let mut session =
         PreviewSession::enter(&doc, (1200.0, 800.0), &Default::default(), 0, false).unwrap();
     session.router_for_test().push("/missing");
-    let outcome = session.reconcile();
+    let outcome = session.reconcile(1_000);
     assert!(outcome.repaint, "rejection appends a warning → repaint");
     assert!(
         !outcome.switched,
@@ -260,14 +263,14 @@ fn bound_input_value_survives_screen_roundtrip() {
 
     session.router_for_test().push("/detail");
     assert!(
-        session.reconcile().switched,
+        session.reconcile(1_000).switched,
         "push must reconcile into a switch"
     );
     assert_eq!(session.current_path_for_test(), "/detail");
 
     session.router_for_test().pop();
     assert!(
-        session.reconcile().switched,
+        session.reconcile(1_000).switched,
         "pop must reconcile back to home"
     );
     assert_eq!(session.current_path_for_test(), "/");
@@ -314,7 +317,7 @@ fn reenter_after_exit_resets_to_entry_screen_and_state() {
         PreviewSession::enter(&doc, (1200.0, 800.0), &Default::default(), 0, false).unwrap();
     session.router_for_test().push("/detail");
     assert!(
-        session.reconcile().switched,
+        session.reconcile(1_000).switched,
         "push must reconcile into a switch"
     );
     assert_eq!(session.current_path_for_test(), "/detail");

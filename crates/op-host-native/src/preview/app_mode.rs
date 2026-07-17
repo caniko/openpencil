@@ -21,6 +21,7 @@
 //!   visible to descendant modules, and `app_mode` is one.
 
 use super::{PreviewSession, RootFrame};
+use jian_core::action::services::Router;
 use jian_core::Runtime;
 use op_editor_ui::{Point2D, Rect};
 
@@ -49,6 +50,13 @@ pub(in crate::preview) struct AppMode {
     /// The screen path currently mounted in the runtime — compared
     /// against `router.current()` each reconcile pass.
     pub(in crate::preview) current_path: String,
+    /// The route stack (`router.current().stack`) as of the LAST
+    /// reconcile pass — Track C-3's reference point for classifying a
+    /// NEW switch as push/pop/replace. The live router's stack has
+    /// already advanced by the time `reconcile` runs (the tap mutated it
+    /// synchronously), so this recorded copy is the only way to see the
+    /// depth BEFORE the switch being reconciled right now.
+    pub(in crate::preview) mounted_stack: Vec<String>,
     /// Index of `current_path`'s synthetic page inside `promoted_doc`.
     pub(in crate::preview) page_idx: usize,
     /// The active theme `enter` was called with — reused so a screen
@@ -74,6 +82,75 @@ impl PreviewSession {
         self.app.is_some()
     }
 
+    /// Track C-2's screen-switcher pill row: `(path, display label)` pairs
+    /// in a STABLE order (paths sorted ascending — not read straight off
+    /// `ScreenTable`'s internal collection so the pill order can't shuffle
+    /// on an unrelated jian refactor). The label is the routed page's own
+    /// `name` (`screen_projection` sets it from the source frame's name),
+    /// falling back to the path's slug when a screen was never named.
+    /// Empty outside APP MODE.
+    pub fn screen_switcher_entries(&self) -> Vec<(String, String)> {
+        let Some(app) = &self.app else {
+            return Vec::new();
+        };
+        sorted_screen_paths(app)
+            .into_iter()
+            .map(|path| {
+                let label = app
+                    .table
+                    .page_index(&path)
+                    .and_then(|idx| app.promoted_doc.pages.as_ref()?.get(idx))
+                    .map(|page| page.name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| path.trim_start_matches('/').to_string());
+                (path, label)
+            })
+            .collect()
+    }
+
+    /// Index of the currently-mounted screen into
+    /// [`screen_switcher_entries`](Self::screen_switcher_entries)'s order,
+    /// or `None` outside APP MODE.
+    pub fn current_screen_index(&self) -> Option<usize> {
+        let app = self.app.as_ref()?;
+        sorted_screen_paths(app)
+            .iter()
+            .position(|p| p == &app.current_path)
+    }
+
+    /// Navigate to `path` via the installed router — the screen-switcher
+    /// pill row's click handler (Track C-2), and the escape hatch for any
+    /// screen whose nav tab Track A never bound to `on_tap`. A no-op
+    /// outside APP MODE. `path` need not be valid: the router itself
+    /// validates and records an unknown-path rejection the next
+    /// `reconcile` drains into `preview_warnings`, exactly like a runtime
+    /// tap on an unwired nav button would.
+    pub fn navigate_to_screen(&self, path: &str) {
+        if let Some(app) = &self.app {
+            app.router.replace(path);
+        }
+    }
+
+    /// Track C-4 (edge-swipe): whether a `pop` right now would actually
+    /// move anywhere — the router's stack depth is `1` at the entry
+    /// screen (or in a fresh multi-screen session that was never pushed
+    /// into), and `Router::pop` on a depth-1 stack is a documented no-op
+    /// (`ScreenRouter::pop`). `false` outside APP MODE.
+    pub fn can_pop(&self) -> bool {
+        self.app
+            .as_ref()
+            .is_some_and(|app| app.router.current().stack.len() > 1)
+    }
+
+    /// Navigate back via the installed router — the edge-swipe gesture's
+    /// action, mirroring the on-screen back button's `{"pop": null}`
+    /// path. A no-op outside APP MODE or at the entry screen.
+    pub fn pop_screen(&self) {
+        if let Some(app) = &self.app {
+            app.router.pop();
+        }
+    }
+
     /// The scene-space bounds of the currently-mounted screen's first
     /// root, or `None`. Used by the host to center the viewport on the
     /// entry screen / a switched screen (Task 9).
@@ -96,7 +173,9 @@ impl PreviewSession {
     /// Called by the host once per frame BEFORE `paint_scene`. A no-op
     /// outside APP MODE. The outcome separates repaint-relevant changes
     /// from actual screen switches so warning-only passes never recenter.
-    pub fn reconcile(&mut self) -> ReconcileOutcome {
+    /// `now_ms` seeds a new Track C-3 transition's clock on a switch —
+    /// see `crate::preview::transition`.
+    pub fn reconcile(&mut self, now_ms: u64) -> ReconcileOutcome {
         let Some(app) = self.app.as_mut() else {
             return ReconcileOutcome::default();
         };
@@ -131,6 +210,34 @@ impl PreviewSession {
                 switched: false,
             };
         }
+
+        // Track C-3: classify the switch from the stack-depth delta
+        // against what was mounted as of the LAST reconcile (see
+        // `mounted_stack`'s doc — the live router already advanced), then
+        // snapshot the pre-switch scene as the outgoing transition layer
+        // BEFORE it is overwritten below. A brand-new transition always
+        // REPLACES whatever was still playing outright (`transition`
+        // module doc): no queuing, so a rapid second nav never leaves a
+        // half-finished slide lingering.
+        let new_stack = app.router.current().stack;
+        let prev_stack = std::mem::replace(&mut app.mounted_stack, new_stack.clone());
+        let transition_kind =
+            super::transition::classify_transition(prev_stack.len(), new_stack.len());
+        // `app` (borrowed from `self.app` above) is not read again after
+        // the two lines above in THIS binding's scope, so its borrow ends
+        // here (NLL) — letting `overlay_runtime_state` below borrow the
+        // whole `&self` (it needs `self.runtime` + `self.binding_sites`,
+        // opaque to the borrow checker at the call site) without
+        // conflicting with the outstanding `&mut self.app`. Re-borrowed
+        // immediately after for the rebuild that follows.
+        let outgoing_page = self
+            .overlay_runtime_state(&self.scene)
+            .active_page()
+            .cloned();
+        let app = self
+            .app
+            .as_mut()
+            .expect("checked Some at function entry; nothing here can clear it mid-reconcile");
 
         // The route tip diverged from the mounted screen: re-derive the
         // paint-side projections the same way `enter` built them for
@@ -192,6 +299,20 @@ impl PreviewSession {
         // AFTER the scene/layout rebuild so it seeds against the screen
         // that will actually paint.
         self.seed_all_widget_states();
+
+        // Track C-3: start the transition against the freshly-settled
+        // scene now that the switch has fully landed. `outgoing_page` is
+        // `None` only for an empty pre-switch page (nothing to animate
+        // from) — `paint_framed_animated` falls back to a plain static
+        // paint of the entering layer in that case.
+        if let Some(page) = outgoing_page {
+            self.transition = Some(super::transition::ScreenTransition::start(
+                transition_kind,
+                page,
+                now_ms,
+            ));
+        }
+
         ReconcileOutcome {
             repaint: true,
             switched: true,
@@ -266,6 +387,17 @@ impl PreviewSession {
 /// returned taffy NodeIds are positional with `doc.tree.roots` (see
 /// `LayoutEngine::build`), so they are zipped to pair each root with the
 /// id `compute` needs.
+/// `AppMode`'s known screen paths, sorted ascending — the SAME stable
+/// order [`PreviewSession::screen_switcher_entries`] /
+/// [`PreviewSession::current_screen_index`] both build on, computed
+/// independently in each so a caller only needing the count/index doesn't
+/// pay for label lookups.
+fn sorted_screen_paths(app: &AppMode) -> Vec<String> {
+    let mut paths = app.table.paths();
+    paths.sort();
+    paths
+}
+
 pub(in crate::preview) fn solve_roots(
     runtime: &mut Runtime,
 ) -> Result<(Vec<RootFrame>, (f32, f32)), String> {

@@ -77,7 +77,7 @@ impl WidgetHostNative {
         let mut preview_switched = false;
         let mut switched_screen_rect = None;
         if let Some(preview) = self.preview.as_mut() {
-            let outcome = preview.reconcile();
+            let outcome = preview.reconcile(self.now_ms);
             if outcome.repaint {
                 self.editor_state.editor_ui.preview_warnings = preview.warnings().to_vec();
             }
@@ -202,6 +202,7 @@ impl WidgetHostNative {
                     );
                 }
                 self.paint_preview_switcher(&mut *frame, canvas_rect);
+                self.paint_screen_switcher(&mut *frame, canvas_rect);
             } else {
                 // PAINT path — the canvas reads editor state + the
                 // layout-resolved render scene (`refresh_layout_scene`).
