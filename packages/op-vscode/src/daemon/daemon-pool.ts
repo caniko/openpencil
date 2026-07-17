@@ -121,6 +121,14 @@ export class DaemonPool {
     this.logger.error(`daemon for ${filePath} exited; restarting once`);
     try {
       const client = await this.spawnFn(filePath, entry.allowOrigin);
+      // The file may have been released (or the pool disposed) DURING the
+      // respawn — both mark the crashed entry disposed. If so, the freshly
+      // spawned daemon has no owner: dispose it immediately instead of adopting
+      // it, otherwise it orphans (alive, no entry, no mount).
+      if (entry.disposed || this.entries.get(filePath) !== entry) {
+        await client.dispose();
+        return;
+      }
       const next: Entry = { client, allowOrigin: entry.allowOrigin, restarts: entry.restarts + 1, disposed: false };
       this.entries.set(filePath, next);
       this.wireExit(filePath, next);

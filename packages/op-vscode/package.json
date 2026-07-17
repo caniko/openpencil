@@ -89,9 +89,10 @@
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
-    "test": "bun test",
+    "test": "bun test src",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "test:integration": "bun test test/integration"
   },
   "devDependencies": {
     "@types/vscode": "~1.90",
