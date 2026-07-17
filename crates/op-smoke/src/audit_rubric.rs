@@ -4,11 +4,24 @@
 //! node vocabulary; these deterministic metrics make "chrome completeness",
 //! "vocabulary richness", and "content density" first-class columns so the
 //! next loop-vs-orchestrator comparison weighs what a viewer actually sees.
+//!
+//! M3 addition (interactive-preview plan, Track A follow-up): `screenCount` /
+//! `hasEntryScreen` / `navBoundTabs` / `navTotalTabs` / `popBound` /
+//! `appModeReady` quantify whether a generated document actually enters
+//! PreviewSession's routed multi-screen App Mode — `wire_screen_navigation`
+//! (Track A) now auto-wires `screen` markers + nav-tab / back-button
+//! `events.onTap` bindings at the end of every generation turn, so this is
+//! the deterministic check that it actually landed, not just that the pass
+//! exists. The nav-container / has-events predicates are reused directly
+//! from `op_orchestrator::wire_screen_navigation` (bumped `pub` for this;
+//! op-smoke already depends on `op-orchestrator`) rather than reimplemented,
+//! so the rubric can never silently disagree with what the pass wired.
 
 use std::collections::BTreeMap;
 
 use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorState, PenNodeExt};
+use op_orchestrator::wire_screen_navigation::{collect_nav_containers, node_has_events};
 use serde_json::{json, Value};
 
 /// Mobile-screen width band (390 reference ± the 320-480 devices we seed).
@@ -68,7 +81,94 @@ pub fn rubric_report(state: &EditorState) -> Value {
         "textNodes": text_nodes,
         "iconNodes": icon_nodes,
         "imageFills": image_fills,
+        "interactivity": interactivity_report(state.active_children()),
     })
+}
+
+/// App-Mode readiness metrics over the whole active page (not just the
+/// mobile-shaped screens the chrome-completeness loop above filters to —
+/// `screen` markers and nav wiring are equally meaningful on a desktop-shaped
+/// top-level frame).
+fn interactivity_report(nodes: &[PenNode]) -> Value {
+    let mut screen_count = 0usize;
+    let mut has_entry_screen = false;
+    let mut nav_bound_tabs = 0usize;
+    let mut nav_total_tabs = 0usize;
+    let mut pop_bound = 0usize;
+
+    for node in nodes {
+        // `screen` only ever marks a top-level frame (Track A contract point
+        // 3), so this check stays at THIS level — never recursed.
+        if let PenNode::Frame(frame) = node {
+            if let Some(path) = frame.screen.as_deref() {
+                screen_count += 1;
+                if path == "/" {
+                    has_entry_screen = true;
+                }
+            }
+        }
+        // Nav containers and back buttons, unlike `screen`, can sit anywhere
+        // inside a screen's subtree, so these two walk the whole subtree.
+        let mut nav_containers = Vec::new();
+        collect_nav_containers(node, &mut nav_containers);
+        for nav in nav_containers {
+            for item in nav.children().into_iter().flatten() {
+                nav_total_tabs += 1;
+                if node_has_events(item) {
+                    nav_bound_tabs += 1;
+                }
+            }
+        }
+        pop_bound += count_pop_bound(node);
+    }
+
+    let app_mode_ready = screen_count >= 2 && has_entry_screen && nav_bound_tabs > 0;
+
+    json!({
+        "screenCount": screen_count,
+        "hasEntryScreen": has_entry_screen,
+        "navBoundTabs": nav_bound_tabs,
+        "navTotalTabs": nav_total_tabs,
+        "popBound": pop_bound,
+        "appModeReady": app_mode_ready,
+    })
+}
+
+/// Count nodes with a bound `pop` action anywhere in `node`'s subtree.
+/// Serializes ONCE for the whole subtree (`serde_json::to_value` already
+/// recurses into `children`), then walks the resulting `Value` tree instead
+/// of re-serializing at every node — the same subtree would otherwise be
+/// serialized once per node it contains (O(n²) on a per-node JSON check).
+fn count_pop_bound(node: &PenNode) -> usize {
+    let Ok(value) = serde_json::to_value(node) else {
+        return 0;
+    };
+    count_pop_bound_value(&value)
+}
+
+fn count_pop_bound_value(value: &Value) -> usize {
+    let mut count = usize::from(has_pop_action(value));
+    if let Some(children) = value.get("children").and_then(Value::as_array) {
+        for child in children {
+            count += count_pop_bound_value(child);
+        }
+    }
+    count
+}
+
+/// Whether a node's (already-serialized) `events.onTap` includes a bound
+/// `pop` navigation action. Track A's own back-button wiring only ever
+/// writes `{"pop": null}` (`wire_screen_navigation::wire_back_buttons`);
+/// checked generically (rather than reusing a Track A "is this shaped like a
+/// back button" name/icon heuristic) so a hand-authored pop binding on any
+/// node counts too — this metric is "did a pop binding land", not "did the
+/// back-button heuristic fire".
+fn has_pop_action(value: &Value) -> bool {
+    value
+        .get("events")
+        .and_then(|e| e.get("onTap"))
+        .and_then(Value::as_array)
+        .is_some_and(|actions| actions.iter().any(|a| a.get("pop").is_some()))
 }
 
 fn collect_counts(
@@ -211,6 +311,86 @@ mod tests {
             rubric["vocabularyRichness"].as_u64().unwrap() >= 1,
             "{rubric}"
         );
+    }
+
+    /// Two screens, both Track-A-wired: "home" is the entry (`screen: "/"`)
+    /// with a fully-bound nav; "profile" carries a bound back button and a
+    /// nav with ONE unbound tab (so `navBoundTabs` < `navTotalTabs`, proving
+    /// the count isn't just "any binding present").
+    fn app_mode_ready_doc() -> serde_json::Value {
+        serde_json::json!([
+            { "type": "frame", "id": "home", "name": "Home", "screen": "/",
+              "width": 390, "height": 844, "children": [
+                { "type": "frame", "id": "nav-home", "name": "Bottom Nav", "role": "bottom-tab-bar",
+                  "width": "fill_container", "height": 72, "children": [
+                    { "type": "frame", "id": "tab-home", "width": 80, "height": 40,
+                      "events": { "onTap": [ { "replace": "\"/\"" } ] },
+                      "children": [ { "type": "text", "id": "tab-home-lbl", "content": "Home" } ] },
+                    { "type": "frame", "id": "tab-profile", "width": 80, "height": 40,
+                      "events": { "onTap": [ { "replace": "\"/profile\"" } ] },
+                      "children": [ { "type": "text", "id": "tab-profile-lbl", "content": "Profile" } ] }
+                  ] }
+              ] },
+            { "type": "frame", "id": "profile", "name": "Profile", "screen": "/profile",
+              "width": 390, "height": 844, "children": [
+                { "type": "frame", "id": "back", "name": "back", "width": 24, "height": 24,
+                  "events": { "onTap": [ { "pop": null } ] } },
+                { "type": "frame", "id": "nav-profile", "name": "Bottom Nav", "role": "bottom-tab-bar",
+                  "width": "fill_container", "height": 72, "children": [
+                    { "type": "frame", "id": "tab-home-2", "width": 80, "height": 40,
+                      "children": [ { "type": "text", "id": "tab-home-2-lbl", "content": "Home" } ] },
+                    { "type": "frame", "id": "tab-profile-2", "width": 80, "height": 40,
+                      "events": { "onTap": [ { "replace": "\"/profile\"" } ] },
+                      "children": [ { "type": "text", "id": "tab-profile-2-lbl", "content": "Profile" } ] }
+                  ] }
+              ] }
+        ])
+    }
+
+    #[test]
+    fn fully_wired_multi_screen_doc_scores_app_mode_ready() {
+        let state = state_from(app_mode_ready_doc());
+        let rubric = rubric_report(&state);
+        let interactivity = &rubric["interactivity"];
+        assert_eq!(
+            interactivity["screenCount"],
+            serde_json::json!(2),
+            "{rubric}"
+        );
+        assert_eq!(interactivity["hasEntryScreen"], serde_json::json!(true));
+        assert_eq!(interactivity["navTotalTabs"], serde_json::json!(4));
+        assert_eq!(
+            interactivity["navBoundTabs"],
+            serde_json::json!(3),
+            "one tab (tab-home-2) is deliberately left unbound; {rubric}"
+        );
+        assert_eq!(interactivity["popBound"], serde_json::json!(1));
+        assert_eq!(interactivity["appModeReady"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn single_screen_doc_is_never_app_mode_ready() {
+        // One top-level frame, no `screen` marker, no nav — the classic
+        // scrolling-page shape `wire_screen_navigation` itself never
+        // touches (its own <2-screen gate). Every interactivity field must
+        // read as "not wired", not merely `appModeReady: false`.
+        let state = state_from(serde_json::json!([{
+            "type": "frame", "id": "home", "name": "Home", "width": 390, "height": 844,
+            "children": [
+                { "type": "text", "id": "t", "name": "T", "content": "hi", "width": 100, "height": 20 }
+            ]
+        }]));
+        let rubric = rubric_report(&state);
+        let interactivity = &rubric["interactivity"];
+        assert_eq!(
+            interactivity["screenCount"],
+            serde_json::json!(0),
+            "{rubric}"
+        );
+        assert_eq!(interactivity["hasEntryScreen"], serde_json::json!(false));
+        assert_eq!(interactivity["navBoundTabs"], serde_json::json!(0));
+        assert_eq!(interactivity["popBound"], serde_json::json!(0));
+        assert_eq!(interactivity["appModeReady"], serde_json::json!(false));
     }
 
     #[test]
