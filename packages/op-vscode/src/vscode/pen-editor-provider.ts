@@ -15,6 +15,7 @@ import type { BridgeOutboundToPage } from "../protocol/bridge";
 import { encodeOutbound } from "../protocol/bridge";
 import { buildBootHtml, buildWebviewHtml } from "./webview-shell";
 import { pickRestartSource, resolveDaemonBinary, type LatestDurable } from "./restart-source";
+import { isShellControl, parseShellReadyOrigin } from "./shell-messages";
 
 const SHELL_READY_TIMEOUT_MS = 5_000;
 const DAEMON_READY_TIMEOUT_MS = 10_000;
@@ -263,6 +264,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
       },
       writeBackup: async (name, bytes) => {
         const uri = this.backupUri(name);
+        await ensureParentDir(uri);
         await vscode.workspace.fs.writeFile(uri, bytes);
       },
       writeBackupFallback: async (bytes) => {
@@ -337,6 +339,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     cancellation: vscode.CancellationToken,
   ): Promise<vscode.CustomDocumentBackup> {
     const bytes = await this.requireSession(document).backup(() => cancellation.isCancellationRequested);
+    await ensureParentDir(context.destination); // VS Code: the backup dir may not exist
     await vscode.workspace.fs.writeFile(context.destination, bytes);
     document.latestDurable = { source: "backup", json: decode(bytes) };
     return {
@@ -376,6 +379,13 @@ function decode(bytes: Uint8Array): string {
   return decoder.decode(bytes);
 }
 
+/** Ensure a URI's parent directory exists (createDirectory is recursive and a
+ *  no-op if present). VS Code does not guarantee storage / backup-destination
+ *  dirs exist on a fresh profile. */
+async function ensureParentDir(uri: vscode.Uri): Promise<void> {
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(uri, ".."));
+}
+
 /** Atomic write: temp file + rename, so a crash mid-write can't truncate. */
 async function atomicWrite(uri: vscode.Uri, bytes: Uint8Array): Promise<void> {
   const tmp = uri.with({ path: `${uri.path}.op-tmp` });
@@ -391,22 +401,6 @@ function makeNonce(): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-/** Parse an op-shell/ready control message → its reported origin, else undefined. */
-function parseShellReadyOrigin(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  try {
-    const v = JSON.parse(raw) as { type?: unknown; origin?: unknown };
-    if (v.type === "op-shell/ready" && typeof v.origin === "string") return v.origin;
-  } catch {
-    /* not a control message */
-  }
-  return undefined;
-}
-
-function isShellControl(raw: unknown): boolean {
-  return typeof raw === "string" && raw.includes("op-shell/");
 }
 
 function errorPage(detail: string): string {
