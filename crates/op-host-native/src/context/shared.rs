@@ -102,6 +102,7 @@ impl SharedSkiaContext {
             .ok_or(SharedSkiaError::DirectContext)?;
 
         let config = query_surface_config(&glow_handle);
+        tracing::info!(?config, "queried GL surface config");
         let fboid = provider.default_framebuffer_id();
         let surface = build_gl_surface(&mut direct_context, &config, fboid)?;
 
@@ -373,6 +374,14 @@ fn query_surface_config(glow: &Arc<glow::Context>) -> SurfaceConfig {
 /// Build a GL-backed Skia surface bound to the provider's default
 /// framebuffer. Pulled out of `new` / `resize` to share the
 /// (BackendRenderTarget → wrap_backend_render_target) chain.
+///
+/// The sample count passed to Skia MUST match the real framebuffer's
+/// `GL_SAMPLES` — declaring a lower count would misreport the render
+/// target and corrupt Skia's caps decisions. Skia refuses to wrap a
+/// framebuffer whose sample count exceeds its per-format cap (issue
+/// #179: Intel Mesa 16× MSAA), so provider config selection minimises
+/// samples up front; a wrap failure here means the config choice — not
+/// this wrap — needs fixing, and the error log carries the evidence.
 fn build_gl_surface(
     direct_context: &mut skia_safe::gpu::DirectContext,
     config: &SurfaceConfig,
@@ -404,7 +413,17 @@ fn build_gl_surface(
         None,
         None,
     )
-    .ok_or(SharedSkiaError::Surface)?;
+    .ok_or_else(|| {
+        tracing::error!(
+            width = config.width,
+            height = config.height,
+            sample_count = config.sample_count,
+            stencil_bits = config.stencil_bits,
+            fboid,
+            "skia could not wrap the default framebuffer"
+        );
+        SharedSkiaError::Surface
+    })?;
 
     Ok::<Surface, SharedSkiaError>(surface)
 }

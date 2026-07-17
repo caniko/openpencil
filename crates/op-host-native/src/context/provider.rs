@@ -193,7 +193,7 @@ impl GlutinProvider {
                 .find_configs(template)
                 .map_err(ProviderError::from_error)?
                 .reduce(|best, cfg| {
-                    if cfg.num_samples() > best.num_samples() {
+                    if prefer_candidate_config(cfg.num_samples(), best.num_samples()) {
                         cfg
                     } else {
                         best
@@ -201,6 +201,12 @@ impl GlutinProvider {
                 })
                 .ok_or_else(|| ProviderError::from_msg("no GL config matched the window"))?
         };
+        tracing::info!(
+            samples = gl_config.num_samples(),
+            stencil = gl_config.stencil_size(),
+            alpha = gl_config.alpha_size(),
+            "picked GL config"
+        );
 
         let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
 
@@ -250,6 +256,20 @@ impl GlutinProvider {
             glow: Arc::new(glow_ctx),
         })
     }
+}
+
+/// Config-selection preference: fewer MSAA samples win.
+///
+/// Skia antialiases analytically and cannot wrap a default framebuffer
+/// whose sample count exceeds its per-format cap — Intel Mesa offers
+/// 16× MSAA configs and picking the maximum made
+/// `wrap_backend_render_target` fail at startup (issue #179). Matches
+/// the upstream rust-skia gl-window example, which also minimises
+/// samples.
+#[cfg(feature = "gl-host")]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn prefer_candidate_config(candidate_samples: u8, best_samples: u8) -> bool {
+    candidate_samples < best_samples
 }
 
 #[cfg(feature = "gl-host")]
@@ -446,6 +466,34 @@ impl GlContextProvider for AndroidEglProvider {
 #[cfg(all(test, feature = "gl-host"))]
 mod tests {
     use super::*;
+
+    /// Issue #179: Intel Mesa exposes up to 16× MSAA configs; picking
+    /// the maximum made Skia's `wrap_backend_render_target` fail at
+    /// startup. Config selection must minimise samples instead.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn config_selection_prefers_fewest_samples() {
+        let picked = [4u8, 16, 0, 8]
+            .into_iter()
+            .reduce(|best, cfg| {
+                if prefer_candidate_config(cfg, best) {
+                    cfg
+                } else {
+                    best
+                }
+            })
+            .unwrap();
+
+        assert_eq!(picked, 0);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn config_selection_keeps_first_config_on_sample_ties() {
+        assert!(!prefer_candidate_config(4, 4));
+        assert!(!prefer_candidate_config(16, 0));
+        assert!(prefer_candidate_config(0, 16));
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     #[test]
