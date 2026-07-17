@@ -140,6 +140,14 @@ fn fade_scene_node(node: &mut SceneNode, factor: f32) {
             | SceneGradient::Mesh { opacity, .. } => *opacity *= factor,
         }
     }
+    // Per-run text styling overrides the node's own `fill` for its byte
+    // range (`SceneTextRun::fill`, `None` = inherit) — a run that DOES
+    // override colour (a highlighted word, an inline link) would
+    // otherwise paint at full alpha the whole 160ms window while
+    // everything around it fades, since it never reads `node.fill`.
+    for run in &mut node.text_runs {
+        run.fill = run.fill.map(|c| c.with_alpha(c.a * factor));
+    }
     for child in &mut node.children {
         fade_scene_node(child, factor);
     }
@@ -197,10 +205,11 @@ impl PreviewSession {
     /// outgoing + entering screens for the in-flight animation.
     ///
     /// Deliberately simplified versus the steady-state `paint_framed` for
-    /// the animation's short window: no pinned-nav strip and no focus
-    /// caret paint while `is_active` — both resume the very next frame
-    /// the animation ends. Both layers otherwise go through the exact
-    /// same painter (`paint_scene_page_with`) `paint_framed` itself calls.
+    /// the animation's short window: no pinned nav / status-bar strip and
+    /// no focus caret paint while `is_active` — all three resume the very
+    /// next frame the animation ends. Both layers otherwise go through the
+    /// exact same painter (`paint_scene_page_with`) `paint_framed` itself
+    /// calls.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_framed_animated(
         &self,
@@ -210,6 +219,7 @@ impl PreviewSession {
         content_origin: Point2D,
         fit: f32,
         pinned: Option<&super::present::PinnedPaint>,
+        pinned_top: Option<&super::present::PinnedPaint>,
         now_ms: u64,
     ) {
         let Some(transition) = self.transition.as_ref().filter(|t| t.is_active(now_ms)) else {
@@ -220,6 +230,7 @@ impl PreviewSession {
                 content_origin,
                 fit,
                 pinned,
+                pinned_top,
                 now_ms,
             );
             return;
@@ -232,6 +243,7 @@ impl PreviewSession {
                 content_origin,
                 fit,
                 pinned,
+                pinned_top,
                 now_ms,
             );
             return;
@@ -481,6 +493,36 @@ mod tests {
             SceneGradient::Linear { opacity, .. } => assert!((opacity - 0.5).abs() < 1e-6),
             _ => panic!("expected linear gradient"),
         }
+    }
+
+    #[test]
+    fn fade_scales_per_run_text_colour_override() {
+        use op_editor_ui::layout_scene::SceneTextRun;
+        use op_editor_ui::Color;
+        let mut node = SceneNode::leaf("t", op_editor_ui::layout_scene::NodeKind::Text);
+        node.fill = Some(Color::BLACK);
+        node.text = Some("hi there".to_owned());
+        node.text_runs = vec![SceneTextRun {
+            start: 3,
+            end: 8,
+            font_size: 0.0,
+            font_weight: 0,
+            fill: Some(Color {
+                r: 0.2,
+                g: 0.4,
+                b: 0.9,
+                a: 1.0,
+            }),
+            italic: false,
+            underline: false,
+            strikethrough: false,
+        }];
+        fade_scene_node(&mut node, 0.25);
+        assert!(
+            (node.text_runs[0].fill.unwrap().a - 0.25).abs() < 1e-6,
+            "a run's own colour override must fade like everything else, \
+             not stay opaque for the whole cross-fade"
+        );
     }
 
     #[test]

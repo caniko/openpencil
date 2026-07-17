@@ -36,6 +36,9 @@ use op_editor_ui::widgets::SelectionHandle;
 use op_editor_ui::{Rect, Theme};
 
 mod a11y;
+mod account_press;
+#[cfg(test)]
+mod account_press_tests;
 #[cfg(test)]
 mod agent_settings_acp_tests;
 #[cfg(test)]
@@ -101,6 +104,7 @@ mod input_tests;
 #[cfg(test)]
 mod instance_panel_tests;
 mod keyboard;
+mod mode_transition_host;
 #[cfg(test)]
 mod overlay_cursor_tests;
 mod overlay_rects;
@@ -116,10 +120,14 @@ mod preview_edge_swipe;
 #[cfg(all(test, not(target_os = "windows")))]
 mod preview_edge_swipe_tests;
 mod preview_frame;
+#[cfg(test)]
+mod preview_frame_geometry_tests;
 #[cfg(all(test, not(target_os = "windows")))]
 mod preview_frame_tests;
 mod property_dispatch;
 mod property_layout_dispatch;
+#[cfg(test)]
+mod property_panel_interactions_tests;
 #[cfg(test)]
 mod property_panel_press_tests;
 mod property_popovers;
@@ -339,6 +347,14 @@ pub struct WidgetHostNative {
     pub(in crate::widget_host) preview_scroll_y: f32,
     pub(in crate::widget_host) preview_manual_pick: Option<PreviewDeviceKind>,
     pub(in crate::widget_host) preview_surface_capture: Option<preview_frame::PreviewSurface>,
+    /// Track M-1: an in-flight canvas ↔ device-frame merge animation —
+    /// `Some(Enter)` for the brief window right after `enter_preview`
+    /// installed `self.preview`; `Some(Exit)` for the window between
+    /// `exit_preview` being CALLED and the runtime actually dropping
+    /// (see `exit_preview`'s doc — the drop is deferred to
+    /// `settle_mode_transition` so the merge-back animation has
+    /// something live to paint). `None` the rest of the time.
+    pub(in crate::widget_host) preview_mode_transition: Option<crate::preview::ModeTransition>,
     /// Live preview pointer-drag state: `true` between a canvas Down
     /// and its Up, so cursor moves dispatch as drags (slider knob)
     /// instead of hovers.
@@ -688,6 +704,7 @@ impl WidgetHostNative {
             preview_scroll_y: 0.0,
             preview_manual_pick: None,
             preview_surface_capture: None,
+            preview_mode_transition: None,
             preview_press_active: false,
             preview_last_doc: None,
             preview_edge_swipe_start_x: None,
@@ -771,67 +788,6 @@ impl WidgetHostNative {
         if let Some(preview) = self.preview.as_mut() {
             preview.set_now_ms(now_ms);
         }
-    }
-
-    /// Whether the canvas is currently in Preview (Play) mode with a
-    /// live runtime.
-    pub fn preview_active(&self) -> bool {
-        self.preview.is_some() && self.editor_state.editor_ui.preview_mode
-    }
-
-    /// Enter Preview (Play) mode: flip the editor flag + build a live
-    /// jian runtime from the current document (which is NOT mutated).
-    /// Layout is solved per-root from each root frame's own authored
-    /// size (mirroring the design canvas), so `canvas_size` no longer
-    /// drives the flex solve — it is retained only for API
-    /// compatibility; the visible viewport affects paint transform
-    /// (pan / zoom / clip), not layout. On a build failure the editor
-    /// stays in design mode and the error is recorded in
-    /// `preview_warnings`. Returns `true` on success.
-    pub fn enter_preview(&mut self, canvas_size: (f32, f32)) -> bool {
-        if self.preview.is_some() {
-            return true;
-        }
-        match crate::preview::PreviewSession::enter(
-            &self.editor_state.doc,
-            canvas_size,
-            &self.editor_state.ui.variables.active_theme,
-            self.editor_state.ui.active_page_index,
-            self.editor_state.editor_ui.preserve_authored_geometry,
-        ) {
-            Ok(mut session) => {
-                session.set_now_ms(self.now_ms);
-                self.editor_state.editor_ui.enter_preview();
-                self.editor_state.editor_ui.preview_warnings = session.warnings().to_vec();
-                self.preview = Some(session);
-                self.initialize_device_preview();
-                // APP MODE: center the viewport on the entry screen (a
-                // workbench-mode session has no screen rect, so this is
-                // a no-op there).
-                self.center_preview_entry_if_canvas(canvas_size);
-                self.mark_dirty();
-                true
-            }
-            Err(message) => {
-                // Stay in design mode; surface the failure.
-                self.editor_state.editor_ui.preview_mode = false;
-                self.editor_state.editor_ui.preview_warnings = vec![format!("preview: {message}")];
-                self.mark_dirty();
-                false
-            }
-        }
-    }
-
-    /// Exit Preview mode: drop the runtime + clear the editor flag. The
-    /// document is byte-identical to before entering (the runtime never
-    /// touched it). Idempotent.
-    pub fn exit_preview(&mut self) {
-        self.preview = None;
-        self.clear_device_preview_state();
-        self.preview_press_active = false;
-        self.preview_last_doc = None;
-        self.editor_state.editor_ui.exit_preview();
-        self.mark_dirty();
     }
 
     /// Center the canvas viewport on a scene-space `rect`, keeping zoom
@@ -938,6 +894,13 @@ impl WidgetHostNative {
         viewport_h: f32,
     ) -> bool {
         use jian_core::gesture::pointer::PointerPhase;
+        // Track M-1: the canvas/device-frame rect is physically moving
+        // mid-merge — same "discard, don't queue" call
+        // `PreviewSession::transition_active` makes for a screen-switch
+        // slide, for the same reason (no stable target to land on).
+        if self.mode_transition_active() {
+            return false;
+        }
         let Some(doc) = self.preview_doc_point(screen_x, screen_y, viewport_w, viewport_h) else {
             return false;
         };

@@ -61,6 +61,7 @@ mod app_mode;
 mod auto_wire;
 mod binding_sites;
 mod input;
+mod mode_transition;
 mod present;
 mod scene_helpers;
 mod transition;
@@ -85,6 +86,8 @@ use app_mode::AppMode;
 use binding_sites::{collect_binding_sites, BindingSite};
 use scene_helpers::{apply_widget_state, display_string, format_warning};
 
+#[allow(unused_imports)]
+pub(crate) use mode_transition::{lerp_color, ModeTransition, ModeTransitionKind};
 #[allow(unused_imports)]
 pub(crate) use present::PinnedPaint;
 

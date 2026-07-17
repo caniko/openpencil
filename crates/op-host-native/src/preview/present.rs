@@ -10,7 +10,7 @@ use op_editor_ui::layout_scene::SceneNode;
 use op_editor_ui::widgets::{
     paint_scene_page_with, paint_scene_subtree, PaintCx, PaintSceneOptions,
 };
-use op_editor_ui::{Point2D, Rect, RenderBackend};
+use op_editor_ui::{Color, Point2D, Rect, RenderBackend};
 
 /// Everything the pinned-nav pass needs, precomputed by the host's
 /// `DeviceFrame` so paint and hit-testing share one set of numbers.
@@ -32,6 +32,21 @@ impl PreviewSession {
         page.children
             .first()
             .map(|node| (node.id.clone(), node.bounds))
+    }
+
+    /// The framed root's own resolved background fill, if any. The
+    /// device frame's fixed silhouette (`frame_size` in
+    /// `widget_host::preview_frame`) doesn't always match the screen's
+    /// authored width (an iPhone-SE-width design against the shared
+    /// 390 px chrome, say), so the bezel shows a thin strip on each
+    /// side of the centred content. Lining that strip with the
+    /// screen's OWN background (falling back to the host's theme when
+    /// the root has no fill at all — transparent artboards) makes the
+    /// letterbox blend with the design instead of reading as a stray
+    /// white seam against a dark theme.
+    pub fn framed_root_fill(&self) -> Option<Color> {
+        let page = self.scene.active_page()?;
+        page.children.first()?.fill
     }
 
     /// Detect a pinnable bottom nav among the framed root's direct
@@ -76,6 +91,34 @@ impl PreviewSession {
         None
     }
 
+    /// Detect a pinnable top status-bar surface among the framed root's
+    /// direct children — the symmetric counterpart of
+    /// [`Self::pinned_nav_candidate`], mirroring its non-semantic (no
+    /// established `SemanticRole` for a status bar) heuristic pass but
+    /// anchored to the FIRST child + the top edge instead of the last
+    /// candidate + the bottom edge: flush-to-top (small positive gap
+    /// tolerated), full-width, and short (a status bar is 20-60 px on
+    /// every real device profile — a materially tighter ceiling than
+    /// the bottom nav's 120 px so an ordinary page header doesn't get
+    /// mistaken for one).
+    pub fn pinned_status_bar_candidate(&self, phone: bool) -> Option<(String, Rect)> {
+        if !phone {
+            return None;
+        }
+        let page = self.scene.active_page()?;
+        let root = page.children.first()?;
+        let candidate = root.children.first()?;
+        let height = candidate.bounds.size.y;
+        if candidate.hidden || !height.is_finite() || height <= 0.0 || height > 60.0 {
+            return None;
+        }
+        let top_gap = candidate.bounds.origin.y - root.bounds.origin.y;
+        if (-1.0..=2.0).contains(&top_gap) && candidate.bounds.size.x >= root.bounds.size.x * 0.9 {
+            return Some((candidate.id.clone(), candidate.bounds));
+        }
+        None
+    }
+
     /// Join a scene id to its runtime schema node to inspect semantics.
     fn node_is_semantic_nav(&self, id: &str) -> bool {
         let Some(document) = self.runtime.document.as_ref() else {
@@ -91,8 +134,16 @@ impl PreviewSession {
     }
 
     /// Paint the framed root in a scrolled pass, then paint an optional
-    /// pinned nav in its own clipped pass. A focused caret is clipped in
-    /// the pass that owns its node and is suppressed outside the root.
+    /// pinned bottom nav AND an optional pinned top status bar in their
+    /// own clipped passes. A focused caret is clipped in the pass that
+    /// owns its node and is suppressed outside the root.
+    ///
+    /// `content_clip` is assumed to already exclude both strips (the
+    /// caller — `widget_host::preview_frame::paint_device_frame` —
+    /// insets it top and bottom before calling in), so the scrolled
+    /// pass 1 never needs to `skip_node` the status bar the way it
+    /// does the nav: the clip alone keeps it out of view regardless of
+    /// scroll offset, since the clip rect itself never moves.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_framed(
         &self,
@@ -102,6 +153,7 @@ impl PreviewSession {
         content_origin: Point2D,
         fit: f32,
         pinned: Option<&PinnedPaint>,
+        pinned_top: Option<&PinnedPaint>,
         now_ms: u64,
     ) {
         let overlaid;
@@ -161,6 +213,18 @@ impl PreviewSession {
             backend.restore();
         }
 
+        if let Some(paint) = pinned_top {
+            backend.save();
+            backend.clip_rect(paint.strip_clip);
+            {
+                let mut cx = PaintCx {
+                    backend: &mut *backend,
+                };
+                paint_scene_subtree(&mut cx, page, &paint.node_id, paint.paint_origin, fit);
+            }
+            backend.restore();
+        }
+
         let focused = self.focused_schema_id();
         let in_framed_root = focused.as_ref().is_some_and(|focused_id| {
             page.find(only_root)
@@ -170,15 +234,17 @@ impl PreviewSession {
             return;
         }
 
-        let pinned_member = match (pinned, focused) {
-            (Some(paint), Some(ref focused_id)) => page
-                .find(&paint.node_id)
-                .is_some_and(|nav| subtree_contains(nav, focused_id)),
-            _ => false,
+        let member_of = |paint: &PinnedPaint| {
+            focused.as_ref().is_some_and(|focused_id| {
+                page.find(&paint.node_id)
+                    .is_some_and(|strip| subtree_contains(strip, focused_id))
+            })
         };
+        let pinned_member = pinned
+            .filter(|paint| member_of(paint))
+            .or_else(|| pinned_top.filter(|paint| member_of(paint)));
         backend.save();
-        if pinned_member {
-            let paint = pinned.expect("membership implies pinned paint");
+        if let Some(paint) = pinned_member {
             backend.clip_rect(paint.strip_clip);
             let origin = Point2D::new(
                 paint.paint_origin.x - paint.nav_scene_origin.x * fit,

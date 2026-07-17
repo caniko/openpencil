@@ -67,6 +67,14 @@ impl WidgetHostNative {
             return;
         }
 
+        // Track M-1: finalize a finished canvas ↔ device-frame merge
+        // animation BEFORE anything below reads `self.preview` /
+        // `device_mode_active()` this frame — an Exit whose 220ms
+        // window just elapsed drops the runtime here, so the rest of
+        // this pass sees the settled (real) mode immediately rather
+        // than one stale frame late.
+        self.settle_mode_transition();
+
         // APP MODE per-frame reconcile: drain rejected navs into
         // `preview_warnings` and, on a screen switch, re-center the
         // viewport on the newly-mounted screen. Runs before the `ui`
@@ -508,6 +516,49 @@ impl WidgetHostNative {
             );
             let dlg = ExportDialog::centered(viewport_width, viewport_height);
             dlg.paint(&mut *frame, &self.theme, &self.editor_state.editor_ui);
+        }
+
+        // 10e. Sign-in modal — full-viewport scrim + centred card.
+        if ui.login_modal_open {
+            use op_editor_ui::widgets::login_modal::LoginModal;
+            frame.fill_rect(
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                op_editor_ui::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.45,
+                },
+            );
+            let modal = LoginModal::for_editor(&self.editor_state);
+            let modal_rect = modal.rect(viewport_width, viewport_height);
+            let mut cx = PaintCx {
+                backend: &mut *frame,
+            };
+            modal.paint(&mut cx, modal_rect);
+        }
+
+        // 10f. Signed-in account dropdown — anchored under the TopBar
+        //      avatar button, no scrim (same tier as the file menu /
+        //      locale picker).
+        if ui.account_menu_open {
+            use op_editor_ui::widgets::account_menu::AccountMenu;
+            let top_bar_rect = Rect {
+                origin: Point2D::new(0.0, 0.0),
+                size: Point2D::new(viewport_width, TOP_BAR_HEIGHT),
+            };
+            let top_bar = TopBar::for_editor_ui(&self.editor_state.editor_ui);
+            let anchor = top_bar.account_button_rect(top_bar_rect);
+            if let Some(menu) = AccountMenu::for_editor_ui(&self.editor_state.editor_ui) {
+                let menu_rect = menu.rect_at(anchor);
+                let mut cx = PaintCx {
+                    backend: &mut *frame,
+                };
+                menu.paint(&mut cx, menu_rect);
+            }
         }
 
         // 10a. Agent-settings modal — top-most overlay when open.

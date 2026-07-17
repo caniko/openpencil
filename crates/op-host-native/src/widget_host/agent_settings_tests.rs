@@ -331,7 +331,7 @@ fn builtin_provider_menu_selects_ts_preset_for_draft() {
         .expect("draft remains open");
     assert_eq!(draft.preset, BuiltinAgentPresetKey::MiniMax);
     assert_eq!(draft.display_name, "MiniMax");
-    assert_eq!(draft.model, "MiniMax-M2.7");
+    assert_eq!(draft.model, "MiniMax-M3");
     assert_eq!(draft.base_url, "https://api.minimaxi.com/anthropic");
 }
 
@@ -629,8 +629,13 @@ fn system_experimental_switch_toggles_preference() {
     );
 }
 
+/// Preview graduated out of the experimental-features gate (2026-07): the
+/// Play button + preview interaction are now a regular always-on feature,
+/// so toggling the experimental gate off no longer force-exits a live
+/// preview session (contrast `disabling_experimental_clears_widget_
+/// property_focus` below — Widget-config stays gated and still clears).
 #[test]
-fn disabling_experimental_exits_active_preview() {
+fn disabling_experimental_leaves_active_preview_running() {
     let mut host = WidgetHostNative::new();
     let doc = jian_ops_schema::load_str(
         r#"{"version":"1.0.0","children":[
@@ -668,10 +673,10 @@ fn disabling_experimental_exits_active_preview() {
             .experimental_features_enabled
     );
     assert!(
-        !host.preview_active(),
-        "disabling experimental must exit the live preview session"
+        host.preview_active(),
+        "disabling experimental must NOT exit the live preview session"
     );
-    assert!(!host.editor_state().editor_ui.preview_mode);
+    assert!(host.editor_state().editor_ui.preview_mode);
 }
 
 #[test]

@@ -23,6 +23,7 @@ pub(super) fn validate_payload_fields(raw: &serde_json::Value) -> Result<(), Str
             "image_gen_profiles",
             "active_image_gen_profile_id",
             "recent_files",
+            "preferred_agent_team_size",
         ],
         "root",
     )?;
@@ -131,6 +132,9 @@ pub(super) fn validate_lossless_payload(payload: &SettingsPayload) -> Result<(),
             .recent_files
             .as_ref()
             .is_some_and(|recent| recent.len() > RECENT_FILE_CAP)
+        || payload
+            .preferred_agent_team_size
+            .is_some_and(|n| !(1..=6).contains(&n))
     {
         return Err(lossy());
     }

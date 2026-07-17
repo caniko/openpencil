@@ -127,6 +127,22 @@ pub fn pump_progress(
                         nodes: count_u32(s.total_nodes),
                     });
                     append_completion_narration(msg, ok, failed, locale);
+                    // Persist every zero-node failure's spec (failed-subtask
+                    // remediation, manual layer) so the row's "Retry" icon
+                    // has something to replay. JSON-encoded — `ChatMessage`
+                    // (op-editor-core) cannot depend on op-orchestrator's
+                    // concrete `Subtask` type (wrong dependency direction).
+                    for outcome in &s.subtasks {
+                        if let Some(subtask) = &outcome.subtask {
+                            if let Ok(subtask_json) = serde_json::to_string(subtask) {
+                                msg.failed_subtasks
+                                    .push(op_editor_core::PendingSubtaskRetry {
+                                        subtask_id: outcome.id.clone(),
+                                        subtask_json,
+                                    });
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     for activity in &mut msg.activities {
@@ -161,6 +177,106 @@ pub fn pump_progress(
         *current = None;
     }
     changed
+}
+
+/// Drain a manual subtask-retry click (`chat.pending_subtask_retry`, raised
+/// by `ChatState::begin_subtask_retry` when the user clicks a failed row's
+/// "Retry" icon) and launch a [`op_host_services::design_session::
+/// start_subtask_retry`] worker. Returns true when state changed (a turn
+/// launched OR an inline error was written) — mirrors
+/// `codegen_session::launch_codegen_if_pending`'s shape.
+///
+/// A live `current_design` blocks a new launch; the flag is left SET in
+/// that case (not cleared) so the SAME click retries on a later frame once
+/// the in-flight turn ends, rather than silently dropping it.
+pub fn launch_subtask_retry_if_pending(
+    host: &mut WidgetHostNative,
+    current_design: &mut Option<DesignSession>,
+) -> bool {
+    if current_design.is_some() {
+        return false;
+    }
+    let Some((msg_idx, subtask_id)) = host.editor_state().chat.pending_subtask_retry.clone() else {
+        return false;
+    };
+    host.editor_state_mut().chat.pending_subtask_retry = None;
+
+    let Some(msg) = host.editor_state().chat.messages.get(msg_idx) else {
+        return true;
+    };
+    let Some(request_json) = msg.design_request_json_for_retry.clone() else {
+        write_inline_error(
+            host,
+            msg_idx,
+            "error: nothing to retry — this turn's original request was not retained.",
+        );
+        return true;
+    };
+    let Some(entry) = msg
+        .failed_subtasks
+        .iter()
+        .find(|p| p.subtask_id == subtask_id)
+        .cloned()
+    else {
+        // `ChatState::begin_subtask_retry` already gates on this — a
+        // defensive no-op, not a user-visible error (nothing was promised).
+        return true;
+    };
+    let request: op_orchestrator::DesignRequest = match serde_json::from_str(&request_json) {
+        Ok(r) => r,
+        Err(e) => {
+            write_inline_error(
+                host,
+                msg_idx,
+                &format!("error: could not restore the original request for retry: {e}"),
+            );
+            return true;
+        }
+    };
+    let subtask: op_orchestrator::plan::Subtask = match serde_json::from_str(&entry.subtask_json) {
+        Ok(s) => s,
+        Err(e) => {
+            write_inline_error(
+                host,
+                msg_idx,
+                &format!("error: could not restore the failed section's spec for retry: {e}"),
+            );
+            return true;
+        }
+    };
+    // Whatever provider is CURRENTLY selected — not frozen from the
+    // original turn. The user may have switched specifically because the
+    // first provider kept failing; `ChatProviderLlmClient` adapts any
+    // `ChatProvider` (CLI subprocess or builtin API-key) identically.
+    let Some(provider) = crate::chat_session::provider_for_selected_model(host) else {
+        write_inline_error(
+            host,
+            msg_idx,
+            "error: no model configured to retry with — pick an agent via the model chip.",
+        );
+        return true;
+    };
+    let provider_arc: std::sync::Arc<dyn op_ai::chat_provider::ChatProvider> =
+        std::sync::Arc::from(provider);
+    let llm = op_host_services::chat_provider_llm::ChatProviderLlmClient::new(provider_arc)
+        .with_model(crate::chat_session::selected_cli_model_id(host));
+    let initial_state = host.editor_state().clone();
+    *current_design = Some(op_host_services::design_session::start_subtask_retry(
+        llm,
+        request,
+        subtask,
+        initial_state,
+    ));
+    host.mark_editor_state_dirty();
+    true
+}
+
+fn write_inline_error(host: &mut WidgetHostNative, msg_idx: usize, text: &str) {
+    if let Some(msg) = host.editor_state_mut().chat.messages.get_mut(msg_idx) {
+        msg.content.push_str("\n\n");
+        msg.content.push_str(text);
+    }
+    host.mark_editor_state_dirty();
 }
 
 /// Apply typed orchestrator progress to the provider-neutral transcript
@@ -223,6 +339,26 @@ fn apply_progress(msg: &mut ChatMessage, progress: &[Progress], locale: Locale) 
                 id,
                 ChatActivityStatus::Running,
                 Some(element_count(locale, *nodes_so_far)),
+            ),
+            // Not translated — this is a diagnostic confirmation line (D-lite
+            // "three-piece" visibility fix) rather than a narrated sentence,
+            // same treatment as the raw subtask id/error text already
+            // embedded in other arms above.
+            Progress::ConcurrentGroupsStarted {
+                group_count,
+                workers,
+            } => append_narration(
+                msg,
+                &format!("• {group_count} screen groups · {workers} workers"),
+            ),
+            Progress::ScreenGroupsSequential {
+                group_count,
+                requested_workers,
+            } => append_narration(
+                msg,
+                &format!(
+                    "• {group_count} screen groups · sequential (parallel setting: {requested_workers})"
+                ),
             ),
             Progress::CleanupDone => {
                 let mut event_changed = append_narration(

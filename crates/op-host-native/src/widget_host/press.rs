@@ -392,6 +392,18 @@ impl WidgetHostNative {
             self.dispatch_figma_import_press(x, y, viewport_width, viewport_height);
             return true;
         }
+        if self.editor_state.editor_ui.login_modal_open {
+            self.dispatch_login_modal_press(x, y, viewport_width, viewport_height);
+            return true;
+        }
+
+        // 0a'. Account dropdown — anchored under the TopBar avatar
+        // button; must hit-test before the TopBar's own block so a
+        // re-click on the avatar closes rather than re-toggling.
+        if self.editor_state.editor_ui.account_menu_open {
+            self.dispatch_account_menu_press(x, y, viewport_width, viewport_height);
+            return true;
+        }
 
         // 0a. Locale picker overlay — top-most when open.
         if self.editor_state.editor_ui.locale_picker.open {
@@ -513,6 +525,17 @@ impl WidgetHostNative {
                     self.mark_dirty();
                     return true;
                 }
+                TopBarHit::Account => {
+                    if self.editor_state.editor_ui.account.is_signed_in() {
+                        self.editor_state.editor_ui.account_menu_open = true;
+                        self.editor_state.editor_ui.account_menu_hover = None;
+                    } else {
+                        self.editor_state.editor_ui.login_modal_open = true;
+                        self.editor_state.editor_ui.login_modal_hover = None;
+                    }
+                    self.mark_dirty();
+                    return true;
+                }
             }
         }
         if (top_bar_rect).contains(Point2D::new(x, y)) {
@@ -607,6 +630,35 @@ impl WidgetHostNative {
                 }
             }
             self.editor_state.editor_ui.close_effect_add_picker();
+            self.mark_dirty();
+            return true;
+        }
+
+        // 0c1a. Interactions Navigate/Back/Remove popover — outside-click
+        // dismiss.
+        if self.editor_state.editor_ui.interaction_menu_open && !in_git_panel {
+            self.refresh_layout_scene();
+            if let Some(panel) = PropertyPanel::for_selection(&self.editor_state) {
+                let property_rect = Rect {
+                    origin: Point2D::new(
+                        viewport_width - self.editor_state.editor_ui.property_panel_width,
+                        TOP_BAR_HEIGHT,
+                    ),
+                    size: Point2D::new(
+                        self.editor_state.editor_ui.property_panel_width,
+                        (viewport_height - TOP_BAR_HEIGHT).max(0.0),
+                    ),
+                };
+                match panel.interaction_menu_hit(property_rect, Point2D::new(x, y)) {
+                    op_editor_ui::widgets::InteractionMenuHit::Row(action) => {
+                        self.apply_property_action(action);
+                        return true;
+                    }
+                    op_editor_ui::widgets::InteractionMenuHit::Inside => return true,
+                    op_editor_ui::widgets::InteractionMenuHit::Outside => {}
+                }
+            }
+            self.editor_state.editor_ui.close_interaction_menu();
             self.mark_dirty();
             return true;
         }

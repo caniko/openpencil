@@ -197,6 +197,44 @@ fn builtin_agents_round_trip_through_payload() {
 }
 
 #[test]
+fn preferred_agent_team_size_round_trips_and_seeds_chat_on_load() {
+    let mut src = EditorState::new();
+    src.editor_ui.preferred_agent_team_size = 3;
+
+    let json = serde_json::to_string(&to_payload(&src)).unwrap();
+    let payload: SettingsPayload = serde_json::from_str(&json).unwrap();
+    let mut dst = EditorState::new();
+    apply_payload(&mut dst, payload);
+
+    assert_eq!(dst.editor_ui.preferred_agent_team_size, 3);
+    // `load`'s whole point: tab 0's live chat setting is seeded from the
+    // persisted preference, not left at `ChatState::default()`'s 1.
+    assert_eq!(
+        dst.chat.agent_team_size, 3,
+        "tab 0 must be seeded from the persisted preference"
+    );
+}
+
+#[test]
+fn legacy_settings_without_preferred_agent_team_size_default_to_one() {
+    // A settings.json written before this field existed must still load —
+    // `SettingsPayload::preferred_agent_team_size` deserializes to `None`
+    // (`#[serde(default)]`), which is a no-op on the fresh `EditorState`'s
+    // already-default value, landing on the same `1` a defaulted
+    // `ChatState` starts with — never a parse failure, never some OTHER
+    // fallback number.
+    let legacy = r#"{"version":1,"theme":"dark","locale":"en-US"}"#;
+    let payload: SettingsPayload = serde_json::from_str(legacy).unwrap();
+    assert_eq!(payload.preferred_agent_team_size, None);
+
+    let mut dst = EditorState::new();
+    apply_payload(&mut dst, payload);
+
+    assert_eq!(dst.editor_ui.preferred_agent_team_size, 1);
+    assert_eq!(dst.chat.agent_team_size, 1);
+}
+
+#[test]
 fn duplicate_builtin_agents_are_deduped_on_load() {
     let settings = r#"{
         "version": 1,

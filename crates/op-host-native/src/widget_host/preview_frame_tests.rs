@@ -141,3 +141,163 @@ fn screen_switch_resets_scroll_and_reinfers() {
     assert!(host.preview_surface_capture.is_none());
     assert!(host.preview_device_frame.is_some());
 }
+
+// --- Track C-3 real-frame regression (the user-reported "闪切无动画") ---
+//
+// The unit tests in `preview/tests_transition.rs` prove
+// `PreviewSession::paint_framed_animated` composites correctly when
+// called directly. What they don't prove is that the PRODUCTION path —
+// `WidgetHostNative::paint_device_frame` fed by the per-frame
+// `reconcile` + the redraw-scheduling deadline aggregation
+// (`next_animation_deadline_ms`) — actually renders more than one
+// distinct frame during the animation window. If the deadline chain
+// or the device-frame rebuild broke, the symptom would look exactly
+// like "code is there but nothing visibly animates": one composited
+// frame painted, then a jump straight to the settled screen.
+
+fn two_screen_tabbed_doc() -> jian_ops_schema::PenDocument {
+    load(
+        r##"{
+            "version": "1.1",
+            "formatVersion": "1.1",
+            "id": "x",
+            "app": { "name": "x", "version": "1", "id": "x" },
+            "pages": [
+                { "id": "canvas", "name": "Canvas", "children": [
+                    { "type": "frame", "id": "home", "name": "Home", "screen": "/",
+                      "x": 0, "y": 0, "width": 390, "height": 800,
+                      "fill": [{"type":"solid","color":"#ff0000"}], "children": [] },
+                    { "type": "frame", "id": "profile", "name": "Profile", "screen": "/profile",
+                      "x": 500, "y": 0, "width": 390, "height": 800,
+                      "fill": [{"type":"solid","color":"#0000ff"}], "children": [] }
+                ] }
+            ]
+        }"##,
+    )
+}
+
+/// Records every `fill_rect` call's alpha channel — cheap enough to
+/// distinguish "two layers cross-fading" from "one settled layer",
+/// and to prove the alpha actually MOVES between two real samples
+/// inside the animation window.
+#[derive(Default)]
+struct AlphaCaptureBackend {
+    fill_alphas: Vec<f32>,
+}
+
+impl op_editor_ui::RenderBackend for AlphaCaptureBackend {
+    fn begin_frame(&mut self) {}
+    fn end_frame(&mut self) {}
+    fn fill_rect(&mut self, _: op_editor_ui::Rect, color: op_editor_ui::Color) {
+        self.fill_alphas.push(color.a);
+    }
+    fn stroke_rect(&mut self, _: op_editor_ui::Rect, _: op_editor_ui::Color, _: f32) {}
+    fn draw_text(&mut self, _: &op_editor_ui::TextLayout, _: op_editor_ui::Point2D) {}
+    fn clip_rect(&mut self, _: op_editor_ui::Rect) {}
+    fn save(&mut self) {}
+    fn restore(&mut self) {}
+    fn translate(&mut self, _: op_editor_ui::Point2D) {}
+    fn stroke_line(
+        &mut self,
+        _: op_editor_ui::Point2D,
+        _: op_editor_ui::Point2D,
+        _: op_editor_ui::Color,
+        _: f32,
+    ) {
+    }
+    fn fill_round_rect(&mut self, _: op_editor_ui::Rect, _: f32, _: op_editor_ui::Color) {}
+    fn stroke_round_rect(&mut self, _: op_editor_ui::Rect, _: f32, _: op_editor_ui::Color, _: f32) {
+    }
+    fn stroke_svg_path(
+        &mut self,
+        _: &str,
+        _: op_editor_ui::Point2D,
+        _: f32,
+        _: op_editor_ui::Color,
+        _: f32,
+    ) {
+    }
+    fn resize(&mut self, _: u32, _: u32) {}
+    fn dpi_scale(&self) -> f32 {
+        1.0
+    }
+}
+
+#[test]
+fn tab_switch_animates_across_real_frames_through_the_production_paint_path() {
+    let _guard = test_lock();
+    let mut host = host_with_doc(two_screen_tabbed_doc());
+    assert!(host.enter_preview((1200.0, 800.0)));
+    assert!(
+        host.preview.as_ref().unwrap().is_app_mode(),
+        "two authored screens must enter APP MODE"
+    );
+    assert_eq!(
+        host.editor_state.editor_ui.preview_device,
+        Some(PreviewDeviceKind::Phone)
+    );
+
+    host.set_now_ms(1_000);
+    // Same navigation shape BOTH real paths drive: the screen-switcher
+    // pill's release handler and a runtime `onTap` binding both end in
+    // `router.replace(path)` — same stack depth, so `reconcile`
+    // classifies it `Replace` (the 160ms cross-fade), exactly the kind
+    // the user's own repro (device switcher + pill row) exercises.
+    host.preview
+        .as_ref()
+        .unwrap()
+        .navigate_to_screen("/profile");
+    let outcome = host.preview.as_mut().unwrap().reconcile(1_000);
+    assert!(outcome.switched, "same-depth replace must be detected");
+    host.on_preview_screen_switched(1200.0, 800.0);
+
+    // The redraw-scheduling deadline-aggregation chain
+    // (`next_animation_deadline_ms`, consumed by
+    // `op-host-desktop::app_handler`'s `WaitUntil` scheduling) must
+    // keep reporting a pending wake for the whole animation window —
+    // otherwise the compositor below never gets a second real frame to
+    // advance the fade on.
+    assert!(
+        host.next_animation_deadline_ms().is_some(),
+        "the host must keep scheduling wakeups while previewing, or the \
+         transition renders its first frame and then waits indefinitely"
+    );
+
+    let canvas_rect = op_editor_ui::Rect {
+        origin: op_editor_ui::Point2D::new(0.0, 0.0),
+        size: op_editor_ui::Point2D::new(1200.0, 800.0),
+    };
+
+    host.set_now_ms(1_010);
+    let mut early = AlphaCaptureBackend::default();
+    host.paint_device_frame(&mut early, canvas_rect);
+
+    host.set_now_ms(1_150);
+    let mut late = AlphaCaptureBackend::default();
+    host.paint_device_frame(&mut late, canvas_rect);
+
+    assert_eq!(
+        early.fill_alphas.len(),
+        2,
+        "mid-animation: both the outgoing and entering root paint"
+    );
+    assert_eq!(late.fill_alphas.len(), 2);
+    assert_ne!(
+        early.fill_alphas, late.fill_alphas,
+        "the composited alpha must move between two real frames sampled \
+         inside the 160ms window — a transition that paints identical \
+         alpha at two different real timestamps is indistinguishable \
+         from an instant cut with a wasted animation object sitting \
+         behind it"
+    );
+
+    host.set_now_ms(1_400);
+    let mut settled = AlphaCaptureBackend::default();
+    host.paint_device_frame(&mut settled, canvas_rect);
+    assert_eq!(
+        settled.fill_alphas,
+        vec![1.0],
+        "once the 160ms window elapses only the destination screen \
+         paints, at full alpha"
+    );
+}

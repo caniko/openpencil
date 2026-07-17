@@ -160,7 +160,7 @@ impl WidgetHost {
                         return true;
                     }
                     AIChatHit::CycleAgentTeam => {
-                        self.editor_state.chat.cycle_agent_team_size();
+                        self.editor_state.cycle_agent_team_size();
                         self.mark_dirty();
                         return true;
                     }
@@ -175,8 +175,10 @@ impl WidgetHost {
                         return true;
                     }
                     AIChatHit::SetParallelAgents(n) => {
-                        // Set the agent_team_size and close the picker.
-                        self.editor_state.chat.agent_team_size = n;
+                        // Set the agent_team_size (mirrors into the sticky
+                        // `preferred_agent_team_size` preference) and close
+                        // the picker.
+                        self.editor_state.set_agent_team_size(n);
                         self.editor_state.editor_ui.close_parallel_agents_picker();
                         self.mark_dirty();
                         return true;

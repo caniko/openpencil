@@ -40,13 +40,9 @@ fn web_topbar_preview_button_toggles_preview_mode_like_native() {
     host.last_viewport_w = 1440.0;
     host.last_viewport_h = 900.0;
     assert!(!host.editor_state.editor_ui.preview_mode);
-    // The canvas Preview (Play) button is gated behind the experimental-features
-    // opt-in (Settings → System); it is hidden by default, so enable the flag
-    // before probing for its hit target.
-    host.editor_state
-        .editor_ui
-        .agent_settings
-        .experimental_features_enabled = true;
+    // The canvas Preview (Play) button graduated out of the
+    // experimental-features gate (2026-07) — it's a regular always-on
+    // button now, no opt-in flag needed before probing for its hit target.
 
     let topbar_rect = host.top_bar_rect(host.last_viewport_w);
     let topbar = host.top_bar();

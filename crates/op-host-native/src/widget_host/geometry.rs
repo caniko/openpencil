@@ -285,6 +285,45 @@ impl WidgetHostNative {
         }
     }
 
+    /// Track the Interactions section's Navigate/Back/Remove popover
+    /// row under the cursor so it paints a hover wash. No-op when the
+    /// popover is closed. Mirrors [`Self::update_effect_add_menu_hover`].
+    pub(in crate::widget_host) fn update_interaction_menu_hover(
+        &mut self,
+        x: f32,
+        y: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> bool {
+        use op_editor_ui::widgets::{PropertyPanel, TOP_BAR_HEIGHT};
+        use op_editor_ui::{Point2D, Rect};
+        if !self.editor_state.editor_ui.interaction_menu_open {
+            return false;
+        }
+        self.refresh_layout_scene();
+        let Some(panel) = PropertyPanel::for_selection(&self.editor_state) else {
+            return false;
+        };
+        let property_rect = Rect {
+            origin: Point2D::new(
+                viewport_w - self.editor_state.editor_ui.property_panel_width,
+                TOP_BAR_HEIGHT,
+            ),
+            size: Point2D::new(
+                self.editor_state.editor_ui.property_panel_width,
+                (viewport_h - TOP_BAR_HEIGHT).max(0.0),
+            ),
+        };
+        let new_hover = panel.interaction_menu_row_at(property_rect, Point2D::new(x, y));
+        if new_hover != self.editor_state.editor_ui.interaction_menu_hover {
+            self.editor_state.editor_ui.interaction_menu_hover = new_hover;
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update the layer-panel hover id from the current cursor
     /// position. Returns `true` if the hover state changed.
     pub fn update_layer_hover(&mut self, x: f32, y: f32, viewport_w: f32, viewport_h: f32) -> bool {

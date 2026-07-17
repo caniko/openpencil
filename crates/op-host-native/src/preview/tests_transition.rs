@@ -173,6 +173,7 @@ fn paint_framed_animated_composites_two_layers_while_active() {
         content_origin,
         fit,
         None,
+        None,
         1_100,
     );
     assert_eq!(
@@ -200,6 +201,7 @@ fn paint_framed_animated_falls_back_to_single_layer_once_finished() {
         content_clip,
         content_origin,
         fit,
+        None,
         None,
         1_400,
     );

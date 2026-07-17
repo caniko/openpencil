@@ -261,21 +261,25 @@ impl WidgetHost {
                     .editor_ui
                     .agent_settings
                     .experimental_features_enabled ^= true;
+                // Preview graduated out of this gate (2026-07) — it no
+                // longer force-exits when the gate turns off. Widget-config
+                // (the property panel's Widget section) is still gated:
+                // drop any stale Widget property focus so hiding the
+                // section is a clean cut.
                 if !self
                     .editor_state
                     .editor_ui
                     .agent_settings
                     .experimental_features_enabled
                 {
-                    // Gate off: web preview is just the core flag (no
-                    // host-owned runtime), so exit through it. Also drop
-                    // stale Widget property focus so a hidden field can't
-                    // commit through dispatch.
-                    if self.editor_state.editor_ui.preview_mode {
-                        self.editor_state.editor_ui.exit_preview();
-                    }
                     self.editor_state.ui.property_focus = None;
                 }
+            }
+            AgentSettingsHit::OpenLoginModal | AgentSettingsHit::SignOutAccount => {
+                // Unreachable: `AgentSettingsPanelMode::WebBuiltinOnly`
+                // omits the Account tab from `visible_tabs` (the v0.8.2
+                // sign-in flow is desktop-only), so `hit_test` never
+                // resolves to these variants on the web build.
             }
             AgentSettingsHit::FocusMcpPort => {
                 self.commit_settings_focus();

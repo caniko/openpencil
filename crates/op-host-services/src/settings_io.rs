@@ -91,6 +91,7 @@ pub struct Fingerprint {
     acp_agents: Vec<AcpAgentConfig>,
     image_gen_profiles: Vec<ImageGenProfile>,
     active_image_gen_profile_id: Option<String>,
+    preferred_agent_team_size: u32,
 }
 
 pub fn fingerprint(state: &EditorState) -> Fingerprint {
@@ -111,6 +112,7 @@ pub fn fingerprint(state: &EditorState) -> Fingerprint {
         acp_agents: eui.agent_settings.acp_agents.clone(),
         image_gen_profiles: eui.agent_settings.image_gen_profiles.clone(),
         active_image_gen_profile_id: eui.agent_settings.active_image_gen_profile_id.clone(),
+        preferred_agent_team_size: eui.preferred_agent_team_size,
     }
 }
 
@@ -162,6 +164,13 @@ struct SettingsPayload {
     active_image_gen_profile_id: Option<String>,
     #[serde(default)]
     recent_files: Option<Vec<RecentFilePayload>>,
+    /// User's last-set ⚡Nx parallel-agents team size — seeds tab 0's
+    /// `ChatState::agent_team_size` on load. Absent in settings files
+    /// predating this field; `#[serde(default)]` + the `unwrap_or(1)` at
+    /// the apply site both land on the same `ChatState::default()` value,
+    /// so an old file is fully backward-compatible.
+    #[serde(default)]
+    preferred_agent_team_size: Option<u32>,
 }
 
 /// Resolve the platform-specific settings path. `None` when no
@@ -223,6 +232,7 @@ fn to_payload(state: &EditorState) -> SettingsPayload {
                 })
                 .collect(),
         ),
+        preferred_agent_team_size: Some(eui.preferred_agent_team_size),
     }
 }
 
@@ -335,6 +345,19 @@ fn apply_payload_with_options(
             })
             .collect();
     }
+    if let Some(size) = payload.preferred_agent_team_size {
+        eui.preferred_agent_team_size = size.clamp(1, 6);
+    }
+    // Seed tab 0's ⚡Nx from the persisted preference — `load` runs before
+    // any tab has been created beyond the default single tab, so this is
+    // the ONE spot that reconnects "what the user last set" across a full
+    // app restart (`ChatSessions::new_tab` handles the SAME continuity
+    // within a running session, carrying the active tab's current value
+    // forward). Captured into a local before the last `eui` use ends the
+    // mutable borrow of `state.editor_ui`, so `state.chat` can be written
+    // next.
+    let preferred_agent_team_size = eui.preferred_agent_team_size;
+    state.chat.agent_team_size = preferred_agent_team_size;
     // Restored connect state changes which providers the chat model
     // picker may list — re-derive it. `discovered_models` is still
     // empty this early, so this is a no-op until discovery lands and

@@ -230,6 +230,143 @@ fn heuristic_rejects_each_missing_gate() {
 }
 
 #[test]
+fn framed_root_fill_reads_the_root_background() {
+    let doc = phone_doc_with_bottom_nav("");
+    let session = enter(&doc);
+    let fill = session.framed_root_fill().expect("root has a solid fill");
+    assert!((fill.r - 1.0).abs() < 0.01, "expected #ffffff root fill");
+}
+
+#[test]
+fn framed_root_fill_none_when_root_has_no_fill() {
+    let doc = load(
+        r##"{
+        "version": "1.0.0",
+        "children": [
+            { "type": "frame", "id": "screen", "x": 0, "y": 0,
+              "width": 390, "height": 800, "children": [] }
+        ]
+    }"##,
+    );
+    let session = enter(&doc);
+    assert!(session.framed_root_fill().is_none());
+}
+
+/// 390-wide phone root with a status bar flush to the top (y=0, h=44,
+/// full width) and a content sibling below it.
+fn phone_doc_with_status_bar(status_extra: &str) -> jian_ops_schema::PenDocument {
+    load(&format!(
+        r##"{{
+        "version": "1.0.0",
+        "children": [
+            {{ "type": "frame", "id": "screen", "x": 0, "y": 0,
+              "width": 390, "height": 800,
+              "fill": [{{"type":"solid","color":"#ffffff"}}],
+              "children": [
+                {{ "type": "frame", "id": "status", "x": 0, "y": 0,
+                  "width": 390, "height": 44{status_extra},
+                  "fill": [{{"type":"solid","color":"#000000"}}] }},
+                {{ "type": "rectangle", "id": "content", "x": 0, "y": 44,
+                  "width": 390, "height": 756,
+                  "fill": [{{"type":"solid","color":"#eeeeee"}}] }}
+              ] }}
+        ]
+    }}"##
+    ))
+}
+
+#[test]
+fn status_bar_detects_flush_full_width_first_child() {
+    let doc = phone_doc_with_status_bar("");
+    let session = enter(&doc);
+    let (id, rect) = session
+        .pinned_status_bar_candidate(true)
+        .expect("status bar pinned");
+    assert_eq!(id, "status");
+    assert!((rect.size.y - 44.0).abs() < 0.5);
+}
+
+#[test]
+fn status_bar_desktop_never_pins() {
+    let doc = phone_doc_with_status_bar("");
+    let session = enter(&doc);
+    assert!(session.pinned_status_bar_candidate(false).is_none());
+}
+
+#[test]
+fn status_bar_hidden_is_rejected() {
+    let doc = phone_doc_with_status_bar(r#", "visible": false"#);
+    let session = enter(&doc);
+    assert!(session.pinned_status_bar_candidate(true).is_none());
+}
+
+#[test]
+fn status_bar_too_tall_is_rejected_as_a_header_not_a_status_bar() {
+    let doc = load(
+        r##"{
+        "version": "1.0.0",
+        "children": [
+            { "type": "frame", "id": "screen", "x": 0, "y": 0,
+              "width": 390, "height": 800,
+              "fill": [{"type":"solid","color":"#ffffff"}],
+              "children": [
+                { "type": "frame", "id": "header", "x": 0, "y": 0,
+                  "width": 390, "height": 64,
+                  "fill": [{"type":"solid","color":"#000000"}] }
+              ] }
+        ]
+    }"##,
+    );
+    let session = enter(&doc);
+    assert!(session.pinned_status_bar_candidate(true).is_none());
+}
+
+#[test]
+fn status_bar_not_flush_to_top_is_rejected() {
+    let doc = load(
+        r##"{
+        "version": "1.0.0",
+        "children": [
+            { "type": "frame", "id": "screen", "x": 0, "y": 0,
+              "width": 390, "height": 800,
+              "fill": [{"type":"solid","color":"#ffffff"}],
+              "children": [
+                { "type": "frame", "id": "status", "x": 0, "y": 20,
+                  "width": 390, "height": 44,
+                  "fill": [{"type":"solid","color":"#000000"}] }
+              ] }
+        ]
+    }"##,
+    );
+    let session = enter(&doc);
+    assert!(session.pinned_status_bar_candidate(true).is_none());
+}
+
+#[test]
+fn status_bar_must_be_the_first_child() {
+    let doc = load(
+        r##"{
+        "version": "1.0.0",
+        "children": [
+            { "type": "frame", "id": "screen", "x": 0, "y": 0,
+              "width": 390, "height": 800,
+              "fill": [{"type":"solid","color":"#ffffff"}],
+              "children": [
+                { "type": "rectangle", "id": "content", "x": 0, "y": 0,
+                  "width": 390, "height": 700,
+                  "fill": [{"type":"solid","color":"#eeeeee"}] },
+                { "type": "frame", "id": "status", "x": 0, "y": 700,
+                  "width": 390, "height": 44,
+                  "fill": [{"type":"solid","color":"#000000"}] }
+              ] }
+        ]
+    }"##,
+    );
+    let session = enter(&doc);
+    assert!(session.pinned_status_bar_candidate(true).is_none());
+}
+
+#[test]
 fn oversized_or_hidden_candidates_are_rejected() {
     let doc = load(
         r##"{

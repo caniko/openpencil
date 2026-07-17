@@ -534,6 +534,45 @@ impl WidgetHostNative {
             }
             return changed;
         }
+        // Sign-in modal — owns the cursor while open. Hover the close
+        // `✕` + the primary sign-in button.
+        if self.editor_state.editor_ui.login_modal_open {
+            use op_editor_ui::widgets::login_modal::LoginModal;
+            let modal = LoginModal::for_editor(&self.editor_state);
+            let panel = modal.rect(self.last_viewport_w, self.last_viewport_h);
+            let new_hover = op_editor_ui::widgets::editor_state_ext::login_modal_button(
+                modal.hit_test(panel, Point2D::new(x, y)),
+            );
+            let changed = new_hover != self.editor_state.editor_ui.login_modal_hover;
+            if changed {
+                self.editor_state.editor_ui.login_modal_hover = new_hover;
+                self.mark_dirty();
+            }
+            return changed;
+        }
+        // Signed-in account dropdown — owns the cursor while open.
+        if self.editor_state.editor_ui.account_menu_open {
+            use op_editor_ui::widgets::account_menu::AccountMenu;
+            use op_editor_ui::widgets::top_bar::TopBar;
+            use op_editor_ui::widgets::TOP_BAR_HEIGHT;
+            let top_bar_rect = Rect {
+                origin: Point2D::new(0.0, 0.0),
+                size: Point2D::new(self.last_viewport_w, TOP_BAR_HEIGHT),
+            };
+            let top_bar = TopBar::for_editor_ui(&self.editor_state.editor_ui);
+            let anchor = top_bar.account_button_rect(top_bar_rect);
+            let new_hover =
+                AccountMenu::for_editor_ui(&self.editor_state.editor_ui).and_then(|menu| {
+                    let panel = menu.rect_at(anchor);
+                    menu.row_at(panel, Point2D::new(x, y))
+                });
+            let changed = new_hover != self.editor_state.editor_ui.account_menu_hover;
+            if changed {
+                self.editor_state.editor_ui.account_menu_hover = new_hover;
+                self.mark_dirty();
+            }
+            return changed;
+        }
         if let Some(state) = self.editor_state.ui.color_picker.clone() {
             if let Some(kind) = state.drag {
                 use op_editor_core::ui_draft::ColorPickerDrag;
@@ -831,6 +870,13 @@ impl WidgetHostNative {
         // Effects "+" add-menu row hover (no-op when closed).
         if !over_topmost
             && self.update_effect_add_menu_hover(x, y, self.last_viewport_w, self.last_viewport_h)
+        {
+            return true;
+        }
+        // Interactions Navigate/Back/Remove popover row hover (no-op
+        // when closed).
+        if !over_topmost
+            && self.update_interaction_menu_hover(x, y, self.last_viewport_w, self.last_viewport_h)
         {
             return true;
         }

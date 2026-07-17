@@ -666,6 +666,13 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     figma_import_session::PumpOutcome::StillPending
                     | figma_import_session::PumpOutcome::Idle => {}
                 }
+                // A failed subtask row's "Retry" click raised
+                // `chat.pending_subtask_retry` — launch the single-subtask
+                // worker (failed-subtask remediation, manual layer) before
+                // this same frame's pump drains its first commands/progress.
+                if self.launch_subtask_retry_if_pending() {
+                    self.redraw_dirty = true;
+                }
                 // Drain orchestrator apply requests + progress events
                 // for any in-flight design turn (orchestrator runs off
                 // the UI thread; `RemoteDocSink` forwards mutations

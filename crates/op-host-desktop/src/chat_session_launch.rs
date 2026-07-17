@@ -114,6 +114,11 @@ pub fn launch_if_pending(
             );
             let initial_state = host.editor_state().clone();
             let request = build_design_request(user_text, &initial_state, append_context);
+            // Persist the request onto the turn's assistant bubble (already
+            // pushed by `begin_send`) BEFORE it moves into the worker — the
+            // manual per-subtask "Retry" button needs it to re-run a failed
+            // section later (failed-subtask remediation, manual layer).
+            stash_design_request_for_retry(host, &request);
             *current_design = Some(op_host_services::design_session::start(
                 llm,
                 request,
@@ -231,6 +236,32 @@ pub fn launch_if_pending(
     };
     *current_chat = Some(ChatSession::start(provider, req));
     true
+}
+
+/// Persist `request` (JSON-encoded) onto the turn's assistant bubble —
+/// `begin_send` already pushed the empty streaming bubble this write lands
+/// on, at both design-turn launch sites (`launch_if_pending`'s builtin
+/// branch, `launch_cli_standard_turn`'s CLI branch). Read back by
+/// `design_session::launch_subtask_retry_if_pending` when the user clicks a
+/// failed row's "Retry" icon (failed-subtask remediation, manual layer) —
+/// see `ChatMessage::design_request_json_for_retry`.
+///
+/// `op-editor-core` cannot depend on `op-orchestrator`'s concrete
+/// `DesignRequest` type (wrong dependency direction), hence the opaque JSON
+/// string rather than a typed field. Serialization failure is silently
+/// skipped: `DesignRequest` derives `Serialize` and always succeeds in
+/// practice, and losing the retry affordance is strictly better than
+/// panicking a design turn over it.
+fn stash_design_request_for_retry(
+    host: &mut WidgetHostNative,
+    request: &op_orchestrator::DesignRequest,
+) {
+    let Ok(json) = serde_json::to_string(request) else {
+        return;
+    };
+    if let Some(msg) = host.editor_state_mut().chat.messages.last_mut() {
+        msg.design_request_json_for_retry = Some(json);
+    }
 }
 
 fn should_launch_direct_modify(state: &EditorState, user_text: &str) -> bool {
@@ -361,6 +392,14 @@ fn launch_cli_standard_turn(
     let initial_state = state.clone();
     let design_request =
         build_design_request(user_text.to_string(), &initial_state, append_context);
+    // Same stash as the builtin/design-intent path above — this turn may or
+    // may not actually classify as `DesignIntent::New` on the worker (the
+    // classifier runs async), but setting it unconditionally is harmless:
+    // the manual "Retry" button only ever reads it back alongside a
+    // `failed_subtasks` entry, which nothing populates on a Chat/Modify
+    // turn. `design_request` is moved into `CliTurnPlan` below (which itself
+    // moves into the worker thread), so this must run BEFORE that move.
+    stash_design_request_for_retry(host, &design_request);
 
     let chat = &mut host.editor_state_mut().chat;
     let thinking = chat.thinking_mode;

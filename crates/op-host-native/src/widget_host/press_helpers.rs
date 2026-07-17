@@ -301,18 +301,24 @@ impl WidgetHostNative {
                     *v = !*v;
                     *v
                 };
+                // Preview graduated out of this gate (2026-07) — it no
+                // longer force-exits when the gate turns off. Widget-config
+                // (the property panel's Widget section) is still gated:
+                // drop any stale Widget property focus so hiding the
+                // section is a clean cut — a lingering
+                // `PropertyFocus::Widget*` could otherwise still commit
+                // through dispatch.
                 if !enabled {
-                    // The gate just turned off. Preview is host-owned
-                    // (a live `PreviewSession` beyond the core flag), so
-                    // exit through the host path. Also drop any stale
-                    // Widget property focus: hiding the section is
-                    // render-only, and a lingering `PropertyFocus::Widget*`
-                    // could otherwise still commit through dispatch.
-                    if self.preview_active() {
-                        self.exit_preview();
-                    }
                     self.editor_state.ui.property_focus = None;
                 }
+            }
+            AgentSettingsHit::OpenLoginModal => {
+                self.editor_state.editor_ui.agent_settings_open = false;
+                self.editor_state.editor_ui.login_modal_open = true;
+                self.editor_state.editor_ui.login_modal_hover = None;
+            }
+            AgentSettingsHit::SignOutAccount => {
+                self.editor_state.editor_ui.account = op_editor_core::AccountState::Anonymous;
             }
             AgentSettingsHit::FocusMcpPort => {
                 self.commit_settings_focus_if_any();

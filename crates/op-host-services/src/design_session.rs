@@ -137,6 +137,97 @@ pub fn run_design_worker<L: LlmClient + Send>(
     let _ = delta_tx.send(DesignDelta::Done(summary));
 }
 
+/// Spawn a worker that retries exactly ONE previously-failed subtask against
+/// a `RemoteDocSink` — the manual layer of the failed-subtask remediation
+/// feature (the progress panel's per-row "Retry" button, see
+/// `op_orchestrator::retry_subtask`). Mirrors [`start`]'s shape
+/// (channel-based `DesignSession`, `RemoteDocSink`, `shared_runtime`) but
+/// drives `retry_subtask` instead of the full `Orchestrator::run` pipeline:
+/// ONE attempt at full complexity, no 3-attempt ladder, no salvage pass —
+/// the user is in the loop here (they clicked) and will decide whether to
+/// click again, switch provider, or fall back to the chat modify flow.
+///
+/// `llm` is built fresh from WHATEVER provider is currently selected — see
+/// `chat_provider_llm::ChatProviderLlmClient`, which adapts any
+/// `ChatProvider` (CLI subprocess agent or builtin API-key provider) so this
+/// works identically for either.
+pub fn start_subtask_retry<L: LlmClient + Send + 'static>(
+    llm: L,
+    request: DesignRequest,
+    subtask: op_orchestrator::plan::Subtask,
+    initial_state: EditorState,
+) -> DesignSession {
+    let (delta_tx, delta_rx) = mpsc::channel::<DesignDelta>();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<DesignCmdReq>();
+
+    let indicator_epoch = op_editor_core::agent_indicators::begin();
+
+    thread::Builder::new()
+        .name("op-subtask-retry".into())
+        .spawn(move || {
+            run_subtask_retry_worker(
+                llm,
+                request,
+                subtask,
+                initial_state,
+                delta_tx,
+                cmd_tx,
+                indicator_epoch,
+            )
+        })
+        .expect("spawn op-subtask-retry thread");
+
+    DesignSession::from_channels_with_epoch(delta_rx, cmd_rx, indicator_epoch)
+}
+
+/// Body of [`start_subtask_retry`]'s worker thread.
+fn run_subtask_retry_worker<L: LlmClient + Send>(
+    llm: L,
+    request: DesignRequest,
+    subtask: op_orchestrator::plan::Subtask,
+    initial_state: EditorState,
+    delta_tx: Sender<DesignDelta>,
+    cmd_tx: Sender<DesignCmdReq>,
+    indicator_epoch: u64,
+) {
+    let mut sink = RemoteDocSink::new(cmd_tx, initial_state);
+    let abort = AbortFlag::new();
+    let _ = delta_tx.send(DesignDelta::Progress(Progress::SubtaskStarted {
+        id: subtask.id.clone(),
+        label: subtask.label.clone(),
+    }));
+    let outcome = shared_runtime().block_on(op_orchestrator::retry_subtask::retry_subtask(
+        &subtask,
+        &request,
+        &llm,
+        &mut sink,
+        &abort,
+        Some(indicator_epoch),
+        None,
+    ));
+    let delta = if outcome.node_count > 0 {
+        DesignDelta::Progress(Progress::SubtaskDone {
+            id: subtask.id.clone(),
+            node_count: outcome.node_count,
+        })
+    } else {
+        DesignDelta::Progress(Progress::SubtaskFailed {
+            id: subtask.id.clone(),
+            error: outcome
+                .error
+                .unwrap_or_else(|| "retry produced no content".into()),
+        })
+    };
+    let _ = delta_tx.send(delta);
+    // Deliberately NO `DesignDelta::Done` here — dropping `delta_tx` lets
+    // `DesignSession::poll_progress`'s `TryRecvError::Disconnected` branch
+    // set `finished` on its own. A `Done(Ok(RunSummary{..}))` would run
+    // `pump_progress`'s WHOLE-TURN completion handling (marks every
+    // Pending/Running activity Done, appends a second "Finished..."
+    // narration line) — correct for a full orchestrator run, wrong for a
+    // single-row retry that must touch ONLY the one row it retried.
+}
+
 /// Run N spawned sub-agents CONCURRENTLY against a `RemoteDocSink`, reusing
 /// the orchestrator's per-subtask runner + concurrency cap
 /// (`op_orchestrator::run_spawned_agents_concurrent`).
@@ -497,6 +588,136 @@ mod spawn_worker_tests {
         // the UI thread mints. The orchestrator-core test
         // (`spawn_concurrent_tests::run_spawned_agents_invokes_real_runner…`)
         // proves real id capture against an immediate-apply `VecDocSink`.
+    }
+}
+
+#[cfg(test)]
+mod subtask_retry_tests {
+    use super::*;
+    use futures::stream::BoxStream;
+    use op_editor_host_core::design::{DesignCmdAck, DesignCmdOp};
+    use op_orchestrator::plan::{Region, Subtask};
+    use op_orchestrator::{CallRequest, LlmChunk, LlmError};
+    use std::time::{Duration, Instant};
+
+    fn make_req() -> DesignRequest {
+        DesignRequest {
+            prompt: "p".into(),
+            model: None,
+            provider: None,
+            design_md: None,
+            concurrency: 1,
+            append_context: None,
+            validation_enabled: false,
+            visual_ref_enabled: false,
+        }
+    }
+
+    fn failed_subtask() -> Subtask {
+        Subtask {
+            id: "hero".into(),
+            label: "Hero".into(),
+            region: Region {
+                width: 1200.0,
+                height: 400.0,
+            },
+            id_prefix: "hero".into(),
+            parent_frame_id: None,
+            elements: None,
+            screen: None,
+            generated_root_id: None,
+            existing_section_labels: None,
+        }
+    }
+
+    /// Always returns the same scripted text — a real per-subtask runner
+    /// still parses/validates/inserts it, proving `start_subtask_retry`
+    /// drives the genuine `retry_subtask` path, not a canned ack.
+    struct OneShotLlm(String);
+    impl LlmClient for OneShotLlm {
+        fn call(&self, _req: CallRequest) -> BoxStream<'static, Result<LlmChunk, LlmError>> {
+            Box::pin(futures::stream::iter(vec![Ok(LlmChunk::Text(
+                self.0.clone(),
+            ))]))
+        }
+    }
+
+    /// Drain both halves (`drain_cmd_requests` + `poll_progress`) each loop
+    /// iteration — mirrors the desktop pump's per-frame `pump_commands` +
+    /// `pump_progress` pair — until the session reports finished. Returns
+    /// every `Progress` event observed, in order.
+    fn drain_until_finished(session: &mut DesignSession, state: &mut EditorState) -> Vec<Progress> {
+        let mut collected = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            for req in session.drain_cmd_requests() {
+                let applied = match req.op {
+                    DesignCmdOp::Apply(cmd) => state.apply(cmd),
+                    DesignCmdOp::BeginUndoBatch | DesignCmdOp::EndUndoBatch => true,
+                };
+                let _ = req.ack.send(DesignCmdAck {
+                    applied,
+                    new_state: state.clone(),
+                });
+            }
+            let poll = session.poll_progress();
+            collected.extend(poll.progress);
+            if poll.finished {
+                return collected;
+            }
+            if Instant::now() > deadline {
+                panic!("subtask retry worker did not finish within the deadline");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn start_subtask_retry_streams_started_then_done_and_ends_with_no_summary() {
+        let node_script = r#"I(null, {"type":"frame","name":"Sec","x":0,"y":0,"width":400,"height":120,"children":[{"type":"text","content":"Hi","fontSize":18}]});"#;
+        let llm = OneShotLlm(node_script.into());
+        let mut state = EditorState::new();
+
+        let mut session = start_subtask_retry(llm, make_req(), failed_subtask(), state.clone());
+        let events = drain_until_finished(&mut session, &mut state);
+
+        assert!(
+            matches!(events.first(), Some(Progress::SubtaskStarted { id, .. }) if id == "hero"),
+            "{events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(Progress::SubtaskDone { id, node_count }) if id == "hero" && *node_count > 0
+            ),
+            "{events:?}"
+        );
+        assert_eq!(
+            events.len(),
+            2,
+            "no extra events besides Started/Done: {events:?}"
+        );
+        // The real per-subtask runner inserted the section into the live
+        // document via the RemoteDocSink bridge.
+        assert_eq!(state.active_children().len(), 1);
+    }
+
+    #[test]
+    fn start_subtask_retry_reports_failed_when_the_llm_produces_nothing() {
+        let llm = OneShotLlm(String::new());
+        let mut state = EditorState::new();
+
+        let mut session = start_subtask_retry(llm, make_req(), failed_subtask(), state.clone());
+        let events = drain_until_finished(&mut session, &mut state);
+
+        assert!(
+            matches!(events.first(), Some(Progress::SubtaskStarted { id, .. }) if id == "hero")
+        );
+        assert!(
+            matches!(events.last(), Some(Progress::SubtaskFailed { id, .. }) if id == "hero"),
+            "{events:?}"
+        );
+        assert_eq!(state.active_children().len(), 0);
     }
 }
 

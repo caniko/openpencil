@@ -2,7 +2,7 @@
 //! dispatch table. Split out of `app_handler.rs` to keep that file
 //! under the repo's 800-line-per-file cap.
 
-use crate::{chat_session, persistence, DesktopApp};
+use crate::{chat_session, design_session, persistence, DesktopApp};
 use base64::Engine as _;
 use winit::keyboard::{Key, NamedKey};
 
@@ -555,6 +555,23 @@ impl DesktopApp {
             &mut self.current_design,
         );
         if launched && (self.current_chat.is_some() || self.current_design.is_some()) {
+            self.chat_running_tab = Some(self.host.editor_state().chat.active_index());
+        }
+        launched
+    }
+
+    /// Drain a manual subtask-retry click and BIND the run to the tab it
+    /// started on — same wrapper shape as [`launch_chat_if_pending`], for the
+    /// failed-subtask remediation feature's manual layer. The retry always
+    /// targets whichever tab is ACTIVE right now (the click can only happen
+    /// on the tab being viewed), so it binds the SAME way a fresh chat send
+    /// does.
+    pub(crate) fn launch_subtask_retry_if_pending(&mut self) -> bool {
+        let launched = design_session::launch_subtask_retry_if_pending(
+            &mut self.host,
+            &mut self.current_design,
+        );
+        if launched && self.current_design.is_some() {
             self.chat_running_tab = Some(self.host.editor_state().chat.active_index());
         }
         launched

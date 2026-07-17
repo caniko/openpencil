@@ -9,8 +9,10 @@
 mod property_input_dispatch;
 
 use super::WidgetHostNative;
+use jian_ops_schema::events::EventHandlers;
 use jian_ops_schema::sizing::SizingKeyword;
 use jian_ops_schema::variable::VariableKind;
+use op_editor_core::pen_node_ext::PenNodeExt;
 
 impl WidgetHostNative {
     pub(in crate::widget_host) fn apply_property_action(
@@ -514,6 +516,83 @@ impl WidgetHostNative {
                 // the selected node's primary fill.
                 self.editor_state.editor_ui.pending_file_action =
                     Some(op_editor_core::editor_ui_state::FileAction::PickFillImage);
+            }
+            A::ToggleInteractionMenu => {
+                let ui = &mut self.editor_state.editor_ui;
+                ui.toggle_interaction_menu();
+                ui.close_fill_type_picker();
+                ui.image_fill_popover_open = false;
+                ui.close_font_picker();
+                ui.font_weight_picker_open = false;
+                ui.export_scale_picker_open = false;
+                ui.export_format_picker_open = false;
+                ui.property_color_variable_picker_open = None;
+            }
+            A::SetInteractionNavigate { path } => {
+                let node_id = self.editor_state.selection.anchor.clone();
+                if node_id.is_real() {
+                    self.editor_state.commit_history();
+                    let patch_json =
+                        op_editor_ui::widgets::property_panel_interactions::navigate_patch_json(
+                            &path,
+                        );
+                    let _ = self
+                        .editor_state
+                        .apply(op_editor_core::EditorCommand::PatchNodeData {
+                            node_id,
+                            patch_json,
+                            page_id: None,
+                        });
+                }
+                self.editor_state.editor_ui.close_interaction_menu();
+            }
+            A::SetInteractionPop => {
+                let node_id = self.editor_state.selection.anchor.clone();
+                if node_id.is_real() {
+                    self.editor_state.commit_history();
+                    let _ = self
+                        .editor_state
+                        .apply(op_editor_core::EditorCommand::PatchNodeData {
+                            node_id,
+                            patch_json:
+                                op_editor_ui::widgets::property_panel_interactions::POP_PATCH_JSON
+                                    .to_string(),
+                            page_id: None,
+                        });
+                }
+                self.editor_state.editor_ui.close_interaction_menu();
+            }
+            A::RemoveInteraction => {
+                let node_id = self.editor_state.selection.anchor.clone();
+                if node_id.is_real() {
+                    // Clear only `onTap` — if the node's `events` block
+                    // carries no other handler afterward, drop the whole
+                    // field (no `"events":{}` shell left behind); else
+                    // re-serialize the trimmed block so any sibling
+                    // handler (`onChange`, …) survives untouched.
+                    let mut handlers = self
+                        .editor_state
+                        .selected_node()
+                        .and_then(|n| n.events().cloned())
+                        .unwrap_or_default();
+                    handlers.on_tap = None;
+                    let patch_json = if handlers == EventHandlers::default() {
+                        r#"{"events":null}"#.to_string()
+                    } else {
+                        let value =
+                            serde_json::to_value(&handlers).unwrap_or(serde_json::Value::Null);
+                        format!(r#"{{"events":{value}}}"#)
+                    };
+                    self.editor_state.commit_history();
+                    let _ = self
+                        .editor_state
+                        .apply(op_editor_core::EditorCommand::PatchNodeData {
+                            node_id,
+                            patch_json,
+                            page_id: None,
+                        });
+                }
+                self.editor_state.editor_ui.close_interaction_menu();
             }
             // Code panel actions. SelectFramework / Copy fully work;
             // Generate / Regenerate raise pending flags + flip the

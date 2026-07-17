@@ -64,6 +64,84 @@ fn clear_fresh_starter_frame_bumps_document_revision() {
 }
 
 #[test]
+fn stash_design_request_for_retry_writes_json_onto_the_last_message() {
+    let mut host = WidgetHostNative::new();
+    host.editor_state_mut()
+        .chat
+        .messages
+        .push(op_editor_core::ChatMessage::assistant_streaming());
+    let request = op_orchestrator::DesignRequest {
+        prompt: "design a login page".into(),
+        model: None,
+        provider: None,
+        design_md: None,
+        concurrency: 1,
+        append_context: None,
+        validation_enabled: true,
+        visual_ref_enabled: false,
+    };
+
+    stash_design_request_for_retry(&mut host, &request);
+
+    let json = host
+        .editor_state()
+        .chat
+        .messages
+        .last()
+        .unwrap()
+        .design_request_json_for_retry
+        .clone()
+        .expect("request must be persisted");
+    let restored: op_orchestrator::DesignRequest =
+        serde_json::from_str(&json).expect("must round-trip");
+    assert_eq!(restored.prompt, "design a login page");
+}
+
+/// Regression lock for a real bug a user hit: the CLI-standard route
+/// (`launch_cli_standard_turn`, reached whenever no builtin/ACP model is
+/// selected — the common case) never stashed `design_request_json_for_retry`
+/// onto the turn's bubble, so the manual "Retry" button always failed with
+/// "nothing to retry" even though the row's icon painted correctly. Only
+/// the synchronous portion of the launch is observable here without either
+/// mocking provider construction or spawning a real CLI subprocess — that's
+/// exactly where the stash must happen (before the worker thread moves the
+/// request away), so it's exactly what this test needs to prove.
+#[test]
+fn launch_if_pending_stashes_the_design_request_on_the_cli_standard_route() {
+    let mut host = WidgetHostNative::new();
+    // No builtin/ACP model selected (the default) — `is_builtin_or_acp` is
+    // false, so `launch_if_pending` routes into `launch_cli_standard_turn`
+    // regardless of what the prompt says (that route does its OWN async
+    // classification on the worker thread).
+    host.editor_state_mut()
+        .chat
+        .set_input_text("design a login page");
+    assert!(host.editor_state_mut().chat.begin_send());
+    let mut current_chat = None;
+    let mut current_design = None;
+
+    let launched = launch_if_pending(&mut host, &mut current_chat, &mut current_design);
+
+    assert!(
+        launched,
+        "the default CLI-backed provider must launch a turn"
+    );
+    let msg = host
+        .editor_state()
+        .chat
+        .messages
+        .last()
+        .expect("begin_send pushed the assistant bubble");
+    let json = msg
+        .design_request_json_for_retry
+        .as_deref()
+        .expect("the CLI-standard route must stash the request too");
+    let restored: op_orchestrator::DesignRequest =
+        serde_json::from_str(json).expect("must round-trip");
+    assert_eq!(restored.prompt, "design a login page");
+}
+
+#[test]
 fn builtin_design_keyword_with_existing_target_prefers_modify_route() {
     let mut state = EditorState::new();
     state.active_children_mut().clear();

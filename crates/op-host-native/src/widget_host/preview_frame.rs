@@ -4,14 +4,16 @@
 use op_editor_core::PreviewDeviceKind;
 use op_editor_ui::{Point2D, Rect};
 
-/// Pinned-nav geometry in the device frame's screen space.
+/// Pinned-strip geometry in the device frame's screen space — shared by
+/// the bottom nav and the top status bar (the two are otherwise
+/// symmetric: one node id, one screen-space strip, one paint origin).
 pub(crate) struct PinnedGeom {
     pub node_id: String,
-    /// Nav node's scene rect (root-relative document space).
+    /// Strip node's scene rect (root-relative document space).
     pub node_scene: Rect,
-    /// Full-width screen-space strip at the bottom of the frame.
+    /// Full-width screen-space strip at the top or bottom of the frame.
     pub strip: Rect,
-    /// Screen-space origin where the nav subtree paints.
+    /// Screen-space origin where the strip's subtree paints.
     pub paint_origin: Point2D,
 }
 
@@ -23,14 +25,18 @@ pub(crate) struct DeviceFrame {
     pub fit: f32,
     /// Screen-space page origin before applying the scroll offset.
     pub content_origin: Point2D,
+    /// Pinned bottom nav, if detected.
     pub pinned: Option<PinnedGeom>,
+    /// Pinned top status bar, if detected.
+    pub pinned_top: Option<PinnedGeom>,
     /// Framed-root height in scene-space logical pixels.
     pub content_h: f32,
     /// Logical top of the final scrollable content extent.
     pub nav_top: f32,
     /// Screen-space x span occupied by the framed root.
     pub content_span_x: (f32, f32),
-    /// Visible logical height after reserving a pinned-nav strip.
+    /// Visible logical height after reserving the pinned nav / status
+    /// bar strips.
     pub viewport_h: f32,
 }
 
@@ -39,6 +45,7 @@ pub(crate) struct DeviceFrame {
 pub(crate) enum PreviewSurface {
     Scrolled { scroll_y: f32 },
     Pinned,
+    PinnedTop,
 }
 
 /// Resolve the presentation surface under a screen-space point.
@@ -59,22 +66,61 @@ pub(crate) fn device_surface_at(
     if screen.x < frame.content_span_x.0 || screen.x > frame.content_span_x.1 {
         return None;
     }
-    if let Some(pinned) = &frame.pinned {
-        let strip = pinned.strip;
-        let in_strip = screen.y >= strip.origin.y
-            && screen.y <= strip.origin.y + strip.size.y
-            && screen.x >= strip.origin.x
-            && screen.x <= strip.origin.x + strip.size.x;
-        if in_strip {
-            let nav_left = pinned.paint_origin.x;
-            let nav_right = nav_left + pinned.node_scene.size.x * frame.fit;
-            if screen.x < nav_left || screen.x > nav_right {
-                return None;
-            }
-            return Some(PreviewSurface::Pinned);
-        }
+    // Once the point falls in a strip's screen-space band, the result
+    // is COMMITTED to that strip: either the pinned surface, or a dead
+    // zone (`None`) if it's beside a strip narrower than the frame —
+    // it must NOT fall through to `Scrolled` the way a miss on the
+    // strip's band itself does (that's a real, if rare, case: a
+    // narrower-than-frame bottom nav or top status bar still leaves
+    // its own flanks live for the scrolled content underneath).
+    if strip_band_contains(&frame.pinned, screen) {
+        return pinned_surface_or_dead_zone(
+            frame.pinned.as_ref().expect("checked Some above"),
+            frame.fit,
+            screen,
+            PreviewSurface::Pinned,
+        );
+    }
+    if strip_band_contains(&frame.pinned_top, screen) {
+        return pinned_surface_or_dead_zone(
+            frame.pinned_top.as_ref().expect("checked Some above"),
+            frame.fit,
+            screen,
+            PreviewSurface::PinnedTop,
+        );
     }
     Some(PreviewSurface::Scrolled { scroll_y })
+}
+
+/// Whether `screen` falls inside this (optional) strip's screen-space
+/// band at all — the OUTER gate `device_surface_at` commits on before
+/// checking the strip node's own (possibly narrower) horizontal span.
+fn strip_band_contains(pinned: &Option<PinnedGeom>, screen: Point2D) -> bool {
+    let Some(pinned) = pinned else {
+        return false;
+    };
+    let strip = pinned.strip;
+    screen.y >= strip.origin.y
+        && screen.y <= strip.origin.y + strip.size.y
+        && screen.x >= strip.origin.x
+        && screen.x <= strip.origin.x + strip.size.x
+}
+
+/// Inside the strip's band (already checked by the caller): resolve to
+/// the pinned surface, or `None` (dead zone) when the point is beside
+/// the strip node's own narrower horizontal span.
+fn pinned_surface_or_dead_zone(
+    pinned: &PinnedGeom,
+    fit: f32,
+    screen: Point2D,
+    surface: PreviewSurface,
+) -> Option<PreviewSurface> {
+    let left = pinned.paint_origin.x;
+    let right = left + pinned.node_scene.size.x * fit;
+    if screen.x < left || screen.x > right {
+        return None;
+    }
+    Some(surface)
 }
 
 /// Map a screen point through a previously resolved presentation surface.
@@ -84,14 +130,15 @@ pub(crate) fn device_scene_point(
     surface: &PreviewSurface,
     screen: Point2D,
 ) -> Option<Point2D> {
+    let through = |pinned: &PinnedGeom| {
+        Point2D::new(
+            pinned.node_scene.origin.x + (screen.x - pinned.paint_origin.x) / frame.fit,
+            pinned.node_scene.origin.y + (screen.y - pinned.paint_origin.y) / frame.fit,
+        )
+    };
     match surface {
-        PreviewSurface::Pinned => {
-            let pinned = frame.pinned.as_ref()?;
-            Some(Point2D::new(
-                pinned.node_scene.origin.x + (screen.x - pinned.paint_origin.x) / frame.fit,
-                pinned.node_scene.origin.y + (screen.y - pinned.paint_origin.y) / frame.fit,
-            ))
-        }
+        PreviewSurface::Pinned => frame.pinned.as_ref().map(through),
+        PreviewSurface::PinnedTop => frame.pinned_top.as_ref().map(through),
         PreviewSurface::Scrolled { scroll_y } => Some(Point2D::new(
             (screen.x - frame.content_origin.x) / frame.fit,
             (screen.y - frame.content_origin.y) / frame.fit + scroll_y,
@@ -122,11 +169,13 @@ pub(crate) fn infer_kind_for_width(root_w: Option<f32>) -> PreviewDeviceKind {
 }
 
 /// Compute all device-frame geometry from a canvas and framed root.
+/// `status_scene` mirrors `nav_scene` for the pinned top status bar.
 pub(crate) fn compute_frame_geometry(
     kind: PreviewDeviceKind,
     canvas: Rect,
     root_scene: Rect,
     nav_scene: Option<Rect>,
+    status_scene: Option<Rect>,
 ) -> DeviceFrame {
     let (frame_w, frame_h) = frame_size(kind);
     let fit = (canvas.size.x / frame_w)
@@ -160,14 +209,27 @@ pub(crate) fn compute_frame_geometry(
             paint_origin: Point2D::new(content_origin.x + nav.origin.x * fit, strip.origin.y),
         }
     });
+    let pinned_top = status_scene.map(|status| {
+        let strip = Rect {
+            origin: frame.origin,
+            size: Point2D::new(frame.size.x, status.size.y * fit),
+        };
+        PinnedGeom {
+            node_id: String::new(),
+            node_scene: status,
+            strip,
+            paint_origin: Point2D::new(content_origin.x + status.origin.x * fit, strip.origin.y),
+        }
+    });
+    let status_h = pinned_top.as_ref().map_or(0.0, |p| p.node_scene.size.y);
     let (nav_top, viewport_h) = match &pinned {
         Some(pinned) => {
             let nav_h = pinned.node_scene.size.y;
             let nav_bottom = pinned.node_scene.origin.y + nav_h;
             let gap = (root_bottom - nav_bottom).max(0.0);
-            (content_h - nav_h - gap, frame_h - nav_h)
+            (content_h - nav_h - gap, frame_h - nav_h - status_h)
         }
-        None => (content_h, frame_h),
+        None => (content_h, frame_h - status_h),
     };
     let content_span_x = (
         content_origin.x + root_scene.origin.x * fit,
@@ -179,6 +241,7 @@ pub(crate) fn compute_frame_geometry(
         fit,
         content_origin,
         pinned,
+        pinned_top,
         content_h,
         nav_top,
         content_span_x,
@@ -298,15 +361,26 @@ impl super::WidgetHostNative {
                     size: Point2D::new(0.0, 0.0),
                 },
                 None,
+                None,
             ));
             self.preview_scroll_y = 0.0;
             return;
         };
-        let nav = session.pinned_nav_candidate(kind == PreviewDeviceKind::Phone);
-        let mut frame =
-            compute_frame_geometry(kind, canvas, root_rect, nav.as_ref().map(|(_, rect)| *rect));
+        let is_phone = kind == PreviewDeviceKind::Phone;
+        let nav = session.pinned_nav_candidate(is_phone);
+        let status = session.pinned_status_bar_candidate(is_phone);
+        let mut frame = compute_frame_geometry(
+            kind,
+            canvas,
+            root_rect,
+            nav.as_ref().map(|(_, rect)| *rect),
+            status.as_ref().map(|(_, rect)| *rect),
+        );
         if let (Some(pinned), Some((node_id, _))) = (frame.pinned.as_mut(), nav) {
             pinned.node_id = node_id;
+        }
+        if let (Some(pinned_top), Some((node_id, _))) = (frame.pinned_top.as_mut(), status) {
+            pinned_top.node_id = node_id;
         }
         self.preview_scroll_y = self.preview_scroll_y.clamp(0.0, scroll_max(&frame));
         self.preview_device_frame = Some(frame);
@@ -363,6 +437,17 @@ impl super::WidgetHostNative {
     }
 
     /// Paint fixed-frame content and its rounded silhouette chrome.
+    ///
+    /// Track M-1: while a canvas ↔ device-frame merge animation is
+    /// active, the geometry used for this paint is NOT the settled
+    /// `self.preview_device_frame` — it is re-derived (same root / nav
+    /// / status inputs) against the transition's interpolated rect, so
+    /// the silhouette + content visibly move/scale between the
+    /// screen's canvas position and the settled frame. The bezel /
+    /// border colours blend toward the canvas backdrop at the
+    /// un-settled end of the animation (`chrome_blend`) — see
+    /// `preview::ModeTransition`'s module doc for why content itself
+    /// needs no separate fade.
     pub(crate) fn paint_device_frame(
         &self,
         frame_backend: &mut dyn op_editor_ui::RenderBackend,
@@ -371,37 +456,95 @@ impl super::WidgetHostNative {
         let Some(session) = self.preview.as_ref() else {
             return;
         };
-        let Some(device_frame) = self.preview_device_frame.as_ref() else {
+        let Some(steady_frame) = self.preview_device_frame.as_ref() else {
             return;
         };
+
+        let active_mode_transition = self
+            .preview_mode_transition
+            .as_ref()
+            .filter(|t| t.is_active(self.now_ms));
+        let interpolated;
+        let (device_frame, chrome_blend): (&DeviceFrame, f32) = match active_mode_transition {
+            Some(transition) => {
+                let is_phone = steady_frame.kind == PreviewDeviceKind::Phone;
+                let nav = session.pinned_nav_candidate(is_phone);
+                let status = session.pinned_status_bar_candidate(is_phone);
+                let root_rect = session
+                    .framed_root()
+                    .map(|(_, rect)| rect)
+                    .unwrap_or(steady_frame.frame);
+                let mut frame = compute_frame_geometry(
+                    steady_frame.kind,
+                    transition.canvas_rect_for_frame(self.now_ms),
+                    root_rect,
+                    nav.as_ref().map(|(_, rect)| *rect),
+                    status.as_ref().map(|(_, rect)| *rect),
+                );
+                if let (Some(pinned), Some((node_id, _))) = (frame.pinned.as_mut(), nav) {
+                    pinned.node_id = node_id;
+                }
+                if let (Some(pinned_top), Some((node_id, _))) = (frame.pinned_top.as_mut(), status)
+                {
+                    pinned_top.node_id = node_id;
+                }
+                interpolated = frame;
+                (&interpolated, transition.chrome_blend(self.now_ms))
+            }
+            None => (steady_frame, 1.0),
+        };
+
         let radius = frame_radius(device_frame.kind) * device_frame.fit;
-        frame_backend.fill_round_rect(device_frame.frame, radius, op_editor_ui::Color::WHITE);
+        // Line the bezel with the screen's OWN background (falling back
+        // to the host's canvas-surface tone) rather than a hardcoded
+        // white: the device silhouette is a fixed size (`frame_size`)
+        // that doesn't always match the screen's authored width, so a
+        // narrower design shows a thin strip of bezel on each side —
+        // this keeps that strip blending with the design instead of
+        // reading as a stray light seam against a dark theme.
+        let settled_bezel_fill = session
+            .framed_root_fill()
+            .unwrap_or(self.theme.canvas_surface);
+        // Blend toward the ALREADY-PAINTED canvas backdrop
+        // (`theme.canvas_surface`, filled by the caller before this
+        // runs) at the un-settled end of a Track M-1 merge — equivalent
+        // to true alpha blending since the backdrop underneath is a
+        // known solid colour.
+        let bezel_fill =
+            crate::preview::lerp_color(self.theme.canvas_surface, settled_bezel_fill, chrome_blend);
+        frame_backend.fill_round_rect(device_frame.frame, radius, bezel_fill);
 
         if let Some((root_id, _)) = session.framed_root() {
-            let content_clip = match &device_frame.pinned {
-                Some(pinned) => Rect {
-                    origin: device_frame.frame.origin,
-                    size: Point2D::new(
-                        device_frame.frame.size.x,
-                        device_frame.frame.size.y - pinned.strip.size.y,
-                    ),
-                },
-                None => device_frame.frame,
+            let top_inset = device_frame
+                .pinned_top
+                .as_ref()
+                .map_or(0.0, |status| status.strip.size.y);
+            let bottom_inset = device_frame
+                .pinned
+                .as_ref()
+                .map_or(0.0, |pinned| pinned.strip.size.y);
+            let content_clip = Rect {
+                origin: Point2D::new(
+                    device_frame.frame.origin.x,
+                    device_frame.frame.origin.y + top_inset,
+                ),
+                size: Point2D::new(
+                    device_frame.frame.size.x,
+                    device_frame.frame.size.y - top_inset - bottom_inset,
+                ),
             };
             let content_origin = Point2D::new(
                 device_frame.content_origin.x,
                 device_frame.content_origin.y - self.preview_scroll_y * device_frame.fit,
             );
-            let pinned_paint =
-                device_frame
-                    .pinned
-                    .as_ref()
-                    .map(|pinned| crate::preview::PinnedPaint {
-                        node_id: pinned.node_id.clone(),
-                        strip_clip: pinned.strip,
-                        paint_origin: pinned.paint_origin,
-                        nav_scene_origin: pinned.node_scene.origin,
-                    });
+            let to_pinned_paint = |pinned: &PinnedGeom| crate::preview::PinnedPaint {
+                node_id: pinned.node_id.clone(),
+                strip_clip: pinned.strip,
+                paint_origin: pinned.paint_origin,
+                nav_scene_origin: pinned.node_scene.origin,
+            };
+            let pinned_paint = device_frame.pinned.as_ref().map(to_pinned_paint);
+            let pinned_top_paint = device_frame.pinned_top.as_ref().map(to_pinned_paint);
             // Track C-3: routes to the plain single-layer `paint_framed`
             // when idle, or composites the outgoing/entering screens for
             // an in-flight push/pop/replace transition.
@@ -412,6 +555,7 @@ impl super::WidgetHostNative {
                 content_origin,
                 device_frame.fit,
                 pinned_paint.as_ref(),
+                pinned_top_paint.as_ref(),
                 self.now_ms,
             );
         }
@@ -427,7 +571,9 @@ impl super::WidgetHostNative {
             radius,
             self.theme.canvas_surface,
         );
-        frame_backend.stroke_round_rect(device_frame.frame, radius, self.theme.border, 1.0);
+        let border_color =
+            crate::preview::lerp_color(self.theme.canvas_surface, self.theme.border, chrome_blend);
+        frame_backend.stroke_round_rect(device_frame.frame, radius, border_color, 1.0);
         frame_backend.restore();
     }
 
@@ -533,181 +679,6 @@ fn paint_corner_notches(
     backend.stroke_round_rect(inflated, radius + half, mask, radius);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect {
-            origin: Point2D::new(x, y),
-            size: Point2D::new(w, h),
-        }
-    }
-
-    #[test]
-    fn infer_by_root_width() {
-        assert_eq!(infer_kind_for_width(Some(390.0)), PreviewDeviceKind::Phone);
-        assert_eq!(infer_kind_for_width(Some(500.0)), PreviewDeviceKind::Phone);
-        assert_eq!(
-            infer_kind_for_width(Some(501.0)),
-            PreviewDeviceKind::Desktop
-        );
-        assert_eq!(
-            infer_kind_for_width(Some(1440.0)),
-            PreviewDeviceKind::Desktop
-        );
-        assert_eq!(infer_kind_for_width(None), PreviewDeviceKind::Desktop);
-    }
-
-    #[test]
-    fn fit_caps_at_one_and_shrinks_to_region() {
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 1000.0, 1000.0),
-            rect(0.0, 0.0, 390.0, 800.0),
-            None,
-        );
-        assert!((frame.fit - 1.0).abs() < 1e-6);
-
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 1000.0, 422.0),
-            rect(0.0, 0.0, 390.0, 800.0),
-            None,
-        );
-        assert!((frame.fit - 0.5).abs() < 1e-3);
-        assert!((frame.frame.size.y - 422.0).abs() < 1.0);
-    }
-
-    #[test]
-    fn content_origin_centers_horizontally() {
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 2000.0, 2000.0),
-            rect(0.0, 0.0, 300.0, 800.0),
-            None,
-        );
-        let expected_x = frame.frame.origin.x + (frame.frame.size.x - 300.0) / 2.0;
-        assert!((frame.content_origin.x - expected_x).abs() < 0.5);
-    }
-
-    #[test]
-    fn scroll_max_uses_nav_top() {
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 2000.0, 2000.0),
-            rect(0.0, 0.0, 390.0, 2000.0),
-            Some(rect(0.0, 1940.0, 390.0, 60.0)),
-        );
-        assert!((frame.nav_top - 1940.0).abs() < 0.5);
-        assert!((frame.viewport_h - 784.0).abs() < 0.5);
-        assert!((scroll_max(&frame) - 1156.0).abs() < 0.5);
-
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 2000.0, 2000.0),
-            rect(0.0, 0.0, 390.0, 2000.0),
-            None,
-        );
-        assert!((scroll_max(&frame) - 1156.0).abs() < 0.5);
-
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 2000.0, 2000.0),
-            rect(0.0, 0.0, 390.0, 400.0),
-            None,
-        );
-        assert_eq!(scroll_max(&frame), 0.0);
-    }
-
-    #[test]
-    fn floating_nav_gap_is_dead_space() {
-        let frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 2000.0, 2000.0),
-            rect(0.0, 0.0, 390.0, 2000.0),
-            Some(rect(0.0, 1930.0, 390.0, 60.0)),
-        );
-        assert!((frame.nav_top - 1930.0).abs() < 0.5);
-        assert!((scroll_max(&frame) - (1930.0 - 784.0)).abs() < 0.5);
-    }
-
-    fn phone_frame_with_nav() -> DeviceFrame {
-        let mut frame = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 1000.0, 1000.0),
-            rect(0.0, 0.0, 390.0, 2000.0),
-            Some(rect(0.0, 1940.0, 390.0, 60.0)),
-        );
-        if let Some(pinned) = frame.pinned.as_mut() {
-            pinned.node_id = "nav".into();
-        }
-        frame
-    }
-
-    #[test]
-    fn surface_and_scene_point_scrolled_region() {
-        let frame = phone_frame_with_nav();
-        let screen = Point2D::new(frame.frame.origin.x + 100.0, frame.frame.origin.y + 100.0);
-        let surface = device_surface_at(&frame, screen, 50.0).expect("inside frame");
-        match surface {
-            PreviewSurface::Scrolled { scroll_y } => assert_eq!(scroll_y, 50.0),
-            PreviewSurface::Pinned => panic!("expected scrolled surface"),
-        }
-        let scene = device_scene_point(&frame, &surface, screen).expect("maps");
-        assert!((scene.x - 100.0).abs() < 0.5);
-        assert!((scene.y - 150.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn strip_maps_through_pinned_inverse_and_dead_zone() {
-        let frame = phone_frame_with_nav();
-        let strip = frame.pinned.as_ref().unwrap().strip;
-        let screen = Point2D::new(strip.origin.x + 10.0, strip.origin.y + 30.0);
-        let surface = device_surface_at(&frame, screen, 999.0).expect("inside strip");
-        assert!(matches!(surface, PreviewSurface::Pinned));
-        let scene = device_scene_point(&frame, &surface, screen).expect("maps to nav");
-        assert!((scene.y - 1970.0).abs() < 0.5);
-
-        let mut narrow = compute_frame_geometry(
-            PreviewDeviceKind::Phone,
-            rect(0.0, 0.0, 1000.0, 1000.0),
-            rect(0.0, 0.0, 390.0, 2000.0),
-            Some(rect(95.0, 1940.0, 200.0, 60.0)),
-        );
-        if let Some(pinned) = narrow.pinned.as_mut() {
-            pinned.node_id = "nav".into();
-        }
-        let beside = Point2D::new(
-            narrow.frame.origin.x + 5.0,
-            narrow.pinned.as_ref().unwrap().strip.origin.y + 30.0,
-        );
-        assert!(
-            device_surface_at(&narrow, beside, 0.0).is_none(),
-            "strip point beside a narrower nav resolves to no surface"
-        );
-        let over_nav = Point2D::new(
-            narrow.pinned.as_ref().unwrap().paint_origin.x + 5.0,
-            narrow.pinned.as_ref().unwrap().strip.origin.y + 30.0,
-        );
-        let captured = device_surface_at(&narrow, over_nav, 0.0).expect("over the nav");
-        assert!(
-            device_scene_point(&narrow, &captured, beside).is_some(),
-            "captured drags never dead-zone mid-gesture"
-        );
-    }
-
-    #[test]
-    fn outside_frame_is_none_and_capture_freezes_surface() {
-        let frame = phone_frame_with_nav();
-        let outside = Point2D::new(frame.frame.origin.x - 10.0, frame.frame.origin.y + 10.0);
-        assert!(device_surface_at(&frame, outside, 0.0).is_none());
-
-        let strip = frame.pinned.as_ref().unwrap().strip;
-        let down = Point2D::new(strip.origin.x + 10.0, strip.origin.y + 30.0);
-        let captured = device_surface_at(&frame, down, 0.0).expect("down in strip");
-        let moved = Point2D::new(strip.origin.x + 10.0, strip.origin.y - 100.0);
-        let scene = device_scene_point(&frame, &captured, moved).expect("still pinned space");
-        assert!((scene.y - 1840.0).abs() < 0.5);
-    }
-}
+// Pure geometry tests (`compute_frame_geometry` / `device_surface_at` /
+// `device_scene_point`) live in the sibling `preview_frame_geometry_tests.rs`
+// — this file was at the 800-line cap with them inline.

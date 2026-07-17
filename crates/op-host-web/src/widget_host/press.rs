@@ -388,6 +388,11 @@ impl WidgetHost {
                 TopBarHit::TogglePreview => {
                     self.editor_state.editor_ui.toggle_preview();
                 }
+                TopBarHit::Account => {
+                    // Unreachable: `ACCOUNT_BUTTON_AVAILABLE` gates the
+                    // avatar button out of the web build's hit-test (the
+                    // v0.8.2 sign-in flow is desktop-only).
+                }
             }
             self.mark_dirty();
             return true;

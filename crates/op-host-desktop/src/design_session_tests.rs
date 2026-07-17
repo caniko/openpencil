@@ -123,6 +123,7 @@ fn end_to_end_pump_round_trips_apply_and_progress_via_actor_channels() {
                 node_count: 3,
                 error: None,
                 inserted_root_ids: Vec::new(),
+                subtask: None,
             }],
             total_nodes: 3,
         })));
@@ -186,6 +187,194 @@ fn end_to_end_pump_round_trips_apply_and_progress_via_actor_channels() {
     assert!(
         !bubble.streaming,
         "summary path must clear streaming so the chat panel stops the animation"
+    );
+}
+
+/// Failed-subtask remediation (manual layer): a `RunSummary` outcome
+/// carrying a zero-node failure's persisted `subtask` must land on
+/// `ChatMessage.failed_subtasks`, JSON-encoded, keyed by the same id the
+/// row's `ChatActivity` carries — the exact lookup
+/// `ChatState::begin_subtask_retry` performs on a "Retry" click.
+#[test]
+fn pump_progress_captures_failed_subtask_specs_for_manual_retry() {
+    let (delta_tx, delta_rx) = mpsc::channel::<DesignDelta>();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<DesignCmdReq>();
+    let mut current = Some(DesignSession::from_channels(delta_rx, cmd_rx));
+    let mut host = WidgetHostNative::new();
+    host.editor_state_mut().editor_ui.locale = Locale::EnUs;
+    host.editor_state_mut()
+        .chat
+        .messages
+        .push(op_editor_core::ChatMessage::assistant_streaming());
+
+    let subtask = op_orchestrator::plan::Subtask {
+        id: "hero".into(),
+        label: "Hero".into(),
+        region: op_orchestrator::plan::Region {
+            width: 1200.0,
+            height: 400.0,
+        },
+        id_prefix: "hero".into(),
+        parent_frame_id: None,
+        elements: None,
+        screen: None,
+        generated_root_id: None,
+        existing_section_labels: None,
+    };
+    let fake_worker = thread::spawn(move || {
+        let sink = RemoteDocSink::new(cmd_tx, EditorState::new());
+        let _ = delta_tx.send(DesignDelta::Done(Ok(RunSummary {
+            root_frame_id: "root".into(),
+            subtasks: vec![SubtaskOutcome {
+                id: "hero".into(),
+                node_count: 0,
+                error: Some("empty content from provider".into()),
+                inserted_root_ids: Vec::new(),
+                subtask: Some(subtask),
+            }],
+            total_nodes: 0,
+        })));
+        sink
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while current.is_some() && Instant::now() < deadline {
+        let _ = pump_commands(&mut host, &mut current, 1440.0, 900.0);
+        let _ = pump_progress(&mut host, &mut current, None);
+        if current.is_none() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    let _ = fake_worker.join().expect("fake worker exits cleanly");
+
+    let msg = host
+        .editor_state()
+        .chat
+        .messages
+        .last()
+        .expect("seeded bubble survives");
+    assert_eq!(msg.failed_subtasks.len(), 1, "{:?}", msg.failed_subtasks);
+    assert_eq!(msg.failed_subtasks[0].subtask_id, "hero");
+    let restored: op_orchestrator::plan::Subtask =
+        serde_json::from_str(&msg.failed_subtasks[0].subtask_json)
+            .expect("persisted spec must round-trip as valid Subtask JSON");
+    assert_eq!(restored.label, "Hero");
+    assert_eq!(restored.region.width, 1200.0);
+}
+
+fn persisted_subtask_json() -> String {
+    serde_json::to_string(&op_orchestrator::plan::Subtask {
+        id: "hero".into(),
+        label: "Hero".into(),
+        region: op_orchestrator::plan::Region {
+            width: 1200.0,
+            height: 400.0,
+        },
+        id_prefix: "hero".into(),
+        parent_frame_id: None,
+        elements: None,
+        screen: None,
+        generated_root_id: None,
+        existing_section_labels: None,
+    })
+    .unwrap()
+}
+
+fn persisted_request_json() -> String {
+    serde_json::to_string(&op_orchestrator::DesignRequest {
+        prompt: "p".into(),
+        model: None,
+        provider: None,
+        design_md: None,
+        concurrency: 1,
+        append_context: None,
+        validation_enabled: false,
+        visual_ref_enabled: false,
+    })
+    .unwrap()
+}
+
+#[test]
+fn launch_subtask_retry_if_pending_is_a_noop_without_a_pending_flag() {
+    let mut host = WidgetHostNative::new();
+    let mut current_design = None;
+    assert!(!launch_subtask_retry_if_pending(
+        &mut host,
+        &mut current_design
+    ));
+    assert!(current_design.is_none());
+}
+
+/// The default selected agent (index 0, Claude Code CLI subprocess)
+/// constructs unconditionally, so an out-of-range `chat_selected_agent` is
+/// the only SAFE way to force "no provider" in a unit test — using the real
+/// default provider here would spawn an actual `claude` subprocess as a test
+/// side effect. The launch must write an honest inline error (not silently
+/// do nothing) and consume the pending flag either way.
+#[test]
+fn launch_subtask_retry_if_pending_writes_an_error_when_no_model_is_configured() {
+    let mut host = WidgetHostNative::new();
+    host.editor_state_mut().editor_ui.chat_selected_agent = 99;
+    host.editor_state_mut()
+        .chat
+        .messages
+        .push(op_editor_core::ChatMessage::assistant("done"));
+    {
+        let msg = &mut host.editor_state_mut().chat.messages[0];
+        msg.design_request_json_for_retry = Some(persisted_request_json());
+        msg.failed_subtasks
+            .push(op_editor_core::PendingSubtaskRetry {
+                subtask_id: "hero".into(),
+                subtask_json: persisted_subtask_json(),
+            });
+    }
+    host.editor_state_mut().chat.pending_subtask_retry = Some((0, "hero".into()));
+    let mut current_design = None;
+
+    let changed = launch_subtask_retry_if_pending(&mut host, &mut current_design);
+
+    assert!(changed);
+    assert!(
+        current_design.is_none(),
+        "no provider configured — no session should launch"
+    );
+    assert!(
+        host.editor_state().chat.pending_subtask_retry.is_none(),
+        "the flag must be consumed even on the error path"
+    );
+    assert!(
+        host.editor_state().chat.messages[0]
+            .content
+            .contains("no model configured"),
+        "{}",
+        host.editor_state().chat.messages[0].content
+    );
+}
+
+/// A retry click with no matching `failed_subtasks` entry (e.g. a stale
+/// flag from a message that was later pruned) is a silent no-op — nothing
+/// was ever promised for that id.
+#[test]
+fn launch_subtask_retry_if_pending_noops_when_the_subtask_id_has_no_persisted_spec() {
+    let mut host = WidgetHostNative::new();
+    host.editor_state_mut()
+        .chat
+        .messages
+        .push(op_editor_core::ChatMessage::assistant("done"));
+    host.editor_state_mut().chat.messages[0].design_request_json_for_retry =
+        Some(persisted_request_json());
+    host.editor_state_mut().chat.pending_subtask_retry = Some((0, "not-persisted".into()));
+    let mut current_design = None;
+
+    let changed = launch_subtask_retry_if_pending(&mut host, &mut current_design);
+
+    assert!(changed, "the flag is still consumed");
+    assert!(current_design.is_none());
+    assert_eq!(
+        host.editor_state().chat.messages[0].content,
+        "done",
+        "no error text is appended for a stale/unmatched id"
     );
 }
 
