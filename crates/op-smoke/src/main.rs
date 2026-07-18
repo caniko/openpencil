@@ -716,7 +716,12 @@ async fn main() -> std::process::ExitCode {
             // Chrome completeness / node-vocabulary / density metrics — the
             // dimensions raw geometry issues miss (see ab-g3 07-04 lesson).
             // Informational: exit code stays keyed on geometry issues alone.
-            "rubric": audit_rubric::rubric_report(&state),
+            // `None`: this standalone-audit branch loads an existing `.op`
+            // straight off disk and never drives the orchestrator, so there
+            // is no `RunSummary` to report subtask-completeness against —
+            // the rubric's `completeness` section is omitted here (never a
+            // fabricated 0/0), same as `rubric_report`'s own doc contract.
+            "rubric": audit_rubric::rubric_report(&state, None),
         });
         println!(
             "{}",

@@ -16,19 +16,39 @@
 //! from `op_orchestrator::wire_screen_navigation` (bumped `pub` for this;
 //! op-smoke already depends on `op-orchestrator`) rather than reimplemented,
 //! so the rubric can never silently disagree with what the pass wired.
+//!
+//! M3 addition (content-completeness follow-up): `completeness` closes a
+//! blind spot the geometry + chrome + interactivity metrics above all share
+//! — they only ever look at what LANDED in the document, never at what was
+//! PLANNED. A dashboard that permanently lost its revenue-chart and
+//! activity-table subtasks (all 3 retry-ladder attempts exhausted, see
+//! `concurrent::run_subtask_retry_ladder`) still audits `structurallyClean:
+//! true` / `issueCount: 0` — geometry has nothing to complain about in the
+//! content that's actually there. `RunSummary::subtasks` (one
+//! `SubtaskOutcome` per planned subtask, win or lose) is the one place that
+//! still remembers the subtasks that never delivered, so this section is
+//! keyed off of it rather than the document.
 
 use std::collections::BTreeMap;
 
 use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorState, PenNodeExt};
 use op_orchestrator::wire_screen_navigation::{collect_nav_containers, node_has_events};
+use op_orchestrator::RunSummary;
 use serde_json::{json, Value};
 
 /// Mobile-screen width band (390 reference ± the 320-480 devices we seed).
 const MOBILE_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 320.0..=480.0;
 
-/// Build the rubric JSON for an audited document.
-pub fn rubric_report(state: &EditorState) -> Value {
+/// Build the rubric JSON for an audited document. `run_summary` is `Some`
+/// only when this audit is running right after a generation this same
+/// process drove (it has a live `RunSummary` to report against); a
+/// pure-render audit that just loaded an existing `.op` off disk
+/// (`OPENPENCIL_SMOKE_AUDIT`'s standalone path) never had an orchestrator
+/// run to begin with, so it passes `None` and the `completeness` section is
+/// omitted entirely — reporting a fabricated 0/0 would be worse than saying
+/// nothing.
+pub fn rubric_report(state: &EditorState, run_summary: Option<&RunSummary>) -> Value {
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
     let mut text_nodes = 0usize;
     let mut icon_nodes = 0usize;
@@ -74,7 +94,7 @@ pub fn rubric_report(state: &EditorState) -> Value {
         .filter(|k| !matches!(k.as_str(), "frame" | "text"))
         .count();
 
-    json!({
+    let mut report = json!({
         "screens": screens,
         "nodeKinds": kinds,
         "vocabularyRichness": richness,
@@ -82,6 +102,37 @@ pub fn rubric_report(state: &EditorState) -> Value {
         "iconNodes": icon_nodes,
         "imageFills": image_fills,
         "interactivity": interactivity_report(state.active_children()),
+    });
+    if let Some(summary) = run_summary {
+        if let Value::Object(map) = &mut report {
+            map.insert("completeness".to_string(), completeness_report(summary));
+        }
+    }
+    report
+}
+
+/// Whether every PLANNED subtask actually delivered content. Delivered ⟺
+/// `node_count > 0` — provably equivalent to `error.is_none()` at both
+/// `SubtaskOutcome` construction sites (`subagent.rs`'s `fail()` closure
+/// always pairs `node_count: 0` with `error: Some(..)`; the success tail
+/// always pairs `error: None` with the real count), so either predicate
+/// agrees. `node_count > 0` is used directly since "content actually
+/// landed" is the more literal signal and doesn't depend on every future
+/// caller keeping the error field wired correctly.
+fn completeness_report(summary: &RunSummary) -> Value {
+    let planned = summary.subtasks.len();
+    let delivered = summary.subtasks.iter().filter(|s| s.node_count > 0).count();
+    let permanent_failures: Vec<&str> = summary
+        .subtasks
+        .iter()
+        .filter(|s| s.node_count == 0)
+        .map(|s| s.id.as_str())
+        .collect();
+    json!({
+        "plannedSubtasks": planned,
+        "deliveredSubtasks": delivered,
+        "permanentFailures": permanent_failures,
+        "complete": permanent_failures.is_empty(),
     })
 }
 
@@ -298,7 +349,7 @@ mod tests {
                   "width": "fill_container", "height": 72 }
             ]
         }]));
-        let rubric = rubric_report(&state);
+        let rubric = rubric_report(&state, None);
         let screen = &rubric["screens"][0];
         assert_eq!(screen["mobile"], serde_json::json!(true));
         assert_eq!(
@@ -350,7 +401,7 @@ mod tests {
     #[test]
     fn fully_wired_multi_screen_doc_scores_app_mode_ready() {
         let state = state_from(app_mode_ready_doc());
-        let rubric = rubric_report(&state);
+        let rubric = rubric_report(&state, None);
         let interactivity = &rubric["interactivity"];
         assert_eq!(
             interactivity["screenCount"],
@@ -380,7 +431,7 @@ mod tests {
                 { "type": "text", "id": "t", "name": "T", "content": "hi", "width": 100, "height": 20 }
             ]
         }]));
-        let rubric = rubric_report(&state);
+        let rubric = rubric_report(&state, None);
         let interactivity = &rubric["interactivity"];
         assert_eq!(
             interactivity["screenCount"],
@@ -403,7 +454,7 @@ mod tests {
               "children": [ { "type": "text", "id": "t2", "name": "T2", "content": "hi",
                               "width": 100, "height": 20 } ] }
         ]));
-        let rubric = rubric_report(&state);
+        let rubric = rubric_report(&state, None);
         assert_eq!(
             rubric["screens"][0]["chromeComplete"],
             serde_json::json!(false)
@@ -411,6 +462,98 @@ mod tests {
         assert_eq!(
             rubric["screens"][1]["chromeComplete"],
             serde_json::Value::Null
+        );
+    }
+
+    fn subtask_ok(id: &str, node_count: usize) -> op_orchestrator::SubtaskOutcome {
+        op_orchestrator::SubtaskOutcome {
+            id: id.to_string(),
+            node_count,
+            error: None,
+            inserted_root_ids: Vec::new(),
+            subtask: None,
+        }
+    }
+
+    fn subtask_failed(id: &str) -> op_orchestrator::SubtaskOutcome {
+        op_orchestrator::SubtaskOutcome {
+            id: id.to_string(),
+            node_count: 0,
+            error: Some("all 3 retry-ladder attempts exhausted".to_string()),
+            inserted_root_ids: Vec::new(),
+            subtask: None,
+        }
+    }
+
+    fn run_summary(subtasks: Vec<op_orchestrator::SubtaskOutcome>) -> op_orchestrator::RunSummary {
+        op_orchestrator::RunSummary {
+            root_frame_id: "root".to_string(),
+            total_nodes: subtasks.iter().map(|s| s.node_count).sum(),
+            subtasks,
+        }
+    }
+
+    /// Completeness is independent of document content — this fixture is
+    /// deliberately minimal, the tests below drive it entirely off the
+    /// `RunSummary` argument.
+    fn trivial_doc() -> serde_json::Value {
+        serde_json::json!([{ "type": "frame", "id": "r", "name": "R",
+                             "width": 390, "height": 844, "children": [] }])
+    }
+
+    #[test]
+    fn completeness_all_delivered_scores_complete() {
+        let state = state_from(trivial_doc());
+        let summary = run_summary(vec![
+            subtask_ok("header", 4),
+            subtask_ok("hero", 6),
+            subtask_ok("footer", 3),
+        ]);
+        let rubric = rubric_report(&state, Some(&summary));
+        let completeness = &rubric["completeness"];
+        assert_eq!(completeness["plannedSubtasks"], serde_json::json!(3));
+        assert_eq!(completeness["deliveredSubtasks"], serde_json::json!(3));
+        assert_eq!(completeness["permanentFailures"], serde_json::json!([]));
+        assert_eq!(
+            completeness["complete"],
+            serde_json::json!(true),
+            "{rubric}"
+        );
+    }
+
+    #[test]
+    fn completeness_names_permanent_failures_and_scores_incomplete() {
+        let state = state_from(trivial_doc());
+        let summary = run_summary(vec![
+            subtask_ok("header", 4),
+            subtask_failed("revenue-chart"),
+            subtask_failed("activity-table"),
+            subtask_ok("footer", 3),
+        ]);
+        let rubric = rubric_report(&state, Some(&summary));
+        let completeness = &rubric["completeness"];
+        assert_eq!(completeness["plannedSubtasks"], serde_json::json!(4));
+        assert_eq!(completeness["deliveredSubtasks"], serde_json::json!(2));
+        assert_eq!(
+            completeness["permanentFailures"],
+            serde_json::json!(["revenue-chart", "activity-table"]),
+            "{rubric}"
+        );
+        assert_eq!(completeness["complete"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn completeness_section_is_absent_without_a_run_summary() {
+        // A pure-render audit (`OPENPENCIL_SMOKE_AUDIT` loading an existing
+        // `.op` off disk) never drove the orchestrator, so it has no
+        // `RunSummary` — the section must be missing entirely, not a
+        // fabricated `{"plannedSubtasks":0,"deliveredSubtasks":0,...}` that
+        // would misreport a document nobody ever planned subtasks for.
+        let state = state_from(trivial_doc());
+        let rubric = rubric_report(&state, None);
+        assert!(
+            rubric.get("completeness").is_none(),
+            "completeness must be absent, not null or zeroed: {rubric}"
         );
     }
 }
