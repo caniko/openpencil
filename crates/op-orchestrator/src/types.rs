@@ -354,6 +354,16 @@ pub enum Progress {
         id: String,
         issue_count: usize,
     },
+    /// Emitted ONCE, right before `RunSummary` is returned, whenever the
+    /// "promise-delivery" invariant check (`unfilled_screens::detect_unfilled_screens`)
+    /// finds a scaffolded screen that never received real content — the
+    /// classic-path honest report (postmortem 0718-1-glm-1: a silently
+    /// delivered blank screen). `names` are already marked on the canvas
+    /// (`" (unfilled)"` suffix) by the time this fires. Never emitted when
+    /// nothing is unfilled.
+    UnfilledScreens {
+        names: Vec<String>,
+    },
     /// Emitted after each sub-agent LLM reply is applied — lets the UI
     /// show a live node count while the subtask is still running.
     SubtaskNodes {
@@ -519,6 +529,14 @@ pub struct RunSummary {
     pub root_frame_id: String,
     pub subtasks: Vec<SubtaskOutcome>,
     pub total_nodes: usize,
+    /// Names of top-level "screen" roots (`unfilled_screens::detect_unfilled_screens`)
+    /// that never received real content by the time the run finished — the
+    /// "promise-delivery" invariant's classic-path honest report. Empty on
+    /// the common path. Each name is also already marked on the canvas
+    /// itself (`unfilled_screens::mark_unfilled_screens`'s " (unfilled)"
+    /// suffix) before this summary is built, so a caller that only reads
+    /// this field and one that only looks at the canvas see the same story.
+    pub unfilled_screens: Vec<String>,
 }
 
 /// `run()` 的失败。

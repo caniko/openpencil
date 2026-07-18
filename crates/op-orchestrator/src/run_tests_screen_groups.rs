@@ -205,10 +205,20 @@ const THREE_SCREEN_PLAN_JSON: &str = r##"{
   ]
 }"##;
 
+/// Matches on the base name OR that name with the promise-delivery
+/// invariant's " (unfilled)" suffix (`unfilled_screens::mark_unfilled_screens`)
+/// — a subtask whose group never delivered content is exactly the case that
+/// suffix exists to flag, so a root under test here may legitimately carry
+/// it by the time `run` returns.
 fn find_root_by_name<'a>(roots: &'a [PenNode], name: &str) -> &'a PenNode {
     roots
         .iter()
-        .find(|r| r.base().name.as_deref() == Some(name))
+        .find(|r| {
+            r.base()
+                .name
+                .as_deref()
+                .is_some_and(|n| n == name || n == format!("{name} (unfilled)"))
+        })
         .unwrap_or_else(|| panic!("no root named {name} among {roots:?}"))
 }
 
@@ -331,6 +341,20 @@ fn one_group_failure_does_not_take_down_the_others() {
     assert!(
         !contains_text(library, "l"),
         "Library's failed subtask must never backfill with the wrong content"
+    );
+    // Promise-delivery invariant: a scaffolded screen that never received
+    // subtask content must not ship silently — `run` marks it on the canvas
+    // itself (`unfilled_screens::mark_unfilled_screens`) and reports it in
+    // `RunSummary`.
+    assert_eq!(
+        library.base().name.as_deref(),
+        Some("Library (unfilled)"),
+        "a screen whose subtask never delivered content must be marked unfilled on the canvas"
+    );
+    assert_eq!(
+        summary.unfilled_screens,
+        vec!["Library".to_string()],
+        "the classic-path summary must also report the same unfilled screen"
     );
 
     assert_eq!(summary.subtasks.len(), 3);

@@ -7,7 +7,7 @@ use std::thread;
 
 use op_ai::chat_provider::{
     ChatDelta, ChatHistoryRole, ChatProvider, ChatRequest, ChatToolExecutor, ChatToolResult,
-    LOOP_FINALIZE_OP,
+    UnfilledScreensReport, LOOP_FINALIZE_OP,
 };
 use op_editor_core::{ChatMessage, ChatRole, ChatToolCall};
 
@@ -37,11 +37,44 @@ impl ChatToolExecutor for UiChatToolExecutor {
 
     /// Forward the reserved [`LOOP_FINALIZE_OP`] over the same tool channel so
     /// the host (which owns the live `EditorState`) runs
-    /// `op_orchestrator::apply_loop_finalize`. Blocks on the ack like any tool
-    /// call; the result envelope is discarded (finalize is fire-and-forget from
-    /// the loop's view).
-    fn finalize(&self) {
-        let _ = self.forward(LOOP_FINALIZE_OP, "{}");
+    /// `op_orchestrator::apply_loop_finalize` plus the promise-delivery
+    /// invariant's detect-and-mark pass. Blocks on the ack like any tool call;
+    /// the ack's `content` carries back the (already canvas-marked)
+    /// committed/unfilled report — no new IPC needed, this reuses the same
+    /// envelope every other tool result already rides.
+    fn finalize(&self) -> UnfilledScreensReport {
+        unfilled_report_from_ack(&self.forward(LOOP_FINALIZE_OP, r#"{"checkOnly":false}"#))
+    }
+
+    /// Cheap, read-only promise-delivery check — same reserved op, with
+    /// `checkOnly: true` so the host runs ONLY the detector
+    /// (`unfilled_screens::detect_unfilled_screens` /
+    /// `list_screen_candidates`), never `apply_loop_finalize` or the
+    /// canvas-marking side effect.
+    fn check_unfilled_screens(&self) -> UnfilledScreensReport {
+        unfilled_report_from_ack(&self.forward(LOOP_FINALIZE_OP, r#"{"checkOnly":true}"#))
+    }
+}
+
+/// Parse the `{"success":true,"committed":[...],"unfilled":[...]}` envelope
+/// the host's `LOOP_FINALIZE_OP` interception acks with. Any other shape (a
+/// transport error, an old host build that doesn't know the fields yet)
+/// degrades to an empty report — the promise-delivery invariant is a
+/// best-effort nicety on top of the existing finalize/check calls, never a
+/// reason to fail the turn.
+fn unfilled_report_from_ack(result: &ChatToolResult) -> UnfilledScreensReport {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&result.content) else {
+        return UnfilledScreensReport::default();
+    };
+    let names = |key: &str| {
+        v.get(key)
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_default()
+    };
+    UnfilledScreensReport {
+        committed: names("committed"),
+        unfilled: names("unfilled"),
     }
 }
 

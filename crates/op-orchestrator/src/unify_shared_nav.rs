@@ -264,10 +264,8 @@ fn retarget_active_tab(nav: &mut PenNode, screen_name: &str) {
 /// should become active) and [`resolve_target`] (decide whether a nav-less
 /// screen is eligible for injection) — one matching rule, one place.
 fn find_tab_index_for_screen(children: &[PenNode], screen_name: &str) -> Option<usize> {
-    let target_key = normalize_label(screen_name);
     children.iter().position(|tab| {
-        first_text_content(tab)
-            .is_some_and(|label| labels_match(&normalize_label(label), &target_key))
+        first_text_content(tab).is_some_and(|label| labels_match(label, screen_name))
     })
 }
 

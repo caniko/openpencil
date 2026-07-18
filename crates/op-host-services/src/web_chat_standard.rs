@@ -709,6 +709,13 @@ fn progress_label(p: &Progress) -> String {
             }
         }
         Progress::VisualRefFallback { reason } => format!("• Visual-ref fallback: {reason}"),
+        Progress::UnfilledScreens { names } => {
+            format!(
+                "• {} screen(s) left unfilled: {}",
+                names.len(),
+                names.join(", ")
+            )
+        }
     }
 }
 

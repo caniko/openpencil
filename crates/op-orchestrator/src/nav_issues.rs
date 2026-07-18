@@ -25,7 +25,7 @@ use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorState, PenNodeExt};
 
 use crate::wire_screen_navigation::{
-    collect_nav_containers, first_text_content, labels_match, node_has_events, normalize_label,
+    collect_nav_containers, first_text_content, labels_match, node_has_events,
 };
 
 /// A top-level `Frame` already carrying an authored `screen` route.
@@ -69,9 +69,12 @@ pub fn scan_nav_issues(state: &EditorState) -> Vec<String> {
     if screens.len() < 2 {
         return Vec::new();
     }
-    let targets: Vec<(String, String)> = screens
+    // Raw (un-normalized) names — `labels_match` normalizes + tokenizes
+    // internally, so a brand-prefixed screen name still matches a bare tab
+    // label (see that function's doc).
+    let targets: Vec<(&str, &str)> = screens
         .iter()
-        .map(|s| (normalize_label(&s.name), s.path.clone()))
+        .map(|s| (s.name.as_str(), s.path.as_str()))
         .collect();
 
     let mut issues = Vec::new();
@@ -89,10 +92,9 @@ pub fn scan_nav_issues(state: &EditorState) -> Vec<String> {
                 let Some(label) = first_text_content(item) else {
                     continue;
                 };
-                let tab_key = normalize_label(label);
                 let Some((_, target_path)) = targets
                     .iter()
-                    .find(|(screen_key, _)| labels_match(&tab_key, screen_key))
+                    .find(|(screen_name, _)| labels_match(label, screen_name))
                 else {
                     continue;
                 };

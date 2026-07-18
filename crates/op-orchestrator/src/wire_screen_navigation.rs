@@ -260,10 +260,13 @@ fn wire_nav_tabs(
     screens: &[ScreenCandidate],
     screen_paths: &[(String, String)],
 ) {
-    let normalized_screens: Vec<(String, String)> = screen_paths
+    // Raw (un-normalized) names — `labels_match` normalizes + tokenizes
+    // internally, so a brand-prefixed screen name ("Wander — Trips") still
+    // matches a bare tab label ("Trips").
+    let screen_names: Vec<(&str, &str)> = screen_paths
         .iter()
         .filter(|(_, path)| !path.is_empty())
-        .map(|(name, path)| (normalize_label(name), path.clone()))
+        .map(|(name, path)| (name.as_str(), path.as_str()))
         .collect();
 
     let mut patches: Vec<(String, String)> = Vec::new();
@@ -287,11 +290,10 @@ fn wire_nav_tabs(
                 let Some(label) = first_text_content(item) else {
                     continue;
                 };
-                let tab_key = normalize_label(label);
-                let matched_path = normalized_screens
+                let matched_path = screen_names
                     .iter()
-                    .find(|(screen_key, _)| labels_match(&tab_key, screen_key))
-                    .map(|(_, path)| path.clone());
+                    .find(|(screen_name, _)| labels_match(label, screen_name))
+                    .map(|(_, path)| path.to_string());
                 let Some(path) = matched_path else {
                     continue;
                 };
@@ -390,13 +392,43 @@ pub(crate) fn normalize_label(s: &str) -> String {
         .collect()
 }
 
-/// Match iff normalized forms are equal or one is a prefix of the other
-/// (covers "Profile" vs "Profile Screen" → "profile" / "profilescreen").
+/// Split a label/screen name on the separators an authored app commonly
+/// uses for a brand prefix, a hyphenated subtitle, or a breadcrumb (space,
+/// em dash, en dash, hyphen, colon, middle dot, pipe) into normalized,
+/// non-empty word tokens. "Wander — Trips" → `["wander", "trips"]`.
+fn label_tokens(s: &str) -> Vec<String> {
+    s.split([' ', '—', '–', '-', ':', '·', '|'])
+        .map(normalize_label)
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Match iff the fully-normalized forms are equal or one is a prefix of the
+/// other (covers "Profile" vs "Profile Screen" → "profile" /
+/// "profilescreen") — OR, failing that, the two labels share a whole word
+/// TOKEN once split on the usual separators (covers a brand-prefixed screen
+/// name, "Wander — Trips", matching a bare tab label "Trips": neither
+/// normalized form is a prefix of the other — "trips" vs "wandertrips" —
+/// but "trips" is a token of both). Token matching compares WHOLE tokens
+/// only, never a bare substring — "Roadtrips" tokenizes to `["roadtrips"]`,
+/// which never equals the "trips" token, so it correctly stays unmatched.
 /// Ambiguous (neither) never binds — a wrong navigate is worse than a dead
-/// tap. `pub(crate)` for the `navIssues` echo scan — see
+/// tap. Takes RAW (un-normalized) label/name text — both checks normalize
+/// internally, so every caller passes its text straight through instead of
+/// pre-normalizing (pre-normalizing would destroy the word boundaries the
+/// token check needs). `pub(crate)` for the `navIssues` echo scan — see
 /// [`collect_nav_containers`].
 pub(crate) fn labels_match(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a == b || a.starts_with(b) || b.starts_with(a))
+    let (na, nb) = (normalize_label(a), normalize_label(b));
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na == nb || na.starts_with(&nb) || nb.starts_with(&na) {
+        return true;
+    }
+    let ta = label_tokens(a);
+    let tb = label_tokens(b);
+    ta.iter().any(|t| tb.contains(t))
 }
 
 // ── Back-button wiring ──────────────────────────────────────────────────

@@ -4,12 +4,13 @@
 //! the model stops or the turn cap is reached. Production uses the UI-thread
 //! bridge; loopback tests keep this transport layer deterministic.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use op_ai::chat_provider::{
     ChatDelta, ChatHistoryRole, ChatToolDef, ChatToolExecutor, ChatToolResult, StopReason,
+    UnfilledScreensReport,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -22,8 +23,12 @@ use crate::chat_agent_context::{
 };
 use crate::chat_builtin_http::{map_anthropic_stop_reason, map_openai_stop_reason};
 
-/// Everything one agent-loop run needs. `max_turns` is the TS
-/// `maxTurns` cap (20 in production; tests shrink it).
+/// Everything one agent-loop run needs. `max_turns` is the TS `maxTurns`
+/// cap — `MAX_TOOL_TURNS = 20` for plain chat, `DESIGN_LOOP_MAX_TURNS = 28`
+/// for the gated design-generation loop (`chat_builtin_http.rs`; the two
+/// callers pick per `finalize_on_exit`). This caps only ORDINARY turns —
+/// a dedicated promise-delivery fill round (see `FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`
+/// below) is deliberately exempt from it. Tests shrink `max_turns` further.
 pub struct AgentLoopConfig {
     pub url: String,
     pub api_key: String,
@@ -113,12 +118,121 @@ async fn execute_tool(
 /// `enabled` is `cfg.finalize_on_exit`: a no-op early-return when this loop run
 /// is a regular chat turn (the shared agent loop also serves plain builtin
 /// chat), so only the gated design-generation loop mutates the document here.
-async fn run_loop_finalize(executor: &Arc<dyn ChatToolExecutor>, enabled: bool) {
+///
+/// Returns the promise-delivery invariant's committed/unfilled report AFTER
+/// finalize ran and any still-unfilled screens got canvas-marked — empty on
+/// the default no-op and on the common path where nothing was left unfilled.
+async fn run_loop_finalize(
+    executor: &Arc<dyn ChatToolExecutor>,
+    enabled: bool,
+) -> UnfilledScreensReport {
     if !enabled {
-        return;
+        return UnfilledScreensReport::default();
     }
     let executor = executor.clone();
-    let _ = tokio::task::spawn_blocking(move || executor.finalize()).await;
+    tokio::task::spawn_blocking(move || executor.finalize())
+        .await
+        .unwrap_or_default()
+}
+
+/// Cheap, read-only promise-delivery probe — same detector [`run_loop_finalize`]
+/// runs, but never mutates the document or marks the canvas. Called whenever
+/// the loop is deciding whether a dedicated fill round is owed, so a
+/// still-eligible screen gets one more shot instead of immediately being
+/// branded "(unfilled)". Gated by the same `enabled` flag as
+/// [`run_loop_finalize`] — a plain chat turn never touches the document.
+async fn check_unfilled(
+    executor: &Arc<dyn ChatToolExecutor>,
+    enabled: bool,
+) -> UnfilledScreensReport {
+    if !enabled {
+        return UnfilledScreensReport::default();
+    }
+    let executor = executor.clone();
+    tokio::task::spawn_blocking(move || executor.check_unfilled_screens())
+        .await
+        .unwrap_or_default()
+}
+
+/// Per-screen dedicated fill-round budget. "预算只防失控，绝不截断已承诺的
+/// 工作" (budget only guards against a runaway retry avalanche; it must
+/// never itself be the reason a promised screen ships empty): a fill round
+/// spent nudging the model about a still-unfilled COMMITTED screen is exempt
+/// from the ordinary `max_turns` cap — see the two loops' `turn >= turn_cap`
+/// gates below, which keep issuing dedicated rounds past the cap as long as
+/// some committed screen is still eligible. This constant is the ONLY thing
+/// that stops that from running forever: the SAME screen failing across
+/// `FILL_BUDGET_MAX_ROUNDS_PER_SCREEN` dedicated attempts is accepted as a
+/// real failure (reported honestly, tier 3) rather than retried indefinitely
+/// — 2 rounds mirrors `geometry_echo`'s "detect, retry, then accept"
+/// discipline stretched by one extra attempt, since a wholly blank screen is
+/// a starker failure than a layout nit.
+const FILL_BUDGET_MAX_ROUNDS_PER_SCREEN: usize = 2;
+
+/// Which of `unfilled` still has dedicated fill-round budget left, per
+/// `attempts` (screen name -> dedicated rounds already spent on it this run).
+fn eligible_for_fill_round(unfilled: &[String], attempts: &HashMap<String, usize>) -> Vec<String> {
+    unfilled
+        .iter()
+        .filter(|name| {
+            attempts.get(name.as_str()).copied().unwrap_or(0) < FILL_BUDGET_MAX_ROUNDS_PER_SCREEN
+        })
+        .cloned()
+        .collect()
+}
+
+/// Record that a dedicated fill round was just spent on each of `names`.
+fn spend_fill_round(attempts: &mut HashMap<String, usize>, names: &[String]) {
+    for name in names {
+        *attempts.entry(name.clone()).or_insert(0) += 1;
+    }
+}
+
+/// Tier-2 nudge text — states the FULL commitment, not just what's still
+/// missing, so the model sees an explicit broken promise instead of a
+/// generic "fill it now" ("把承诺变成模型可见的契约" — turn the promise into
+/// a contract the model can see). `committed` is every screen the run
+/// scaffolded (filled or not, from [`UnfilledScreensReport::committed`]);
+/// `still_empty` is the fill-budget-eligible subset this round is asking the
+/// model to act on.
+fn contract_nudge_text(committed: &[String], still_empty: &[String]) -> String {
+    let commit_clause = if committed.len() > 1 {
+        format!(
+            "You committed {} screens ({}); ",
+            committed.len(),
+            committed.join("/")
+        )
+    } else {
+        String::new()
+    };
+    let (subject, pronoun) = if still_empty.len() == 1 {
+        ("is", "it")
+    } else {
+        ("are", "them")
+    };
+    format!(
+        "{commit_clause}{} {subject} still empty. Complete {pronoun} before finishing.",
+        still_empty.join(", ")
+    )
+}
+
+/// Tier-3 unconditional honest report — appended to the transcript right
+/// before `Done` whenever [`run_loop_finalize`] still finds unfilled screens
+/// (every dedicated fill round the screen was eligible for ran out, or the
+/// executor never had a live document to check). Wording mirrors the classic
+/// path's `Progress::UnfilledScreens` line (`op-host-desktop::design_session`'s
+/// `apply_progress` / `op-host-services::web_chat_standard`'s
+/// `progress_label`) so a user sees the same sentence shape on either path.
+async fn report_unfilled_if_any(tx: &mpsc::Sender<ChatDelta>, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let text = format!(
+        "\n\n• {} screen(s) left unfilled: {}",
+        names.len(),
+        names.join(", ")
+    );
+    let _ = tx.send(ChatDelta::TextDelta(text)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +498,41 @@ pub async fn run_anthropic_agent_loop(
     }
     messages.push(json!({ "role": "user", "content": cfg.user_prompt }));
 
-    for _turn in 0..cfg.max_turns.max(1) {
+    // Per-screen dedicated fill-round budget for this loop run (see
+    // `FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`'s doc comment for the "budget
+    // never truncates committed work" rationale).
+    let mut fill_attempts: HashMap<String, usize> = HashMap::new();
+    let turn_cap = cfg.max_turns.max(1);
+    let mut turn = 0usize;
+    loop {
+        // Ordinary turn budget exhausted — the ONLY reason to send another
+        // request is a committed screen that's still eligible for its own
+        // dedicated fill round. This request, if sent, does NOT count
+        // against `turn`.
+        if turn >= turn_cap {
+            let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
+            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            if eligible.is_empty() {
+                // Turn cap reached, and nothing committed is left worth
+                // trying for — the TS engine's error_max_turns shape. Still
+                // run the Step-4 structural backstop once over whatever the
+                // run assembled, and report unconditionally.
+                let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+                report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
+                let _ = tx
+                    .send(ChatDelta::Done {
+                        stop_reason: StopReason::MaxTokens,
+                    })
+                    .await;
+                return Ok(true);
+            }
+            spend_fill_round(&mut fill_attempts, &eligible);
+            messages.push(
+                json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
+            );
+            // Falls through to send this dedicated fill-round request below.
+        }
+
         let mut body = json!({
             "model": cfg.model,
             "max_tokens": cfg.max_output_tokens,
@@ -428,16 +576,50 @@ pub async fn run_anthropic_agent_loop(
                 .as_deref()
                 .map(map_anthropic_stop_reason)
                 .unwrap_or(StopReason::EndTurn);
-            // Normal model-stop exit: run the Step-4 structural backstop ONCE
-            // over the assembled doc BEFORE the Done delta, so the finalized
-            // document is what the UI persists/displays for this turn.
-            run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+            if turn >= turn_cap {
+                // Already in dedicated-fill-round territory — the top-of-loop
+                // gate above owns deciding whether ANOTHER round is owed (it
+                // re-checks fresh on the next pass). Record this turn's reply
+                // in history and defer, rather than deciding again here —
+                // deciding in both places would double-nudge.
+                messages
+                    .push(json!({ "role": "assistant", "content": collector.assistant_content() }));
+                continue;
+            }
+            // Model voluntarily stopped, still within ordinary budget. Try
+            // one dedicated fill round for any committed screen that's still
+            // eligible — NOT gated by remaining turn budget (only by the
+            // per-screen cap above), so budget is never the reason a
+            // promised screen ships empty.
+            let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
+            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            if !eligible.is_empty() {
+                spend_fill_round(&mut fill_attempts, &eligible);
+                messages
+                    .push(json!({ "role": "assistant", "content": collector.assistant_content() }));
+                messages.push(
+                    json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
+                );
+                continue; // Does not count against `turn`.
+            }
+            // Nothing committed is left worth trying for: run the Step-4
+            // structural backstop ONCE over the assembled doc BEFORE the
+            // Done delta, so the finalized document is what the UI
+            // persists/displays for this turn. Tier 3 — honest report —
+            // fires unconditionally if anything is still unfilled (a screen
+            // outside this run's committed set, or the executor being a
+            // no-op).
+            let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+            report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
             let _ = tx
                 .send(ChatDelta::Done {
                     stop_reason: reason,
                 })
                 .await;
             return Ok(true);
+        }
+        if turn < turn_cap {
+            turn += 1;
         }
 
         messages.push(json!({ "role": "assistant", "content": collector.assistant_content() }));
@@ -495,17 +677,6 @@ pub async fn run_anthropic_agent_loop(
         }
         messages.push(json!({ "role": "user", "content": results }));
     }
-
-    // Turn cap reached with the model still calling tools — stop the
-    // loop the way the TS engine reports error_max_turns. Still run the Step-4
-    // structural backstop ONCE over whatever the truncated turn assembled.
-    run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
-    let _ = tx
-        .send(ChatDelta::Done {
-            stop_reason: StopReason::MaxTokens,
-        })
-        .await;
-    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +817,34 @@ pub async fn run_openai_agent_loop(
     }
     messages.push(json!({ "role": "user", "content": cfg.user_prompt }));
 
-    for _turn in 0..cfg.max_turns.max(1) {
+    // Per-screen dedicated fill-round budget for this loop run — see the
+    // Anthropic loop above (`FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`'s doc
+    // comment) for the full "budget never truncates committed work"
+    // rationale.
+    let mut fill_attempts: HashMap<String, usize> = HashMap::new();
+    let turn_cap = cfg.max_turns.max(1);
+    let mut turn = 0usize;
+    loop {
+        if turn >= turn_cap {
+            let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
+            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            if eligible.is_empty() {
+                let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+                report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
+                let _ = tx
+                    .send(ChatDelta::Done {
+                        stop_reason: StopReason::MaxTokens,
+                    })
+                    .await;
+                return Ok(true);
+            }
+            spend_fill_round(&mut fill_attempts, &eligible);
+            messages.push(
+                json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
+            );
+            // Falls through to send this dedicated fill-round request below.
+        }
+
         let mut body = json!({
             "model": cfg.model,
             "stream": true,
@@ -696,15 +894,48 @@ pub async fn run_openai_agent_loop(
                 .as_deref()
                 .map(map_openai_stop_reason)
                 .unwrap_or(StopReason::EndTurn);
+            let stop_content = || {
+                if collector.text.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(collector.text.clone())
+                }
+            };
+            if turn >= turn_cap {
+                // Already in dedicated-fill-round territory — the
+                // top-of-loop gate above owns deciding whether ANOTHER
+                // round is owed. Record this turn's reply and defer.
+                messages.push(json!({ "role": "assistant", "content": stop_content() }));
+                continue;
+            }
+            // Model voluntarily stopped, still within ordinary budget. Try
+            // one dedicated fill round for any committed screen that's
+            // still eligible — NOT gated by remaining turn budget (only by
+            // the per-screen cap above).
+            let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
+            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            if !eligible.is_empty() {
+                spend_fill_round(&mut fill_attempts, &eligible);
+                messages.push(json!({ "role": "assistant", "content": stop_content() }));
+                messages.push(
+                    json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
+                );
+                continue; // Does not count against `turn`.
+            }
             // Normal model-stop exit: run the Step-4 structural backstop ONCE
-            // over the assembled doc BEFORE the Done delta.
-            run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+            // over the assembled doc BEFORE the Done delta. Tier 3 — honest
+            // report — fires unconditionally if anything is still unfilled.
+            let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+            report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
             let _ = tx
                 .send(ChatDelta::Done {
                     stop_reason: reason,
                 })
                 .await;
             return Ok(true);
+        }
+        if turn < turn_cap {
+            turn += 1;
         }
 
         let tool_calls_json: Vec<Value> = calls
@@ -784,16 +1015,6 @@ pub async fn run_openai_agent_loop(
             }
         }
     }
-
-    // Turn cap reached — run the Step-4 structural backstop ONCE over whatever
-    // the truncated turn assembled.
-    run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
-    let _ = tx
-        .send(ChatDelta::Done {
-            stop_reason: StopReason::MaxTokens,
-        })
-        .await;
-    Ok(true)
 }
 
 #[cfg(test)]

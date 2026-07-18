@@ -126,6 +126,7 @@ fn end_to_end_pump_round_trips_apply_and_progress_via_actor_channels() {
                 subtask: None,
             }],
             total_nodes: 3,
+            unfilled_screens: Vec::new(),
         })));
         // Hold the sink so its channel survives until the UI has
         // had a chance to drain (the test polls until `Done`).
@@ -234,6 +235,7 @@ fn pump_progress_captures_failed_subtask_specs_for_manual_retry() {
                 subtask: Some(subtask),
             }],
             total_nodes: 0,
+            unfilled_screens: Vec::new(),
         })));
         sink
     });

@@ -68,6 +68,7 @@ pub mod role_post_pass;
 pub mod run;
 pub mod scaffold;
 pub mod screen_groups;
+pub(crate) mod section_shell_fill_repair;
 pub(crate) mod sidebar_archetype;
 pub mod spacing_repair;
 pub mod spawn_concurrent;
@@ -76,6 +77,7 @@ pub mod stub_repair;
 pub mod subagent;
 pub mod table_repair;
 pub mod tree_heuristics;
+pub mod unfilled_screens;
 pub(crate) mod unify_shared_nav;
 pub mod wire_screen_navigation;
 

@@ -57,6 +57,34 @@ fn labels_match_exact_and_prefix() {
     assert!(!labels_match("", "profile"));
 }
 
+/// Measured (`0718-1-glm-1.op`): screen names carry a brand prefix
+/// ("Wander — Trips" / "Wander — Saved") — neither normalized form is a
+/// prefix of the other ("trips" vs "wandertrips"), so every one of the
+/// document's nav tabs (bare "Trips" / "Saved" labels) went unbound. The
+/// token fallback must recover this WITHOUT opening the door to a bare
+/// substring match.
+#[test]
+fn labels_match_token_fallback_for_brand_prefixed_names() {
+    // The exact failure this was built from: brand-prefixed screen name,
+    // bare tab label, either argument order.
+    assert!(labels_match("Trips", "Wander — Trips"));
+    assert!(labels_match("Wander — Trips", "Trips"));
+    assert!(labels_match("Saved", "Wander — Saved"));
+
+    // A bare SUBSTRING must never count as a token — "Roadtrips" tokenizes
+    // to a single ["roadtrips"] token, which never equals "trips".
+    assert!(!labels_match("Trips", "Roadtrips"));
+    assert!(!labels_match("Trips", "Wander — Roadtrips"));
+
+    // Multi-word tab label: "Your Library" should match a brand-prefixed
+    // screen sharing either whole word as a token.
+    assert!(labels_match("Your Library", "Wander — Library"));
+    assert!(labels_match("Library", "Wander — Your Library"));
+
+    // Still ambiguous when nothing at all is shared.
+    assert!(!labels_match("Explore", "Wander — Trips"));
+}
+
 /// Contract point 1: the navigate body must be a Tier-1 string-LITERAL
 /// expression source — a bare `/path` lexes as division and fails to
 /// compile (`Expression::compile`). The correct wire form is exactly the
@@ -285,6 +313,72 @@ fn mismatched_tab_label_is_not_bound() {
     // must stay unbound rather than guess.
     let settings_tab = find_by_id(state.active_children(), "tab-settings-in-home").unwrap();
     assert!(node_events_json(settings_tab).is_none());
+}
+
+/// De-identified reproduction of `0718-1-glm-1.op`: three screens already
+/// spread apart (x = 0 / 430 / 860, non-overlapping), each brand-prefixed
+/// ("Wander — Trips" etc.), one bottom nav with bare tab labels ("Trips" /
+/// "Saved" / "Explore" / "Profile" — the last two have no matching screen
+/// in this 3-screen document, matching the real file). Before the token
+/// fallback this bound ZERO tabs.
+fn brand_prefixed_three_screen_doc() -> &'static str {
+    r#"{"version":"1.0","children":[
+        {"type":"frame","id":"trips","name":"Wander — Trips","x":0,"y":0,"width":390,"height":844,
+         "layout":"vertical","children":[
+            {"type":"frame","id":"nav-trips","name":"Tab Bar","role":"bottom-tab-bar",
+             "width":"fill_container","height":72,"layout":"horizontal","children":[
+                {"type":"frame","id":"tab-trips","width":80,"height":40,
+                 "children":[{"type":"text","id":"t1","content":"Trips"}]},
+                {"type":"frame","id":"tab-saved","width":80,"height":40,
+                 "children":[{"type":"text","id":"t2","content":"Saved"}]},
+                {"type":"frame","id":"tab-explore","width":80,"height":40,
+                 "children":[{"type":"text","id":"t3","content":"Explore"}]},
+                {"type":"frame","id":"tab-profile","width":80,"height":40,
+                 "children":[{"type":"text","id":"t4","content":"Profile"}]}
+             ]}
+         ]},
+        {"type":"frame","id":"destination","name":"Wander — Destination","x":430,"y":0,"width":390,"height":844,
+         "layout":"vertical","children":[]},
+        {"type":"frame","id":"saved","name":"Wander — Saved","x":860,"y":0,"width":390,"height":844,
+         "layout":"vertical","children":[]}
+    ]}"#
+}
+
+#[test]
+fn brand_prefixed_screen_names_get_their_matching_tabs_bound() {
+    let mut state = state_from_json(brand_prefixed_three_screen_doc());
+    run_pass(&mut state);
+
+    let trips_path = frame_screen(find_by_id(state.active_children(), "trips").unwrap())
+        .unwrap()
+        .to_string();
+    let saved_path = frame_screen(find_by_id(state.active_children(), "saved").unwrap())
+        .unwrap()
+        .to_string();
+
+    let trips_tab = find_by_id(state.active_children(), "tab-trips").unwrap();
+    assert_eq!(
+        node_events_json(trips_tab).unwrap()["onTap"][0]["replace"],
+        serde_json::json!(format!("\"{trips_path}\"")),
+        "\"Trips\" must bind to \"Wander — Trips\" via the token fallback"
+    );
+    let saved_tab = find_by_id(state.active_children(), "tab-saved").unwrap();
+    assert_eq!(
+        node_events_json(saved_tab).unwrap()["onTap"][0]["replace"],
+        serde_json::json!(format!("\"{saved_path}\"")),
+        "\"Saved\" must bind to \"Wander — Saved\" via the token fallback"
+    );
+
+    // "Explore" / "Profile" have no matching screen in this 3-screen
+    // document (same as the real file) — must stay unbound, not guess.
+    let explore_tab = find_by_id(state.active_children(), "tab-explore").unwrap();
+    assert!(node_events_json(explore_tab).is_none());
+    let profile_tab = find_by_id(state.active_children(), "tab-profile").unwrap();
+    assert!(node_events_json(profile_tab).is_none());
+
+    // Destination (a push-style detail screen, no bottom nav of its own)
+    // still gets tagged even though it has nothing to bind.
+    assert!(frame_screen(find_by_id(state.active_children(), "destination").unwrap()).is_some());
 }
 
 #[test]

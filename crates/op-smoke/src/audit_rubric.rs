@@ -490,6 +490,7 @@ mod tests {
             root_frame_id: "root".to_string(),
             total_nodes: subtasks.iter().map(|s| s.node_count).sum(),
             subtasks,
+            unfilled_screens: Vec::new(),
         }
     }
 

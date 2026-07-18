@@ -352,6 +352,18 @@ pub struct ChatToolResult {
 /// [`ChatToolExecutor::finalize`].
 pub const LOOP_FINALIZE_OP: &str = "__loop_finalize";
 
+/// Promise-delivery snapshot: every top-level "screen" the run committed to
+/// (`committed`, filled or not) alongside the subset still empty (`unfilled`,
+/// always a subset of `committed`). Carries enough for the loop to build the
+/// "you committed N screens (A/B/C); X is still empty" contract line, not
+/// just a bare unfilled-names list — a model is more likely to act on an
+/// explicit broken promise than a generic "fill it now".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnfilledScreensReport {
+    pub committed: Vec<String>,
+    pub unfilled: Vec<String>,
+}
+
 pub trait ChatToolExecutor: Send + Sync {
     fn execute(&self, name: &str, args_json: &str) -> ChatToolResult;
 
@@ -367,7 +379,25 @@ pub trait ChatToolExecutor: Send + Sync {
     /// channel so the host can call `op_orchestrator::apply_loop_finalize`
     /// against the live document. Scripted / read-only test executors and any
     /// non-design tool executor inherit the no-op and are unaffected.
-    fn finalize(&self) {}
+    ///
+    /// Returns the promise-delivery report AFTER finalize ran and any still-
+    /// unfilled screens got marked on the canvas — the loop's unconditional
+    /// honest-report tier reads `unfilled` to append a transcript line. Empty
+    /// for every executor that doesn't own a live document.
+    fn finalize(&self) -> UnfilledScreensReport {
+        UnfilledScreensReport::default()
+    }
+
+    /// Cheap, read-only promise-delivery check — same detector as
+    /// [`Self::finalize`] but WITHOUT marking the canvas or otherwise
+    /// mutating the document. The loop calls this whenever it's deciding
+    /// whether a dedicated fill round is owed (at its model-stop exit, and
+    /// again once its ordinary turn budget is exhausted) — a still-eligible
+    /// screen is worth one more round instead of immediately branding it
+    /// "(unfilled)". The default no-op mirrors [`Self::finalize`]'s.
+    fn check_unfilled_screens(&self) -> UnfilledScreensReport {
+        UnfilledScreensReport::default()
+    }
 }
 
 /// Test double — replays a fixed delta script. Lets the chat widget

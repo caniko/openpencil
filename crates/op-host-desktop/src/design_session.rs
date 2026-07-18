@@ -434,6 +434,20 @@ fn apply_progress(msg: &mut ChatMessage, progress: &[Progress], locale: Locale) 
                 ChatActivityStatus::Done,
                 Some(op_i18n::translate(locale, "ai.designProgress.detail.standardPath").into()),
             ),
+            // "承诺-交付" honest report — not translated, same diagnostic
+            // confirmation-line treatment as GeometryEcho above. The canvas
+            // itself already carries the " (unfilled)" name suffix
+            // (`unfilled_screens::mark_unfilled_screens`); this line is the
+            // transcript-side half so the user sees it without having to
+            // scroll the layer panel.
+            Progress::UnfilledScreens { names } => append_narration(
+                msg,
+                &format!(
+                    "• {} screen(s) left unfilled: {}",
+                    names.len(),
+                    names.join(", ")
+                ),
+            ),
         };
     }
     changed

@@ -14,14 +14,21 @@ use std::time::Duration;
 use super::*;
 use crate::chat_runtime::shared_runtime;
 use base64::Engine as _;
-use op_ai::chat_provider::{ChatToolDef, ChatToolExecutor, ChatToolResult};
+use op_ai::chat_provider::{ChatToolDef, ChatToolExecutor, ChatToolResult, UnfilledScreensReport};
 
 /// Executor double — records calls + loop-finalize invocations, replays a
 /// fixed result.
 struct ScriptedExecutor {
     calls: Mutex<Vec<(String, String)>>,
     finalize_calls: std::sync::atomic::AtomicUsize,
+    unfilled_check_calls: std::sync::atomic::AtomicUsize,
     results: Mutex<VecDeque<ChatToolResult>>,
+    /// Scripted `check_unfilled_screens` return values, popped in call
+    /// order; once exhausted, further calls return the default (empty)
+    /// report — the default for every test that never scripts this.
+    unfilled_checks: Mutex<VecDeque<UnfilledScreensReport>>,
+    /// Scripted `finalize` return values, popped the same way.
+    unfilled_finalizes: Mutex<VecDeque<UnfilledScreensReport>>,
 }
 
 impl ScriptedExecutor {
@@ -33,6 +40,7 @@ impl ScriptedExecutor {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
             finalize_calls: std::sync::atomic::AtomicUsize::new(0),
+            unfilled_check_calls: std::sync::atomic::AtomicUsize::new(0),
             results: Mutex::new(
                 contents
                     .iter()
@@ -42,6 +50,8 @@ impl ScriptedExecutor {
                     })
                     .collect(),
             ),
+            unfilled_checks: Mutex::new(VecDeque::new()),
+            unfilled_finalizes: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -53,6 +63,38 @@ impl ScriptedExecutor {
     fn finalizes(&self) -> usize {
         self.finalize_calls
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many times the loop ran the cheap read-only promise-delivery
+    /// probe (`check_unfilled_screens`).
+    fn unfilled_checks(&self) -> usize {
+        self.unfilled_check_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Queue one scripted `check_unfilled_screens` return value.
+    fn with_unfilled_check(self: Arc<Self>, committed: &[&str], unfilled: &[&str]) -> Arc<Self> {
+        self.unfilled_checks
+            .lock()
+            .unwrap()
+            .push_back(report_of(committed, unfilled));
+        self
+    }
+
+    /// Queue one scripted `finalize` return value.
+    fn with_unfilled_finalize(self: Arc<Self>, committed: &[&str], unfilled: &[&str]) -> Arc<Self> {
+        self.unfilled_finalizes
+            .lock()
+            .unwrap()
+            .push_back(report_of(committed, unfilled));
+        self
+    }
+}
+
+fn report_of(committed: &[&str], unfilled: &[&str]) -> UnfilledScreensReport {
+    UnfilledScreensReport {
+        committed: committed.iter().map(|s| s.to_string()).collect(),
+        unfilled: unfilled.iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -70,9 +112,24 @@ impl ChatToolExecutor for ScriptedExecutor {
         }
     }
 
-    fn finalize(&self) {
+    fn finalize(&self) -> UnfilledScreensReport {
         self.finalize_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.unfilled_finalizes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default()
+    }
+
+    fn check_unfilled_screens(&self) -> UnfilledScreensReport {
+        self.unfilled_check_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.unfilled_checks
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default()
     }
 }
 
@@ -163,8 +220,7 @@ fn get_screenshot_tool_def() -> ChatToolDef {
 
 /// A 1×1 transparent PNG, base64-encoded — stands in for a rendered design
 /// so the tests can decode it back and prove it round-trips through the wire.
-const TINY_PNG_B64: &str =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const SECOND_TINY_PNG_B64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl9sAAAAASUVORK5CYII=";
 
@@ -780,6 +836,201 @@ fn openai_loop_keeps_only_latest_screenshot_without_dropping_user_intent() {
         wire.contains("call_shot_2"),
         "latest tool call is preserved"
     );
+}
+
+// ── "承诺-交付" invariant: dedicated fill-round budget + tier-3 honest report ──
+// Budget only guards a runaway retry avalanche — it must never itself be the
+// reason a promised screen ships empty (user policy upgrade, 2026-07-18).
+// Dedicated fill rounds are therefore exempt from `max_turns`; only a
+// per-screen cap (`FILL_BUDGET_MAX_ROUNDS_PER_SCREEN = 2`) stops the SAME
+// screen from being nudged forever.
+
+#[test]
+fn model_stop_with_budget_left_gets_a_fill_round_then_reports_nothing_once_filled() {
+    // Turn 1: model stops without calling any tool (calls.is_empty()) while
+    // budget remains (max_turns: 3). The cheap check finds "Saved" unfilled
+    // → the loop injects one dedicated fill round instead of finalizing
+    // immediately. Turn 2: model stops again; this time the check reports
+    // nothing left unfilled (the fill round "worked") → straight to
+    // finalize, which also finds nothing left.
+    let (base, req_rx) = serve_sse_script(vec![anthropic_text_turn(), anthropic_text_turn()]);
+    let executor = ScriptedExecutor::ok(r#"{"success":true,"data":{}}"#)
+        .with_unfilled_check(&["Trips", "Destination", "Saved"], &["Saved"])
+        .with_unfilled_check(&["Trips", "Destination", "Saved"], &[]);
+    let cfg = AgentLoopConfig {
+        url: format!("{base}/v1/messages"),
+        api_key: "sk-test".into(),
+        model: "claude-test".into(),
+        system_prompt: "You are a design editor.".into(),
+        history: Vec::new(),
+        user_prompt: "build the 3-screen app".into(),
+        max_output_tokens: 512,
+        tools: vec![update_node_tool_def()],
+        executor: executor.clone(),
+        max_turns: 3,
+        finalize_on_exit: true,
+        disable_thinking: false,
+        dial_policy: crate::provider_dial::EndpointDialPolicy::Trusted,
+    };
+    let (outcome, deltas) = run_loop_collect(cfg, true);
+    assert_eq!(outcome, Ok(true));
+
+    // One fill-round probe finds it, a second confirms it's fixed; finalize
+    // still runs exactly once at the real exit.
+    assert_eq!(executor.unfilled_checks(), 2);
+    assert_eq!(
+        executor.finalizes(),
+        1,
+        "finalize still runs exactly once, at the real exit"
+    );
+
+    // The fill round's contract line — the FULL commitment, not just the
+    // gap — actually rode the follow-up request as a real turn.
+    let _first = req_rx.recv().expect("first request captured");
+    let second = req_rx
+        .recv()
+        .expect("fill-round follow-up request captured");
+    assert!(
+        second.contains("You committed 3 screens (Trips/Destination/Saved)")
+            && second.contains("Saved is still empty")
+            && second.contains("Complete it before finishing"),
+        "the fill round's contract line must state the full commitment, got: {second}"
+    );
+
+    // Nothing left unfilled after the fill round → no tier-3 report line.
+    assert!(
+        !deltas
+            .iter()
+            .any(|d| matches!(d, ChatDelta::TextDelta(s) if s.contains("left unfilled"))),
+        "a screen the fill round filled must not also be reported as unfilled"
+    );
+    assert!(matches!(
+        deltas.last(),
+        Some(ChatDelta::Done {
+            stop_reason: StopReason::EndTurn
+        })
+    ));
+}
+
+#[test]
+fn model_stop_repeatedly_failing_the_same_screen_is_capped_then_honestly_reported() {
+    // The model voluntarily stops 3 times in a row, and "Saved" is STILL
+    // unfilled every time — the per-screen cap (2 dedicated rounds) must
+    // stop trying after the 2nd nudge and accept the failure on the 3rd
+    // check, rather than nudging forever. Turn budget (max_turns: 5) is
+    // deliberately generous so ONLY the per-screen cap — not the ordinary
+    // turn budget — is what ends the retrying.
+    let (base, _req_rx) = serve_sse_script(vec![
+        anthropic_text_turn(),
+        anthropic_text_turn(),
+        anthropic_text_turn(),
+    ]);
+    let executor = ScriptedExecutor::ok(r#"{"success":true,"data":{}}"#)
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_finalize(&["Saved"], &["Saved"]);
+    let cfg = AgentLoopConfig {
+        url: format!("{base}/v1/messages"),
+        api_key: "sk-test".into(),
+        model: "claude-test".into(),
+        system_prompt: "You are a design editor.".into(),
+        history: Vec::new(),
+        user_prompt: "build the 3-screen app".into(),
+        max_output_tokens: 512,
+        tools: vec![update_node_tool_def()],
+        executor: executor.clone(),
+        max_turns: 5,
+        finalize_on_exit: true,
+        disable_thinking: false,
+        dial_policy: crate::provider_dial::EndpointDialPolicy::Trusted,
+    };
+    let (outcome, deltas) = run_loop_collect(cfg, true);
+    assert_eq!(outcome, Ok(true));
+
+    // 3 checks: round 1 (eligible, nudge), round 2 (still eligible, nudge),
+    // round 3 (attempts == cap, no longer eligible → stop trying).
+    assert_eq!(
+        executor.unfilled_checks(),
+        3,
+        "the per-screen cap, not the ordinary turn budget, is what stops the retrying here"
+    );
+    assert_eq!(executor.finalizes(), 1);
+
+    let report = deltas.iter().find_map(|d| match d {
+        ChatDelta::TextDelta(s) if s.contains("left unfilled") => Some(s.clone()),
+        _ => None,
+    });
+    assert!(
+        report.is_some_and(|s| s.contains("Saved")),
+        "a screen still unfilled after exhausting its dedicated fill budget must be reported by name, got: {deltas:?}"
+    );
+}
+
+#[test]
+fn turn_cap_exhausted_still_gets_dedicated_fill_rounds_before_reporting() {
+    // The model calls a tool on every turn until the ordinary budget
+    // (max_turns: 2) is exhausted — the 0718-1-glm-1 incident's shape. Per
+    // the "budget only guards runaway" policy, running out of ordinary
+    // budget must NOT itself be the reason "Saved" ships empty: the loop
+    // still owes it up to 2 dedicated fill rounds (uncounted against
+    // max_turns) before accepting the failure and reporting honestly.
+    let (base, req_rx) = serve_sse_script(vec![
+        anthropic_tool_use_turn(), // turn 1/2 — normal budget
+        anthropic_tool_use_turn(), // turn 2/2 — normal budget exhausted
+        anthropic_text_turn(),     // dedicated fill round 1 (uncounted)
+        anthropic_text_turn(),     // dedicated fill round 2 (uncounted)
+    ]);
+    let executor = ScriptedExecutor::ok(r#"{"success":true,"data":{}}"#)
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_check(&["Saved"], &["Saved"])
+        .with_unfilled_finalize(&["Saved"], &["Saved"]);
+    let cfg = AgentLoopConfig {
+        url: format!("{base}/v1/messages"),
+        api_key: "sk-test".into(),
+        model: "claude-test".into(),
+        system_prompt: String::new(),
+        history: Vec::new(),
+        user_prompt: "build the 3-screen app".into(),
+        max_output_tokens: 128,
+        tools: vec![update_node_tool_def()],
+        executor: executor.clone(),
+        max_turns: 2,
+        finalize_on_exit: true,
+        disable_thinking: false,
+        dial_policy: crate::provider_dial::EndpointDialPolicy::Trusted,
+    };
+    let (outcome, deltas) = run_loop_collect(cfg, true);
+    assert_eq!(outcome, Ok(true));
+
+    // 2 real tool-call turns consumed the ordinary budget, THEN 2 more
+    // requests went out as dedicated fill rounds (uncounted) before the
+    // per-screen cap finally stopped the retrying.
+    assert_eq!(executor.calls().len(), 2, "the 2 ordinary tool-call turns");
+    for _ in 0..4 {
+        req_rx
+            .recv()
+            .expect("all 4 requests, including the 2 dedicated fill rounds, went out");
+    }
+    assert_eq!(
+        executor.unfilled_checks(),
+        3,
+        "a turn-cap exit must still spend its dedicated fill-round budget, not skip straight to reporting"
+    );
+    assert_eq!(executor.finalizes(), 1);
+    assert!(
+        deltas
+            .iter()
+            .any(|d| matches!(d, ChatDelta::TextDelta(s) if s.contains("left unfilled") && s.contains("Saved"))),
+        "a run that exhausts its dedicated fill rounds without success must still get the honest report"
+    );
+    assert!(matches!(
+        deltas.last(),
+        Some(ChatDelta::Done {
+            stop_reason: StopReason::MaxTokens
+        })
+    ));
 }
 
 #[test]

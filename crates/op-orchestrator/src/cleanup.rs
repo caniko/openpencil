@@ -1397,6 +1397,14 @@ pub fn run_cleanup_passes(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_
         strip_decorative_filled_strokes(sink, rid);
         crate::radial_repair::repair_radial_stacks(sink, rid);
         crate::stub_repair::remove_empty_decorated_stubs(sink, rid);
+        // A section's header row whose second child is the ENTIRE content
+        // body (not a chevron/badge), with the body redundantly repeating
+        // the header's own title as its own first child — the loop's
+        // freeform fill step drew a title the section already had and
+        // misnested the body as the header's flex sibling instead of the
+        // header's own sibling. Runs before geometry validation so it sees
+        // the corrected tree, not the pre-repair one.
+        crate::section_shell_fill_repair::repair_section_shell_fill_ownership(sink, rid);
         // Geometry-driven validation LOOP: run the REAL jian layout, detect +
         // fix what the resolved rects prove wrong (table columns overflowing
         // their row, fill containers collapsed to 0 height by a hugging ancestor

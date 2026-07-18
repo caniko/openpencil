@@ -138,7 +138,16 @@ fn pump_with_channel_interleave(
         // MiniPlayer survived an aborted run, test0711-22).
         if let Some(session) = current.as_ref() {
             if session.is_design_loop() && !session.loop_finalized() {
-                op_orchestrator::apply_loop_finalize(host.editor_state_mut());
+                let state = host.editor_state_mut();
+                op_orchestrator::apply_loop_finalize(state);
+                // Same promise-delivery marking the normal finalize op gets
+                // (see `execute_tool_requests` below) — an early-death run
+                // (429 / quota / abort) is exactly the case that must not
+                // ship a silently blank scaffolded screen either. There is
+                // no live transcript to append the tier-3 report line to at
+                // this point (the session is already tearing down), so the
+                // canvas name suffix is this path's honest-delivery signal.
+                op_orchestrator::unfilled_screens::finalize_and_mark_unfilled_screens(state);
                 host.mark_editor_state_dirty();
             }
         }
@@ -204,11 +213,46 @@ fn execute_tool_requests(
                 session.defer_tool_request(req);
                 continue;
             }
-            op_orchestrator::apply_loop_finalize(state);
-            session.mark_loop_finalized();
-            changed = true;
+            // `checkOnly: true` is the promise-delivery invariant's tier-2
+            // probe (`ChatToolExecutor::check_unfilled_screens`) — read-only,
+            // no `apply_loop_finalize`, no canvas marking, no
+            // `mark_loop_finalized` (the loop may still send the real
+            // finalize op after this). Absent/malformed `checkOnly` defaults
+            // to the real finalize path, matching every op sent before this
+            // flag existed.
+            let check_only = serde_json::from_str::<serde_json::Value>(&req.args_json)
+                .ok()
+                .and_then(|v| v.get("checkOnly").and_then(|b| b.as_bool()))
+                .unwrap_or(false);
+            let unfilled = if check_only {
+                op_orchestrator::unfilled_screens::detect_unfilled_screens(state)
+                    .into_iter()
+                    .map(|hit| hit.name)
+                    .collect::<Vec<_>>()
+            } else {
+                op_orchestrator::apply_loop_finalize(state);
+                let names =
+                    op_orchestrator::unfilled_screens::finalize_and_mark_unfilled_screens(state);
+                session.mark_loop_finalized();
+                changed = true;
+                names
+            };
+            // The full committed-screen roster (filled or not) — read
+            // AFTER any finalize-side mutation above, so it reflects the
+            // same document `unfilled` was computed against. Lets the loop
+            // build the "you committed N screens (A/B/C); X is still empty"
+            // contract line instead of a bare unfilled-names nudge.
+            let committed = op_orchestrator::unfilled_screens::list_screen_candidates(state)
+                .into_iter()
+                .map(|hit| hit.name)
+                .collect::<Vec<_>>();
             let _ = req.ack.send(ChatToolResult {
-                content: serde_json::json!({ "success": true }).to_string(),
+                content: serde_json::json!({
+                    "success": true,
+                    "committed": committed,
+                    "unfilled": unfilled,
+                })
+                .to_string(),
                 is_error: false,
             });
             continue;

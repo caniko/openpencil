@@ -88,6 +88,7 @@ fn design_session_drains_progress_and_command_requests() {
                 subtask: None,
             }],
             total_nodes: 2,
+            unfilled_screens: Vec::new(),
         })))
         .expect("done");
 

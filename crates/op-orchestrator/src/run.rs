@@ -717,6 +717,21 @@ impl Orchestrator {
             );
         }
 
+        // -- 阶段 6:承诺-交付不变量(classic 路径的诚实上报,与 loop 路径共享检测器)--
+        // Runs AFTER cleanup + validation so a screen a structural pass or
+        // the vision loop still touched is judged on its FINAL state, not
+        // a stale mid-run snapshot. `mark_unfilled_screens` labels the
+        // canvas itself (not just this summary) — a user scrolling the
+        // layer panel sees it even without reading `RunSummary`.
+        let unfilled_hits = crate::unfilled_screens::detect_unfilled_screens(sink.state());
+        let unfilled_screens: Vec<String> = unfilled_hits.iter().map(|h| h.name.clone()).collect();
+        if !unfilled_hits.is_empty() {
+            crate::unfilled_screens::mark_unfilled_screens(sink, &unfilled_hits);
+            on_progress(Progress::UnfilledScreens {
+                names: unfilled_screens.clone(),
+            });
+        }
+
         let total_nodes = outcomes.iter().map(|o| o.node_count).sum();
         Ok(RunSummary {
             // First surviving root is the "primary" root_frame_id — mirrors
@@ -725,6 +740,7 @@ impl Orchestrator {
             root_frame_id: root_ids.first().cloned().unwrap_or_default(),
             subtasks: outcomes,
             total_nodes,
+            unfilled_screens,
         })
     }
 }

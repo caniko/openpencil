@@ -8,8 +8,9 @@
 //! (`batch_design` / `get_screenshot` / …) over a real
 //! `/chat/completions` SSE stream, the host executes each call against a
 //! live `EditorState`, and the result rides a follow-up request — looping
-//! until the model stops calling tools or the production turn cap
-//! (`MAX_TOOL_TURNS = 20`) is reached.
+//! until the model stops calling tools or the production design-loop turn
+//! cap (`DESIGN_LOOP_MAX_TURNS = 28`, since `build_design_provider` below
+//! chains `.with_loop_finalize()`) is reached.
 //!
 //! ## What is reused vs. new
 //!
@@ -18,7 +19,7 @@
 //!
 //! - **Loop transport** — `ConfiguredBuiltinProvider::send()`
 //!   (`op_host_services::chat_builtin_http`) which internally builds an
-//!   `AgentLoopConfig { max_turns: MAX_TOOL_TURNS, … }` and runs
+//!   `AgentLoopConfig { max_turns: DESIGN_LOOP_MAX_TURNS, … }` and runs
 //!   `run_openai_agent_loop` for the `OpenAiCompat` kind, spawned on the
 //!   crate's global `shared_runtime()`. `send()` returns a *blocking*
 //!   iterator; draining it to exhaustion blocks the caller until the loop
@@ -55,7 +56,7 @@ use std::sync::{Arc, Mutex};
 
 use op_ai::chat_provider::{
     ChatDelta, ChatProvider, ChatRequest, ChatToolExecutor, ChatToolResult, EffortLevel,
-    ThinkingMode,
+    ThinkingMode, UnfilledScreensReport,
 };
 use op_editor_core::{BuiltinAgentConfig, BuiltinAgentKind, BuiltinAgentPresetKey, EditorState};
 use op_host_services::chat_builtin_http::ConfiguredBuiltinProvider;
@@ -150,14 +151,46 @@ impl ChatToolExecutor for HeadlessExecutor {
         result
     }
 
-    fn finalize(&self) {
+    fn finalize(&self) -> UnfilledScreensReport {
         let mut state = self
             .state
             .lock()
             .expect("EditorState mutex poisoned before finalize");
         op_orchestrator::apply_loop_finalize(&mut state);
+        let unfilled =
+            op_orchestrator::unfilled_screens::finalize_and_mark_unfilled_screens(&mut state);
+        let committed = op_orchestrator::unfilled_screens::list_screen_candidates(&state)
+            .into_iter()
+            .map(|hit| hit.name)
+            .collect::<Vec<_>>();
         if self.dump {
             eprintln!("[LOOP] finalize: apply_loop_finalize ran (Class-A structural backstop)");
+            if !unfilled.is_empty() {
+                eprintln!("[LOOP] finalize: unfilled screens left unfilled: {unfilled:?}");
+            }
+        }
+        UnfilledScreensReport {
+            committed,
+            unfilled,
+        }
+    }
+
+    fn check_unfilled_screens(&self) -> UnfilledScreensReport {
+        let state = self
+            .state
+            .lock()
+            .expect("EditorState mutex poisoned before check_unfilled_screens");
+        let unfilled = op_orchestrator::unfilled_screens::detect_unfilled_screens(&state)
+            .into_iter()
+            .map(|hit| hit.name)
+            .collect();
+        let committed = op_orchestrator::unfilled_screens::list_screen_candidates(&state)
+            .into_iter()
+            .map(|hit| hit.name)
+            .collect();
+        UnfilledScreensReport {
+            committed,
+            unfilled,
         }
     }
 }
@@ -293,7 +326,7 @@ pub fn run_loop(
 
     eprintln!(
         "[LOOP] starting agentic design loop (max_turns={})",
-        op_host_services::chat_canvas_tools::MAX_TOOL_TURNS
+        op_host_services::chat_builtin_http::DESIGN_LOOP_MAX_TURNS
     );
 
     // `send()` blocks the iterating thread until the loop ends. Drain every
