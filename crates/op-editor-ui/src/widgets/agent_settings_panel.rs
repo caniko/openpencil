@@ -49,9 +49,19 @@ pub(super) const SUB_FONT: f32 = 11.0;
 pub enum AgentSettingsPanelMode {
     Full,
     WebBuiltinOnly,
+    /// VS Code / Cursor custom-editor embed (`ui.embed == EmbedHost::VsCode`):
+    /// the dialog exposes only the MCP section (server info + CLI
+    /// integrations) — no built-in agent cards, CLI/ACP config, image
+    /// providers, or system/experimental settings paint or hit-test.
+    McpOnly,
 }
 
 impl AgentSettingsPanelMode {
+    /// Single enumeration point for the dialog's sections: both the
+    /// nav-strip paint (`paint_sidebar`) and every hit-test entry
+    /// point (`hit_test`, `nav_at`, `card_at`, `acp_card_at`,
+    /// `content_total_height`) walk this same slice, so gating here
+    /// keeps paint and hit-test in lockstep automatically.
     fn visible_tabs(self) -> &'static [AgentSettingsTab] {
         match self {
             AgentSettingsPanelMode::Full => &AgentSettingsTab::ALL,
@@ -60,6 +70,7 @@ impl AgentSettingsPanelMode {
                 AgentSettingsTab::Images,
                 AgentSettingsTab::System,
             ],
+            AgentSettingsPanelMode::McpOnly => &[AgentSettingsTab::Mcp],
         }
     }
 
@@ -67,12 +78,27 @@ impl AgentSettingsPanelMode {
         if self.visible_tabs().contains(&settings.tab) {
             settings.tab
         } else {
-            AgentSettingsTab::Agents
+            // Fall back to this mode's first visible tab rather than a
+            // hardcoded `Agents` — `McpOnly` never lists `Agents`, so the
+            // dialog must land on MCP directly when opened in embed.
+            self.visible_tabs()[0]
         }
     }
 
     fn shows_external_agents(self) -> bool {
         matches!(self, AgentSettingsPanelMode::Full)
+    }
+}
+
+/// Narrow `base` down to `McpOnly` when the editor is rendering inside the
+/// VS Code / Cursor embed, regardless of which panel flavor the host would
+/// otherwise request. Reads `ui.embed` — the same source `top_bar.rs` uses
+/// to relabel the settings chip to "MCP" for this embed.
+fn mode_for_ui(ui: &EditorUiState, base: AgentSettingsPanelMode) -> AgentSettingsPanelMode {
+    if ui.embed == op_editor_core::EmbedHost::VsCode {
+        AgentSettingsPanelMode::McpOnly
+    } else {
+        base
     }
 }
 
@@ -166,7 +192,7 @@ impl<'a> AgentSettingsPanel<'a> {
             theme: theme_for(&state.editor_ui),
             settings: state.editor_ui.agent_settings.clone(),
             now_ms,
-            mode: AgentSettingsPanelMode::Full,
+            mode: mode_for_ui(&state.editor_ui, AgentSettingsPanelMode::Full),
             ui: &state.editor_ui,
         }
     }
@@ -181,7 +207,7 @@ impl<'a> AgentSettingsPanel<'a> {
             theme: theme_for(&state.editor_ui),
             settings: state.editor_ui.agent_settings.clone(),
             now_ms,
-            mode: AgentSettingsPanelMode::WebBuiltinOnly,
+            mode: mode_for_ui(&state.editor_ui, AgentSettingsPanelMode::WebBuiltinOnly),
             ui: &state.editor_ui,
         }
     }
