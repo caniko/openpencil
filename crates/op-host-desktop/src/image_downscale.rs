@@ -6,9 +6,9 @@
 //! `src`, every `.op` save serializes it, and the canvas decodes it to
 //! a full-resolution GPU bitmap. Design work never needs more than a
 //! couple-thousand pixels on the longest edge, so we decode the source
-//! once, fit it inside [`MAX_EDGE`], and re-encode — opaque images as
-//! JPEG (small), images with alpha as PNG (lossless, keeps
-//! transparency). A genuinely heavy source whose pixel dimensions are
+//! once, fit it inside [`MAX_EDGE`], and re-encode — effectively
+//! opaque images as JPEG (small), images with real transparency as
+//! PNG (lossless, keeps alpha). A genuinely heavy source whose pixel dimensions are
 //! already within budget is still re-encoded (a bloated PNG photo
 //! recompresses to a fraction). Anything skia can't decode (SVG,
 //! corrupt bytes), already small enough, or that fails to shrink,
@@ -79,7 +79,11 @@ pub fn maybe_downscale(bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
 
     // Opaque source → JPEG (small); anything with alpha → PNG so
     // transparency survives (JPEG can't carry an alpha channel).
-    let (mime, encoded) = if src.is_opaque() {
+    // `is_opaque` only reflects the encoded alpha TYPE — Figma stores
+    // photos as PNG with a (fully-opaque) alpha channel, so also scan
+    // the scaled raster: if no pixel is actually translucent, JPEG is
+    // safe and roughly an order of magnitude smaller.
+    let (mime, encoded) = if src.is_opaque() || raster_is_fully_opaque(&scaled) {
         match scaled.encode(None, EncodedImageFormat::JPEG, JPEG_QUALITY) {
             Some(data) => ("image/jpeg", data),
             None => (
@@ -102,6 +106,25 @@ pub fn maybe_downscale(bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
     } else {
         None
     }
+}
+
+/// Whether every pixel of a raster image is fully opaque. Peeks the
+/// CPU pixels (our down-scale snapshot is always raster) and scans the
+/// alpha byte — N32 is 4 bytes/pixel with alpha at index 3 in both the
+/// RGBA and BGRA layouts. Returns `false` when pixels can't be peeked
+/// (conservative: keeps the lossless PNG path).
+fn raster_is_fully_opaque(image: &skia_safe::Image) -> bool {
+    let Some(pixmap) = image.peek_pixels() else {
+        return false;
+    };
+    let info = pixmap.info();
+    if info.bytes_per_pixel() != 4 {
+        return false;
+    }
+    let Some(bytes) = pixmap.bytes() else {
+        return false;
+    };
+    bytes.chunks_exact(4).all(|px| px[3] == 0xFF)
 }
 
 /// GIF magic — `GIF87a` / `GIF89a` both start `GIF`.
@@ -168,15 +191,34 @@ mod tests {
 
     #[test]
     fn an_oversized_image_is_downscaled_to_max_edge() {
-        // 4000px wide → must shrink to 2048 on the long edge. A PNG with
-        // an alpha channel re-encodes as PNG (lossless, keeps alpha).
+        // 4000px wide → must shrink to 2048 on the long edge. A PNG
+        // whose alpha channel is fully opaque (the Figma-photo case)
+        // re-encodes as JPEG — the channel carries no information.
         let png = solid(4000, 1000, EncodedImageFormat::PNG);
         let (mime, out) = maybe_downscale(&png).expect("oversized image downscales");
         let scaled = Image::from_encoded(Data::new_copy(&out)).expect("re-decodes");
         assert_eq!(scaled.width(), MAX_EDGE, "long edge clamps to MAX_EDGE");
         assert_eq!(scaled.height(), 512, "aspect ratio preserved");
         assert!(out.len() < png.len(), "downscale shrinks the payload");
-        assert_eq!(mime, "image/png", "alpha-channel source stays PNG");
+        assert_eq!(mime, "image/jpeg", "fully-opaque PNG re-encodes as JPEG");
+    }
+
+    #[test]
+    fn a_genuinely_transparent_image_stays_png() {
+        // Half-transparent fill → the alpha channel carries real data,
+        // so the re-encode must stay PNG to preserve it.
+        let mut surface = surfaces::raster_n32_premul((4000, 1000)).expect("raster surface");
+        surface
+            .canvas()
+            .clear(skia_safe::Color::from_argb(128, 255, 0, 0));
+        let png = surface
+            .image_snapshot()
+            .encode(None, EncodedImageFormat::PNG, 100)
+            .expect("encode source")
+            .as_bytes()
+            .to_vec();
+        let (mime, _out) = maybe_downscale(&png).expect("oversized image downscales");
+        assert_eq!(mime, "image/png", "translucent pixels keep the PNG path");
     }
 
     #[test]
@@ -220,6 +262,55 @@ mod tests {
         still.push(0x10); // alpha flag only, no animation bit
         still.resize(64, 0);
         assert!(!is_animated_webp(&still), "static VP8X is not animated");
+    }
+
+    /// Manual diagnostics: apply `maybe_downscale` to every file in a
+    /// directory (`OP_DOWNSCALE_BENCH_DIR`) and print the outcome
+    /// distribution — used to tune the budgets against real imports.
+    #[test]
+    #[ignore = "manual bench — needs OP_DOWNSCALE_BENCH_DIR pointing at an image dir"]
+    fn downscale_dir_bench() {
+        let Ok(dir) = std::env::var("OP_DOWNSCALE_BENCH_DIR") else {
+            eprintln!("OP_DOWNSCALE_BENCH_DIR not set — skipping");
+            return;
+        };
+        let (mut n, mut before, mut after) = (0usize, 0usize, 0usize);
+        let (mut skipped, mut skipped_bytes) = (0usize, 0usize);
+        let (mut to_jpeg, mut to_png) = (0usize, 0usize);
+        let (mut jpeg_bytes, mut png_bytes) = (0usize, 0usize);
+        for entry in std::fs::read_dir(&dir).expect("readable dir") {
+            let path = entry.expect("dir entry").path();
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            n += 1;
+            before += bytes.len();
+            match maybe_downscale(&bytes) {
+                Some(("image/jpeg", out)) => {
+                    to_jpeg += 1;
+                    jpeg_bytes += out.len();
+                    after += out.len();
+                }
+                Some((_, out)) => {
+                    to_png += 1;
+                    png_bytes += out.len();
+                    after += out.len();
+                }
+                None => {
+                    skipped += 1;
+                    skipped_bytes += bytes.len();
+                    after += bytes.len();
+                }
+            }
+        }
+        eprintln!(
+            "downscale_dir_bench: {n} files {:.0}MB -> {:.0}MB | skipped {skipped} ({:.0}MB) | jpeg {to_jpeg} ({:.0}MB) | png {to_png} ({:.0}MB)",
+            before as f64 / 1e6,
+            after as f64 / 1e6,
+            skipped_bytes as f64 / 1e6,
+            jpeg_bytes as f64 / 1e6,
+            png_bytes as f64 / 1e6,
+        );
     }
 
     #[test]

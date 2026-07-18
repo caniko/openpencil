@@ -86,8 +86,22 @@ fn parse_path(path: &Path) -> Result<PreparedImport, String> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Figma Import");
-    let import = op_figma::parse_fig_binary(&bytes, file_name, op_figma::FigLayoutMode::Preserve)
-        .map_err(|e| e.to_string())?;
+    // Down-scale every referenced bitmap before it is embedded as
+    // base64 — an image-heavy `.fig` can carry hundreds of MB of
+    // full-resolution photos, which would otherwise bloat the
+    // document, the scene rebuild, and every paint-time decode. This
+    // is CPU raster work (decode/resample/encode); unlike LayoutScene
+    // text measurement it does not touch FontMgr, so it is safe on
+    // this worker thread.
+    let transform =
+        |bytes: &[u8]| crate::image_downscale::maybe_downscale(bytes).map(|(_mime, out)| out);
+    let import = op_figma::parse_fig_binary_with_images(
+        &bytes,
+        file_name,
+        op_figma::FigLayoutMode::Preserve,
+        Some(&transform),
+    )
+    .map_err(|e| e.to_string())?;
     let mut state = EditorState::from_document(import.document);
     state.editor_ui.preserve_authored_geometry = true;
     Ok(PreparedImport {
@@ -196,4 +210,40 @@ fn refresh_title(current_path: &Option<PathBuf>, window: Option<&winit::window::
         None => "OpenPencil".to_string(),
     };
     window.set_title(&title);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Manual large-file bench for the exact worker code path
+    /// (`parse_path`, including the down-scale transform). Point
+    /// `OP_FIG_BENCH` at a `.fig` file and run:
+    ///
+    /// ```sh
+    /// OP_FIG_BENCH=/path/to/big.fig \
+    ///   cargo test -p op-host-desktop --release fig_import_bench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "manual bench — needs OP_FIG_BENCH pointing at a local .fig"]
+    fn fig_import_bench() {
+        let Ok(path) = std::env::var("OP_FIG_BENCH") else {
+            eprintln!("OP_FIG_BENCH not set — skipping");
+            return;
+        };
+        let started = std::time::Instant::now();
+        let prepared = parse_path(Path::new(&path)).expect("bench file parses");
+        let elapsed = started.elapsed();
+        let json = serde_json::to_string(&prepared.state.doc).expect("serialize");
+        let mut value = serde_json::to_value(&prepared.state.doc).expect("to_value");
+        jian_ops_schema::image_table::externalize_images(&mut value);
+        let deduped = value.to_string();
+        eprintln!(
+            "fig_import_bench: parse+downscale {:.1}s, inline doc {:.1} MB, deduped save {:.1} MB, {} warnings",
+            elapsed.as_secs_f64(),
+            json.len() as f64 / 1e6,
+            deduped.len() as f64 / 1e6,
+            prepared.warnings.len(),
+        );
+    }
 }

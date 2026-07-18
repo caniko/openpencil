@@ -3102,6 +3102,7 @@ name = "op-cli"
 version = "0.8.1"
 dependencies = [
  "base64",
+ "jian-ops-schema",
  "op-ai-skills",
  "op-config-store",
  "op-figma",

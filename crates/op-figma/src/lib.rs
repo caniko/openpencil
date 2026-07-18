@@ -41,7 +41,8 @@ pub use node_mapper::{
 };
 
 use common::FigLayoutMode as LayoutMode;
-use image_resolver::resolve_image_blobs;
+use image_resolver::resolve_image_blobs_with;
+pub use image_resolver::ImageTransform;
 use jian_ops_schema::document::PenDocument;
 use jian_ops_schema::node::{
     ContainerProps, EllipseNode, FrameNode, GroupNode, LineNode, PathNode, PenNode, PenNodeBase,
@@ -109,6 +110,20 @@ pub fn parse_fig_binary(
     file_name: &str,
     layout_mode: FigLayoutMode,
 ) -> Result<FigImport, FigParseError> {
+    parse_fig_binary_with_images(bytes, file_name, layout_mode, None)
+}
+
+/// [`parse_fig_binary`] with an optional host [`ImageTransform`]
+/// applied to every referenced image blob before it is embedded as a
+/// base64 data URL. Hosts pass a down-scaling transform here so a
+/// large `.fig` (hundreds of MB of full-resolution bitmaps) enters
+/// the document at design resolution instead of camera resolution.
+pub fn parse_fig_binary_with_images(
+    bytes: &[u8],
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+    image_transform: Option<&ImageTransform<'_>>,
+) -> Result<FigImport, FigParseError> {
     if detect_kind(bytes) != FigFileKind::Binary {
         return Err(FigParseError::UnknownFormat);
     }
@@ -117,7 +132,12 @@ pub fn parse_fig_binary(
     let image_files = decoded.image_files.clone();
     let result = figma_all_pages_to_pen_document(decoded, file_name, layout_mode);
     let mut document = result.document;
-    resolve_image_blobs(&mut document, &result.image_blobs, &image_files);
+    resolve_image_blobs_with(
+        &mut document,
+        &result.image_blobs,
+        &image_files,
+        image_transform,
+    );
     Ok(FigImport {
         document,
         warnings: result.warnings,

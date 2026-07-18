@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use crate::common::FigLayoutMode;
 use crate::figma_types;
-use crate::image_resolver::resolve_image_blobs;
+use crate::image_resolver::resolve_image_blobs_with;
 use crate::node_mapper::{figma_node_changes_to_pen_nodes, FigmaClipboardResult};
 
 /// Decoded Figma HTML clipboard payload — the JSON `meta` text plus
@@ -128,7 +128,7 @@ pub fn figma_clipboard_to_nodes(buffer: &[u8], html: Option<&str>) -> FigmaClipb
 
     if !out.image_blobs.is_empty() || !image_files.is_empty() {
         let mut doc = build_doc_for_resolve(out.nodes.clone());
-        resolve_image_blobs(&mut doc, &out.image_blobs, &image_files);
+        resolve_image_blobs_with(&mut doc, &out.image_blobs, &image_files, None);
         out.nodes = extract_doc_children(doc);
     }
 
