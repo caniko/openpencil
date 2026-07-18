@@ -11,6 +11,15 @@ export function originOf(url: string): string {
   return new URL(url).origin;
 }
 
+/** Append the `embed=vscode` flag to an already-externalized editor URL.
+ *  Kept as plain string concatenation (never `vscode.Uri`): Uri.toString()
+ *  percent-encodes the query's "=" into "%3D", which the wasm-side
+ *  `EmbedHost::from_query` refuses by design. Tolerates a base that already
+ *  carries a query (e.g. tunnel tokens in remote scenarios). */
+export function appendEmbedQuery(base: string): string {
+  return `${base}${base.includes("?") ? "&" : "?"}embed=vscode`;
+}
+
 /** Phase 1: no iframe. On load it reports window.origin so the extension can
  *  spawn the daemon with the correct --allow-origin, then waits for the
  *  extension to replace the HTML with the full shell. */

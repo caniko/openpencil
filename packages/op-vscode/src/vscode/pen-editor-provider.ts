@@ -13,7 +13,7 @@ import { PenSession, type SessionHost } from "../session/pen-session";
 import type { SessionRegistry } from "../session/session-registry";
 import type { BridgeOutboundToPage } from "../protocol/bridge";
 import { encodeOutbound } from "../protocol/bridge";
-import { buildBootHtml, buildWebviewHtml } from "./webview-shell";
+import { appendEmbedQuery, buildBootHtml, buildWebviewHtml } from "./webview-shell";
 import { pickRestartSource, resolveDaemonBinary, type LatestDurable } from "./restart-source";
 import { isShellControl, parseShellReadyOrigin } from "./shell-messages";
 import { encodeFigBytes, figSaveTargetPath, isFigPath } from "./fig-source";
@@ -249,8 +249,13 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
   ): Promise<void> {
     const key = document.uri.fsPath;
     const nonce = makeNonce();
-    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`${client.baseUrl}/?embed=vscode`));
-    panel.webview.html = buildWebviewHtml({ iframeSrc: external.toString(), nonce });
+    // The embed flag is appended AFTER asExternalUri: putting it in the Uri
+    // makes toString() percent-encode the "=" ("?embed%3Dvscode"), which the
+    // wasm-side EmbedHost::from_query correctly refuses — the editor then
+    // silently renders full chrome inside the plugin.
+    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`${client.baseUrl}/`));
+    const iframeSrc = appendEmbedQuery(external.toString(true));
+    panel.webview.html = buildWebviewHtml({ iframeSrc, nonce });
 
     const host = this.makeHost(document, panel, watcherState);
     const session = new PenSession(host, client.handshake.token, document.bootJson);

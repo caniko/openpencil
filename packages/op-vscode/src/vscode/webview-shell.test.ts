@@ -1,5 +1,5 @@
-import { test, expect } from "bun:test";
-import { buildBootHtml, buildWebviewHtml, originOf } from "./webview-shell";
+import { describe, expect, test } from "bun:test";
+import { appendEmbedQuery, buildBootHtml, buildWebviewHtml, originOf } from "./webview-shell";
 
 test("originOf extracts scheme://host:port", () => {
   expect(originOf("http://127.0.0.1:45001/")).toBe("http://127.0.0.1:45001");
@@ -55,4 +55,18 @@ test("nonce is not reused across boot and full unless the caller reuses it", () 
   // nonces produce distinct script tags.
   expect(buildBootHtml("A")).toContain('nonce="A"');
   expect(buildWebviewHtml({ iframeSrc: "http://x.y:1/", nonce: "B" })).toContain('nonce="B"');
+});
+
+describe("appendEmbedQuery", () => {
+  test("appends ?embed=vscode to a bare externalized URL", () => {
+    expect(appendEmbedQuery("http://127.0.0.1:49793/")).toBe("http://127.0.0.1:49793/?embed=vscode");
+  });
+  test("appends with & when the base already has a query", () => {
+    expect(appendEmbedQuery("https://tunnel.example/x/?tkn=abc")).toBe(
+      "https://tunnel.example/x/?tkn=abc&embed=vscode",
+    );
+  });
+  test("never percent-encodes the equals sign", () => {
+    expect(appendEmbedQuery("http://127.0.0.1:1/")).not.toContain("%3D");
+  });
 });
