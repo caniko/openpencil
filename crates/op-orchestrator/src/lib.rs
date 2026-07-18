@@ -71,6 +71,7 @@ pub mod screen_groups;
 pub(crate) mod sidebar_archetype;
 pub mod spacing_repair;
 pub mod spawn_concurrent;
+pub(crate) mod spread_screen_roots;
 pub mod stub_repair;
 pub mod subagent;
 pub mod table_repair;

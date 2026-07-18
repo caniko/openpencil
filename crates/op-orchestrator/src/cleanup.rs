@@ -1450,6 +1450,18 @@ pub fn run_cleanup_passes(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_
     anchor_bottom_nav_last_for_all_roots(sink);
     crate::mobile_reflow::repair_mobile_trailing_nav_reflow_in_sink(sink);
 
+    // Multi-screen root position deconfliction: screen-shaped top-level
+    // roots that overlap because one or more never got a canvas position
+    // (loop path model didn't call `find_empty_space`, or any other
+    // producer skipped positioning) get spread into a left-to-right row.
+    // Runs BEFORE `unify_shared_nav` below — a document whose screens are
+    // still stacked on top of each other at diagnosis time reads (from a
+    // canvas screenshot) like duplicate nav bars crammed into one frame,
+    // but the roots are already correctly separated; they just need to
+    // stop overlapping before the passes below reason about "which screen
+    // owns which nav".
+    crate::spread_screen_roots::spread_overlapping_screen_roots(sink);
+
     // Cross-screen shared-chrome unification: each screen's independently
     // re-generated bottom-nav drifts in icons/labels (measured: Home screen
     // "Home/Search/Library/Premium" vs Library screen's own redraw
