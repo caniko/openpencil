@@ -1,0 +1,12 @@
+[package]
+name = "op-html"
+version.workspace = true
+edition = "2021"
+description = "HTML/CSS-subset importer: converts HTML into editable PenNode trees"
+license = "MIT"
+
+[dependencies]
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+base64 = "0.22"
+jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
