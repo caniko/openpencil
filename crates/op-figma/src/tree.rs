@@ -131,6 +131,11 @@ fn materialize(
     depth: u32,
 ) -> TreeNode {
     let figma = by_key.remove(key).unwrap_or(FigValue::Null);
+    // Children of the DOCUMENT root are the PAGE LIST — Figma shows
+    // pages ascending by `position` (first page = smallest). Every
+    // other container's children are layers, where descending
+    // position is the z-stacking order (first child topmost).
+    let pages_ascending = figma.get_str("type") == Some("DOCUMENT");
     let mut children = Vec::new();
     if depth < MAX_TREE_DEPTH {
         if let Some(child_keys) = children_of.get(key) {
@@ -138,7 +143,11 @@ fn materialize(
             sorted.sort_by(|a, b| {
                 let pa = by_key.get(*a).map(position_of).unwrap_or("");
                 let pb = by_key.get(*b).map(position_of).unwrap_or("");
-                pb.cmp(pa) // descending
+                if pages_ascending {
+                    pa.cmp(pb)
+                } else {
+                    pb.cmp(pa)
+                }
             });
             for ck in sorted {
                 children.push(materialize(ck, by_key, children_of, depth + 1));
@@ -263,6 +272,32 @@ mod tests {
         // Descending position → "b" (TEXT) first.
         assert_eq!(canvas.children[0].figma.get_str("type"), Some("TEXT"));
         assert_eq!(canvas.children[1].figma.get_str("type"), Some("RECTANGLE"));
+    }
+
+    /// Pages (DOCUMENT children) list ascending by position — the
+    /// order Figma's page panel shows — while layers inside a canvas
+    /// keep descending z-stack order (covered above). A descending
+    /// page sort shipped the page list reversed.
+    #[test]
+    fn document_pages_sort_ascending_by_position() {
+        let changes = vec![
+            node(0, "DOCUMENT", None, ""),
+            node(1, "CANVAS", Some(0), "b"),
+            node(2, "CANVAS", Some(0), "a"),
+            node(3, "CANVAS", Some(0), "c"),
+        ];
+        let tree = build_tree(&changes).expect("tree builds");
+        let positions: Vec<&str> = tree
+            .children
+            .iter()
+            .map(|c| {
+                c.figma
+                    .get("parentIndex")
+                    .and_then(|p| p.get_str("position"))
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(positions, ["a", "b", "c"], "page list ascends");
     }
 
     #[test]

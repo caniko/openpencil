@@ -514,7 +514,7 @@ fn solid_png_data_url(w: i32, h: i32, color: skia_safe::Color) -> String {
 fn export_renders_data_url_image_bitmaps() {
     let mut node = SceneNode::leaf("img", NodeKind::Rect);
     node.bounds = Rect::xywh(0.0, 0.0, 20.0, 20.0);
-    node.image_src = Some(solid_png_data_url(4, 4, skia_safe::Color::RED));
+    node.image_src = Some(solid_png_data_url(4, 4, skia_safe::Color::RED).into());
     // Loader placeholder fill — must NOT win over the bitmap.
     node.fill = Some(Color {
         r: 0.85,

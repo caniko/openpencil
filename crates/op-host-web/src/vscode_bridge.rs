@@ -270,7 +270,10 @@ fn handle_open_document<C: RepaintContext + 'static>(
     sync: &SharedSync,
     json: String,
 ) {
-    let doc: PenDocument = match serde_json::from_str(&json) {
+    // The extension sends the raw on-disk bytes — files saved by the
+    // desktop / CLI carry a deduplicated `images` table that must be
+    // resolved back to inline data URLs before the typed parse.
+    let doc: PenDocument = match parse_document_json(&json) {
         Ok(doc) => doc,
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!(
@@ -334,7 +337,7 @@ fn handle_snapshot<C: RepaintContext + 'static>(
     if !needs_push {
         post_to_parent(&event_snapshot_result(
             &request_id,
-            &doc_json,
+            &externalize_for_disk(&doc_json),
             pair.0,
             pair.1,
         ));
@@ -414,7 +417,7 @@ fn resolve_accept_remote<C: RepaintContext + 'static>(
     };
     post_to_parent(&event_snapshot_result(
         &request_id,
-        &doc_json,
+        &externalize_for_disk(&doc_json),
         pair.0,
         pair.1,
     ));
@@ -566,7 +569,7 @@ fn snapshot_push_attempt(
                 }
                 post_to_parent(&event_snapshot_result(
                     &request_id,
-                    &doc_json,
+                    &externalize_for_disk(&doc_json),
                     pair.0,
                     pair.1,
                 ));
@@ -715,6 +718,32 @@ fn read_triple<C: RepaintContext>(inner: &Rc<RefCell<C>>) -> Option<(u64, u64, b
     let b = inner.try_borrow().ok()?;
     let s = b.host().editor_state();
     Some((s.document_generation(), s.document_revision(), s.is_dirty()))
+}
+
+/// Parse `.op` JSON into a `PenDocument`, resolving a deduplicated
+/// `images` table (files saved by the desktop / CLI) during the typed
+/// parse so every reference shares one `Arc` per unique payload — the
+/// in-memory document keeps the inline form without per-reference
+/// payload copies.
+fn parse_document_json(json: &str) -> Result<PenDocument, serde_json::Error> {
+    let mut raw: serde_json::Value = serde_json::from_str(json)?;
+    let table = jian_ops_schema::image_table::take_image_table(&mut raw);
+    jian_ops_schema::node::image_src::intern::with_load_scope(table, || serde_json::from_value(raw))
+}
+
+/// Externalize shared image payloads in a document JSON string headed
+/// for DISK — the VS Code extension writes `snapshot-result` bytes to
+/// the `.op` file verbatim, so replies must be in the saved (deduped)
+/// form. Daemon push bodies stay inline; only reply payloads go
+/// through here. Unparsable input passes through unchanged.
+fn externalize_for_disk(doc_json: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(doc_json) {
+        Ok(mut v) => {
+            jian_ops_schema::image_table::externalize_images(&mut v);
+            v.to_string()
+        }
+        Err(_) => doc_json.to_owned(),
+    }
 }
 
 /// Serialize the live document + capture its `(generation, revision)` pair

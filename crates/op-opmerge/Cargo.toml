@@ -12,5 +12,6 @@ description = "Node-level three-way merge for OpenPencil .op documents"
 # instead of as opaque text. No git / IO dependency — it takes the
 # three document texts and returns the merged tree + node conflicts.
 [dependencies]
+jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }

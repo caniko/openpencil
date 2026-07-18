@@ -48,6 +48,31 @@ impl ThemeMode {
     }
 }
 
+/// Which embedding container the editor chrome renders inside. Each embed
+/// host hides the chrome its container already provides; `None` is the
+/// full standalone chrome. Unknown query values stay `None` so a newer
+/// page URL never breaks an older bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmbedHost {
+    #[default]
+    None,
+    /// VS Code / Cursor custom-editor webview (`?embed=vscode`).
+    VsCode,
+}
+
+impl EmbedHost {
+    /// Parse a `window.location.search` value (leading `?` optional).
+    pub fn from_query(search: &str) -> Self {
+        let trimmed = search.strip_prefix('?').unwrap_or(search);
+        for pair in trimmed.split('&') {
+            if pair.strip_prefix("embed=") == Some("vscode") {
+                return Self::VsCode;
+            }
+        }
+        Self::None
+    }
+}
+
 pub use crate::property_panel_state::{
     BooleanOp, ExportFormat, FillType, FlexLayout, ImageAdjustmentField, ImageFillMode,
     PaddingEditMode, PropertyTab,
@@ -1133,6 +1158,8 @@ pub struct EditorUiState {
     /// session the widget layer cannot reach), so the actual `close_tab` +
     /// run-binding fix-up runs host-side, then this clears. `None` = idle.
     pub pending_close_chat_tab: Option<usize>,
+    /// Which embedding container the editor chrome renders inside.
+    pub embed: EmbedHost,
 
     // --- Alignment toolbar -----------------------------------------
     /// Align-toolbar button currently hovered.
@@ -1520,6 +1547,7 @@ impl Default for EditorUiState {
             window_fullscreen: false,
             pending_fullscreen_toggle: false,
             pending_close_chat_tab: None,
+            embed: EmbedHost::None,
             align_toolbar_hover: None,
             property_tab: PropertyTab::Design,
             flex_layout: FlexLayout::Free,
@@ -2263,5 +2291,23 @@ mod tests {
         assert!(!ui.icon_picker_select_all);
         assert_eq!(ui.icon_picker.hover, None);
         assert_eq!(ui.icon_picker.pressed, None);
+    }
+
+    #[test]
+    fn embed_host_parses_vscode_query() {
+        assert_eq!(EmbedHost::from_query("?embed=vscode"), EmbedHost::VsCode);
+        assert_eq!(EmbedHost::from_query("embed=vscode"), EmbedHost::VsCode);
+        assert_eq!(
+            EmbedHost::from_query("?foo=1&embed=vscode"),
+            EmbedHost::VsCode
+        );
+    }
+
+    #[test]
+    fn embed_host_defaults_to_none_for_unknown_or_absent() {
+        assert_eq!(EmbedHost::from_query(""), EmbedHost::None);
+        assert_eq!(EmbedHost::from_query("?embed=web"), EmbedHost::None);
+        assert_eq!(EmbedHost::from_query("?embedded=vscode"), EmbedHost::None);
+        assert_eq!(EditorUiState::default().embed, EmbedHost::None);
     }
 }

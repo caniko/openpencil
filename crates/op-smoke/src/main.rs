@@ -684,8 +684,11 @@ async fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(3);
             }
         };
-        let doc: jian_ops_schema::PenDocument = match serde_json::from_str(&text) {
-            Ok(d) => d,
+        // Load through the compat loader (not raw serde) so a `.op`
+        // saved with the deduplicated `images` table audits with its
+        // refs resolved instead of dangling `op-image:` strings.
+        let doc: jian_ops_schema::PenDocument = match jian_ops_schema::load_str(&text) {
+            Ok(loaded) => loaded.value,
             Err(e) => {
                 eprintln!("[AUDIT] parse {audit_path}: {e}");
                 return std::process::ExitCode::from(3);

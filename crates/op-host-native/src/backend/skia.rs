@@ -563,12 +563,16 @@ impl NativeBackend {
             return hit.image.clone();
         }
         let decoded = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded));
-        self.image_cache_bytes += encoded.len();
+        // A failed decode pins no payload (the `Data` copy is dropped
+        // with the failed constructor), so it must not consume byte
+        // budget — the entry cap alone bounds negative-cache entries.
+        let bytes = if decoded.is_some() { encoded.len() } else { 0 };
+        self.image_cache_bytes += bytes;
         self.image_cache.insert(
             id,
             ImageCacheEntry {
                 image: decoded.clone(),
-                bytes: encoded.len(),
+                bytes,
                 last_used: tick,
             },
         );

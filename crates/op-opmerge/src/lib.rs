@@ -172,7 +172,14 @@ fn merge_core(
 ) -> Result<OpMergeResult, OpMergeError> {
     let base_doc = parse(base, "base")?;
     let ours_doc = parse(ours, "ours")?;
-    let theirs_doc = parse(theirs, "theirs")?;
+    let mut theirs_doc = parse(theirs, "theirs")?;
+    // Image-table ids are content hashes, so an id present on both
+    // branches normally names the same payload. The exception is a
+    // cross-branch probe/hash collision (same id, different bytes) —
+    // remap those ids inside `theirs` before any node comparison so a
+    // node taken from theirs can never end up rendering ours'
+    // unrelated payload.
+    remap_colliding_image_ids(&ours_doc, &mut theirs_doc);
 
     let base_nodes = flatten(&base_doc, "base")?;
     let ours_nodes = flatten(&ours_doc, "ours")?;
@@ -303,9 +310,9 @@ fn merge_core(
     let mut merged = ours_doc;
     // Union the top-level deduplicated `images` tables first: nodes
     // taken from theirs may carry `op-image:<id>` refs whose payloads
-    // only exist in theirs' table. Ids are content hashes, so an id
-    // present on both sides names the same payload and ours wins
-    // without loss.
+    // only exist in theirs' table. Collisions were remapped above, so
+    // an id present on both sides names the same payload and ours
+    // wins without loss.
     if let (Some(Value::Object(theirs_images)), Some(merged_map)) =
         (theirs_doc.get("images"), merged.as_object_mut())
     {
@@ -325,6 +332,7 @@ fn merge_core(
     if !take_theirs.is_empty() {
         apply_overrides(&mut merged, &theirs_nodes, &take_theirs);
     }
+    prune_unreferenced_images(&mut merged);
     conflicts.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(OpMergeResult { merged, conflicts })
 }
@@ -332,6 +340,85 @@ fn merge_core(
 /// Parse one input document, tagging the error with its role.
 fn parse(text: &str, role: &'static str) -> Result<Value, OpMergeError> {
     serde_json::from_str(text).map_err(|e| OpMergeError::Parse(role, e.to_string()))
+}
+
+/// Rewrite any `images`-table id that exists on BOTH branches with
+/// *different* payloads to a fresh probed id inside `theirs` (table
+/// key + every `op-image:` ref). Ids are content hashes, so this only
+/// fires on a cross-branch probe/hash collision — but when it does,
+/// keeping both payloads under distinct ids beats silently rendering
+/// ours' bytes behind theirs' nodes.
+fn remap_colliding_image_ids(ours_doc: &Value, theirs_doc: &mut Value) {
+    let Some(Value::Object(ours_images)) = ours_doc.get("images") else {
+        return;
+    };
+    let Some(Value::Object(theirs_images)) = theirs_doc.get("images") else {
+        return;
+    };
+    let mut renames: Vec<(String, String)> = Vec::new();
+    for (id, payload) in theirs_images {
+        match ours_images.get(id) {
+            Some(existing) if existing != payload => {
+                let mut probe = 1u32;
+                let fresh = loop {
+                    probe += 1;
+                    let candidate = format!("{id}-m{probe}");
+                    if !ours_images.contains_key(&candidate)
+                        && !theirs_images.contains_key(&candidate)
+                    {
+                        break candidate;
+                    }
+                };
+                renames.push((id.clone(), fresh));
+            }
+            _ => {}
+        }
+    }
+    if renames.is_empty() {
+        return;
+    }
+    if let Some(Value::Object(table)) = theirs_doc
+        .as_object_mut()
+        .and_then(|map| map.get_mut("images"))
+    {
+        for (old, new) in &renames {
+            if let Some(payload) = table.remove(old) {
+                table.insert(new.clone(), payload);
+            }
+        }
+    }
+    // Rewrite refs through the schema's structural visitor so the
+    // rename touches exactly the positions the save format uses.
+    jian_ops_schema::image_table::visit_image_src_strings_mut(theirs_doc, &mut |s| {
+        if let Some(id) = s.strip_prefix("op-image:") {
+            if let Some((_, new)) = renames.iter().find(|(old, _)| old == id) {
+                *s = format!("op-image:{new}");
+            }
+        }
+    });
+}
+
+/// Drop `images`-table entries no image-source field in the merged
+/// tree references — a delete on either branch (or a conflict
+/// resolved against a node) must not leave multi-megabyte orphan
+/// payloads behind. Removes the table key entirely when it empties.
+fn prune_unreferenced_images(merged: &mut Value) {
+    let Some(map) = merged.as_object_mut() else {
+        return;
+    };
+    if !matches!(map.get("images"), Some(Value::Object(_))) {
+        return;
+    }
+    let referenced = jian_ops_schema::image_table::referenced_ids(merged);
+    let Some(map) = merged.as_object_mut() else {
+        return;
+    };
+    if let Some(Value::Object(table)) = map.get_mut("images") {
+        table.retain(|id, _| referenced.contains(id));
+        if table.is_empty() {
+            map.remove("images");
+        }
+    }
 }
 
 /// Build a map of `id` → [`NodeRecord`] for every id-bearing node in

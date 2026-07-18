@@ -243,14 +243,16 @@ fn nested_children_are_walked() {
 fn image_tables_union_across_branches() {
     // A node taken from theirs can reference an `op-image:` payload
     // that only exists in theirs' deduplicated image table — the
-    // merged document must carry the union of both tables. Ids are
-    // content hashes, so an id on both sides is the same payload and
-    // ours' copy wins.
-    let base = r#"{"version":"1.0","children":[{"id":"n1","type":"rect","x":0}]}"#;
-    let ours = r#"{"version":"1.0","images":{"aa":"data:ours"},
-        "children":[{"id":"n1","type":"rect","x":0}]}"#;
-    let theirs = r#"{"version":"1.0","images":{"bb":"data:theirs"},
-        "children":[{"id":"n1","type":"rect","x":0,"fill":"op-image:bb"}]}"#;
+    // merged document must carry both branches' referenced payloads.
+    let base = r#"{"version":"1.0","children":[
+        {"id":"n1","type":"image","src":"x"},
+        {"id":"n2","type":"image","src":"op-image:aa"}]}"#;
+    let ours = r#"{"version":"1.0","images":{"aa":"data:ours"},"children":[
+        {"id":"n1","type":"image","src":"x"},
+        {"id":"n2","type":"image","src":"op-image:aa"}]}"#;
+    let theirs = r#"{"version":"1.0","images":{"aa":"data:ours","bb":"data:theirs"},"children":[
+        {"id":"n1","type":"image","src":"op-image:bb"},
+        {"id":"n2","type":"image","src":"op-image:aa"}]}"#;
     let r = merge_op_documents(base, ours, theirs).unwrap();
     assert!(r.is_clean(), "pure property change auto-merges");
     let images = r.merged.get("images").and_then(Value::as_object).unwrap();
@@ -263,11 +265,73 @@ fn image_tables_union_across_branches() {
 
 #[test]
 fn theirs_only_image_table_reaches_the_merge() {
-    // Ours has no table at all — theirs' table must still be adopted.
-    let base = r#"{"version":"1.0","children":[]}"#;
-    let ours = r#"{"version":"1.0","children":[]}"#;
-    let theirs = r#"{"version":"1.0","images":{"cc":"data:x"},"children":[]}"#;
+    // Ours has no table at all — theirs' referenced payloads must
+    // still be adopted alongside the node that uses them.
+    let base = r#"{"version":"1.0","children":[{"id":"n1","type":"image","src":"x"}]}"#;
+    let ours = r#"{"version":"1.0","children":[{"id":"n1","type":"image","src":"x"}]}"#;
+    let theirs = r#"{"version":"1.0","images":{"cc":"data:x"},
+        "children":[{"id":"n1","type":"image","src":"op-image:cc"}]}"#;
     let r = merge_op_documents(base, ours, theirs).unwrap();
     let images = r.merged.get("images").and_then(Value::as_object).unwrap();
     assert_eq!(images.get("cc").and_then(Value::as_str), Some("data:x"));
+    assert_eq!(
+        r.merged["children"][0]["src"].as_str(),
+        Some("op-image:cc"),
+        "theirs' node change merged in"
+    );
+}
+
+#[test]
+fn unreferenced_image_entries_are_pruned_from_the_merge() {
+    // Theirs replaced the only node using `dd` with a plain src —
+    // the merged table must not keep the orphan payload behind.
+    let base = r#"{"version":"1.0","images":{"dd":"data:big"},"children":[
+        {"id":"n1","type":"image","src":"op-image:dd"}]}"#;
+    let ours = base;
+    let theirs = r#"{"version":"1.0","images":{"dd":"data:big"},"children":[
+        {"id":"n1","type":"image","src":"blank"}]}"#;
+    let r = merge_op_documents(base, ours, theirs).unwrap();
+    assert!(r.is_clean());
+    assert_eq!(
+        r.merged["children"][0]["src"].as_str(),
+        Some("blank"),
+        "theirs' change applied"
+    );
+    assert!(
+        r.merged.get("images").is_none(),
+        "orphan payload pruned, empty table dropped; got {:?}",
+        r.merged.get("images")
+    );
+}
+
+#[test]
+fn colliding_image_ids_keep_both_payloads() {
+    // Same table id, different payloads (a cross-branch probe/hash
+    // collision). Theirs' node must NOT render ours' bytes — its id
+    // is remapped and both payloads survive.
+    let base = r#"{"version":"1.0","children":[
+        {"id":"n1","type":"image","src":"a"},
+        {"id":"n2","type":"image","src":"b"}]}"#;
+    let ours = r#"{"version":"1.0","images":{"h1":"data:ours-payload"},"children":[
+        {"id":"n1","type":"image","src":"op-image:h1"},
+        {"id":"n2","type":"image","src":"b"}]}"#;
+    let theirs = r#"{"version":"1.0","images":{"h1":"data:theirs-payload"},"children":[
+        {"id":"n1","type":"image","src":"a"},
+        {"id":"n2","type":"image","src":"op-image:h1"}]}"#;
+    let r = merge_op_documents(base, ours, theirs).unwrap();
+    assert!(r.is_clean());
+    let images = r.merged.get("images").and_then(Value::as_object).unwrap();
+    assert_eq!(
+        images.get("h1").and_then(Value::as_str),
+        Some("data:ours-payload"),
+        "ours keeps its id"
+    );
+    let n2_src = r.merged["children"][1]["src"].as_str().unwrap();
+    let remapped = n2_src.strip_prefix("op-image:").unwrap();
+    assert_ne!(remapped, "h1", "theirs' ref was remapped");
+    assert_eq!(
+        images.get(remapped).and_then(Value::as_str),
+        Some("data:theirs-payload"),
+        "theirs' payload survives under the fresh id"
+    );
 }

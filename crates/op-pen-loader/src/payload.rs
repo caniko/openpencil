@@ -169,9 +169,12 @@ pub struct NodePayload {
     /// Source URL (`data:image/...;base64,...` or file path) when the
     /// node is an `Image` — the canvas painter decodes the inline
     /// bytes and draws them with `RenderBackend::draw_image`. `None`
-    /// for non-image nodes.
+    /// for non-image nodes. Shared (`ImageSrc` = `Arc<str>`) with the
+    /// canonical document so building this payload never copies the
+    /// multi-MB data-URL bytes (serde still reads/writes a plain
+    /// string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_src: Option<String>,
+    pub image_src: Option<jian_ops_schema::node::ImageSrc>,
     /// Image placement mode for `image_src` (`fill`, `fit`, `crop`,
     /// `tile`, `stretch`). `None` defaults to `fill`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -884,6 +887,18 @@ fn deserialize_deep<T: DeserializeOwned>(src: &str) -> Result<T, serde_json::Err
     T::deserialize(de)
 }
 
+/// `serde_json::from_value` with the same stack protection as
+/// [`deserialize_deep`] — the deep-document path parses to a `Value`
+/// first (to inline the image table), and the typed parse of that
+/// `Value` must survive the same nesting depth that routed us here.
+fn deserialize_deep_value<T: DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, serde_json::Error> {
+    use serde::de::IntoDeserializer;
+    let de = serde_stacker::Deserializer::new(value.into_deserializer());
+    T::deserialize(de)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
@@ -904,6 +919,10 @@ struct DeepHeader {
     pages: Option<IgnoredAny>,
     #[serde(default)]
     children: Option<IgnoredAny>,
+    /// Presence of the deduplicated image table — `Some` routes the
+    /// body parse through the ref-inlining path.
+    #[serde(default)]
+    images: Option<IgnoredAny>,
     #[serde(default)]
     app: Option<IgnoredAny>,
     #[serde(default)]
@@ -958,7 +977,21 @@ fn load_canonical_deep(
         });
     }
 
-    let doc: jian_ops_schema::PenDocument = deserialize_deep(src)?;
+    // Mirror `jian_ops_schema::load_str`: a document saved with the
+    // deduplicated `images` table carries `op-image:` refs, resolved
+    // DURING the typed parse via the image-src load scope so every
+    // reference shares one `Arc` per unique payload (no per-reference
+    // inflation). Both parse steps are serde_stacker-protected — the
+    // deep nesting that routed us here must not overflow either.
+    let doc: jian_ops_schema::PenDocument = if header.images.is_some() {
+        let mut raw: serde_json::Value = deserialize_deep(src)?;
+        let table = jian_ops_schema::image_table::take_image_table(&mut raw);
+        jian_ops_schema::node::image_src::intern::with_load_scope(table, || {
+            deserialize_deep_value(raw)
+        })?
+    } else {
+        deserialize_deep(src)?
+    };
     Ok(jian_ops_schema::LoadResult {
         value: doc,
         warnings,

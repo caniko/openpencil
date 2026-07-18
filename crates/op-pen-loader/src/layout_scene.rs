@@ -305,7 +305,7 @@ fn node_payload_to_scene(
         arc_sweep_angle: node.arc_sweep_angle,
         arc_inner_radius: node.arc_inner_radius,
         polygon_sides: node.polygon_sides.clamp(3, 100),
-        image_src: node.image_src.clone(),
+        image_src: node.image_src.as_ref().map(|s| s.as_arc()),
         image_src_id: node
             .image_src
             .as_deref()

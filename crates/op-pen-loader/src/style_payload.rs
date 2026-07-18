@@ -103,7 +103,11 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
 
 fn first_image_fill(
     fills: Option<&[PenFill]>,
-) -> Option<(String, String, Option<ImageAdjustmentPayload>)> {
+) -> Option<(
+    jian_ops_schema::node::ImageSrc,
+    String,
+    Option<ImageAdjustmentPayload>,
+)> {
     let body = fills?.first().and_then(|f| match f {
         PenFill::Image(b) => Some(b),
         _ => None,
@@ -112,7 +116,8 @@ fn first_image_fill(
         None
     } else {
         Some((
-            body.url.to_string(),
+            // Arc bump — never copy the data-URL bytes into the payload.
+            body.url.clone(),
             image_fill_mode_to_payload(body.mode.as_ref()),
             image_fill_adjustments(body),
         ))
