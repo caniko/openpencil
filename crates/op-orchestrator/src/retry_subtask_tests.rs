@@ -55,6 +55,7 @@ fn failed_subtask(parent_frame_id: Option<&str>) -> Subtask {
         screen: Some("Home".into()),
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     }
 }
 

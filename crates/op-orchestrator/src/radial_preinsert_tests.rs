@@ -218,16 +218,70 @@ fn auto_fix_overlays_safe_nested_authored_ring_before_insert() {
 }
 
 #[test]
+fn non_square_wrapper_and_padded_wrapper_are_now_centred_instead_of_retried() {
+    // Concentricity is a pure geometric contract: a wrapper's aspect ratio
+    // and its padding value used to make the strict tier-1 patch decline
+    // outright (it also resizes/reorders, so it wants a confident square
+    // ring before touching anything) — but neither actually prevents
+    // computing a correct centred position, so the lenient tier-2 pass
+    // (radial_repair_force_center) must now salvage both instead of
+    // leaving the subtask to retry.
+    // (wrapper mutation, expected track x/y, expected progress x/y) — track
+    // is the 120x120 arc, progress the 116x116 arc (`fixed_ring`), so a
+    // correct centred fix does NOT put them at the same point; it puts
+    // each at the centre of its own size against the wrapper's full box.
+    type Point = (f64, f64);
+    type Case = (fn(&mut Value), Point, Point);
+    let cases: [Case; 2] = [
+        (|ring| ring["width"] = json!(240), (60.0, 0.0), (62.0, 2.0)),
+        (|ring| ring["padding"] = json!(8), (0.0, 0.0), (2.0, 2.0)),
+    ];
+
+    for (index, (mutate, expected_track, expected_progress)) in cases.into_iter().enumerate() {
+        let mut ring = fixed_ring(Some("horizontal"));
+        mutate(&mut ring);
+        let mut nodes: Vec<PenNode> = serde_json::from_value(json!([ring])).expect("valid forest");
+        let before = check_generated_nodes(&nodes, 390.0);
+        assert!(
+            has_radial_issue(&before),
+            "case {index} precondition: {before:?}"
+        );
+
+        assert!(
+            auto_fix_fixable_issues(&mut nodes, 390.0),
+            "case {index} must be salvaged, not retried"
+        );
+
+        let repaired = serde_json::to_value(&nodes).expect("serialize repaired forest");
+        let ring = find_id(&repaired, "ring").expect("ring");
+        assert_eq!(ring["layout"], json!("none"), "case {index}");
+        let track = find_id(ring, "track").expect("track");
+        let progress = find_id(ring, "progress").expect("progress");
+        assert_eq!(
+            (track["x"].as_f64(), track["y"].as_f64()),
+            (Some(expected_track.0), Some(expected_track.1)),
+            "case {index}: track"
+        );
+        assert_eq!(
+            (progress["x"].as_f64(), progress["y"].as_f64()),
+            (Some(expected_progress.0), Some(expected_progress.1)),
+            "case {index}: progress"
+        );
+
+        let after = check_generated_nodes(&nodes, 390.0);
+        assert!(
+            !after.has_fatal(),
+            "case {index} must pass self-check after the lenient fix: {after:?}"
+        );
+    }
+}
+
+#[test]
 fn explicit_but_unrepairable_radial_shapes_are_rejected_without_guessing() {
     let cases = [
         {
             let mut ring = fixed_ring(Some("horizontal"));
             ring["width"] = json!("fill_container");
-            ring
-        },
-        {
-            let mut ring = fixed_ring(Some("horizontal"));
-            ring["width"] = json!(240);
             ring
         },
         {
@@ -268,11 +322,6 @@ fn high_confidence_but_unsafe_stacks_remain_fatal_for_retry() {
                 "id": "unmeasured-centre",
                 "src": ""
             });
-            ring
-        },
-        {
-            let mut ring = fixed_ring(Some("horizontal"));
-            ring["padding"] = json!(8);
             ring
         },
         {
@@ -438,4 +487,108 @@ fn pure_repair_walks_object_subtrees_without_editor_state() {
         json!("none")
     );
     assert_eq!(root["layout"], json!("vertical"));
+}
+
+/// One "Progress Ring" wrapper reconstructed verbatim from the real
+/// `savings-goals` subtask script recovered from `0717-6-cc.log` (attempt
+/// 2's full script text — attempt 1's own raw nodes weren't logged, only
+/// the fatal issue codes for 3 rings at n14/n27/n40, and attempt 2 never
+/// reached self-check because of an unrelated JS syntax error). Same
+/// `ringSize`, `innerRadius`, `startAngle`, and `Ring Center` box the model
+/// actually authored for each goal card. The one addition — `padding: 4`
+/// on the ring wrapper — is the plausible source of attempt 1's rejection:
+/// this exact structure without it already round-trips through the
+/// existing strict tier-1 patch (see
+/// `auto_fix_overlays_safe_nested_authored_ring_before_insert` above), so
+/// something about attempt 1's copy must have tripped one of tier 1's
+/// confidence gates for the fix to have failed twice in a row; padding is
+/// the most representative example both because this same script pads
+/// every card (`padding: 20`) and because it's exactly the gate this task
+/// converts to tier 2.
+fn savings_goal_ring(suffix: &str, pct: u32) -> Value {
+    json!({
+        "type": "frame",
+        "id": format!("ring-{suffix}"),
+        "name": "Progress Ring",
+        "width": 56,
+        "height": 56,
+        "layout": "none",
+        "padding": 4,
+        "children": [
+            {"type": "ellipse", "id": format!("track-{suffix}"), "name": "Ring Track",
+             "width": 56, "height": 56, "innerRadius": 0.82,
+             "fill": [{"type": "solid", "color": "#F1F5F9"}]},
+            {"type": "ellipse", "id": format!("progress-{suffix}"), "name": "Ring Progress",
+             "width": 56, "height": 56, "innerRadius": 0.82, "startAngle": -90,
+             "sweepAngle": (360 * pct / 100),
+             "fill": [{"type": "solid", "color": "#0D9488"}]},
+            {"type": "frame", "id": format!("centre-{suffix}"), "name": "Ring Center",
+             "width": 40, "height": 20, "layout": "horizontal",
+             "alignItems": "center", "justifyContent": "center",
+             "children": [
+                {"type": "text", "id": format!("pct-{suffix}"),
+                 "content": format!("{pct}%"), "width": "fit_content", "textGrowth": "auto"}
+             ]}
+        ]
+    })
+}
+
+#[test]
+fn savings_goal_rings_from_the_0717_6_cc_incident_are_salvaged_by_auto_fix() {
+    let rail = json!({
+        "type": "frame",
+        "id": "goals-rail",
+        "name": "Savings Goals Rail",
+        "width": "fill_container",
+        "height": "fit_content",
+        "layout": "horizontal",
+        "gap": 12,
+        "children": [
+            savings_goal_ring("emergency-fund", 72),
+            savings_goal_ring("new-car", 45),
+            savings_goal_ring("vacation", 88),
+        ]
+    });
+    let mut nodes: Vec<PenNode> = serde_json::from_value(json!([rail])).expect("valid rail");
+
+    let before = check_generated_nodes(&nodes, 390.0);
+    assert!(
+        has_radial_issue(&before),
+        "precondition: must reproduce the fatal rejection: {before:?}"
+    );
+
+    assert!(
+        auto_fix_fixable_issues(&mut nodes, 390.0),
+        "the real savings-goals rings must be salvaged on attempt 1, not \
+         fall through to a minimal-skills salvage rung"
+    );
+
+    let repaired = serde_json::to_value(&nodes).expect("serialize repaired rail");
+    for suffix in ["emergency-fund", "new-car", "vacation"] {
+        let ring = find_id(&repaired, &format!("ring-{suffix}")).expect("ring");
+        let track = find_id(ring, &format!("track-{suffix}")).expect("track");
+        let progress = find_id(ring, &format!("progress-{suffix}")).expect("progress");
+        assert_eq!(
+            (track["x"].as_f64(), track["y"].as_f64()),
+            (Some(0.0), Some(0.0)),
+            "ring {suffix}: 56x56 track centred in the 56x56 wrapper sits at the origin"
+        );
+        assert_eq!(
+            (track["x"].as_f64(), track["y"].as_f64()),
+            (progress["x"].as_f64(), progress["y"].as_f64()),
+            "ring {suffix}: track and progress are the same size, so they share one point"
+        );
+        let centre = find_id(ring, &format!("centre-{suffix}")).expect("centre");
+        assert_eq!(
+            (centre["x"].as_f64(), centre["y"].as_f64()),
+            (Some(8.0), Some(18.0)),
+            "ring {suffix}: the 40x20 Ring Center the model authored centres at (8, 18)"
+        );
+    }
+
+    let after = check_generated_nodes(&nodes, 390.0);
+    assert!(
+        !after.has_fatal(),
+        "salvaged rail must pass self-check on the same attempt: {after:?}"
+    );
 }

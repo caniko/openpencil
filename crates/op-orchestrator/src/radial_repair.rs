@@ -6,6 +6,9 @@ use serde_json::Value;
 
 use crate::types::DocSink;
 
+#[path = "radial_repair_force_center.rs"]
+mod radial_repair_force_center;
+
 #[derive(Clone, Copy)]
 struct Rect {
     w: f64,
@@ -57,28 +60,38 @@ pub(crate) fn is_radial_stack_in_flow(v: &Value) -> bool {
 /// True when an authored track/progress pair cannot be shown concentrically
 /// on the first reveal. Besides flex-flow stacks this catches `layout:none`
 /// wrappers whose child coordinates, fixed geometry, or painter order are
-/// incomplete. Those cases must be repaired before insertion or retried; the
-/// late cleanup should not be the first moment the ring looks correct.
+/// incomplete. Concentricity is a pure geometric contract, so this defers to
+/// the strict high-confidence patch when it applies, and otherwise to the
+/// lenient tier-2 centring check (`radial_repair_force_center`) — a ring is
+/// only genuinely unsafe once *both* tiers agree it can't be resolved from
+/// the authored/estimated geometry alone.
 pub(crate) fn is_authored_radial_stack_unsafe(v: &Value) -> bool {
     if radial_layers(v).is_none() {
         return false;
     }
-    let Some(patch) = authored_radial_patch(v) else {
-        return true;
-    };
-    authored_patch_changes(v, &patch)
+    match authored_radial_patch(v) {
+        Some(patch) => authored_patch_changes(v, &patch),
+        None => radial_repair_force_center::is_still_off_center(v),
+    }
 }
 
-/// Normalize high-confidence radial stacks directly in an authored JSON
-/// forest. This is intentionally independent of `EditorState`: it runs before
+/// Normalize radial stacks directly in an authored JSON forest. This is
+/// intentionally independent of `EditorState`: it runs before
 /// `InsertSubtree`, while the existing sink-based repair remains the late
 /// resolved-layout fallback.
 ///
-/// Only fixed, near-square wrappers with similarly sized authored arcs and
-/// fully measurable direct children are changed. A high-confidence candidate
-/// with unmeasurable centre content stays untouched so self-check retries it;
-/// malformed but explicit track/progress pairs are left untouched so
-/// self-check can request a retry rather than guessing wrapper geometry.
+/// Two tiers, in order:
+/// 1. The strict, high-confidence patch below — near-square wrappers with
+///    similarly sized authored arcs and fully measurable direct children —
+///    which also fills in missing arc/centre dimensions and fixes painter
+///    order.
+/// 2. When tier 1 declines (non-square wrapper, out-of-range arc ratio,
+///    ambiguous painter order, asymmetric padding, …), the lenient tier-2
+///    pass re-centres whatever tier 1 left alone: concentricity is a
+///    geometry fact once `radial_layers` already recognised the ring, so
+///    there is no confidence gate left to apply. Only a child whose size
+///    can be neither read nor estimated at all stays untouched, so
+///    self-check keeps reporting it instead of guessing.
 pub(crate) fn repair_authored_radial_stacks(value: &mut Value) -> bool {
     match value {
         Value::Array(nodes) => {
@@ -94,8 +107,10 @@ pub(crate) fn repair_authored_radial_stacks(value: &mut Value) -> bool {
 }
 
 fn repair_authored_radial_node(node: &mut Value) -> bool {
-    let patch = authored_radial_patch(node);
-    let mut changed = patch.is_some_and(|patch| apply_authored_radial_patch(node, patch));
+    let mut changed = match authored_radial_patch(node) {
+        Some(patch) => apply_authored_radial_patch(node, patch),
+        None => radial_repair_force_center::force_concentric_radial_stack(node),
+    };
     if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
         for child in children {
             changed |= repair_authored_radial_node(child);

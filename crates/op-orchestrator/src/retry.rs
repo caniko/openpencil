@@ -29,6 +29,26 @@ pub(crate) fn is_non_retryable(msg: &str) -> bool {
         || lower.contains("invalid proxy configuration")
 }
 
+/// True when a subtask failed because our own post-generation self-check
+/// (`orchestration_self_check`) rejected otherwise-parsed, otherwise-real
+/// content — a geometry/quality judgment on THIS model's output — rather
+/// than a transport, parsing, or capability failure (stream error, script
+/// syntax error, blank output, `InsertSubtree` rejection).
+///
+/// The distinction matters for the retry ladder
+/// (`concurrent::run_subtask_retry_ladder`): a quality rejection is not
+/// evidence the model needs a narrower skill set to succeed — the content
+/// was otherwise fine, so throwing away skills on attempt 2 only makes the
+/// *rest* of the design worse while doing nothing to fix the one flagged
+/// issue. Skill-tier downgrade should stay reserved for the failures that
+/// actually suggest the model is struggling with the full prompt (timeouts,
+/// stream errors, safety-scanner stalls) — see `subagent::run_subtask_with_reveal_at`'s
+/// `fail(format!("self-check failed: {message}"))` call site for the exact
+/// prefix this matches.
+pub(crate) fn is_self_check_rejection(msg: &str) -> bool {
+    msg.starts_with("self-check failed: ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +110,36 @@ mod tests {
     #[test]
     fn socket_closed_is_retryable() {
         assert!(!is_non_retryable("socket closed unexpectedly"));
+    }
+
+    // ── is_self_check_rejection ─────────────────────────────────────────────
+
+    #[test]
+    fn self_check_failure_message_is_a_self_check_rejection() {
+        assert!(is_self_check_rejection(
+            "self-check failed: radial-stack-not-concentric at n14: ..."
+        ));
+    }
+
+    #[test]
+    fn stream_error_is_not_a_self_check_rejection() {
+        assert!(!is_self_check_rejection(
+            "stream disconnected before completion"
+        ));
+    }
+
+    #[test]
+    fn script_parse_error_is_not_a_self_check_rejection() {
+        assert!(!is_self_check_rejection(
+            "script error: unexpected end of string"
+        ));
+    }
+
+    #[test]
+    fn blank_container_is_not_a_self_check_rejection() {
+        assert!(!is_self_check_rejection(
+            "blank container root produced no content nodes"
+        ));
     }
 }
 

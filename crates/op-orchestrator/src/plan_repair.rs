@@ -360,6 +360,7 @@ fn coerce_subtask(
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         });
     }
 
@@ -412,6 +413,7 @@ fn coerce_subtask(
         screen,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     })
 }
 

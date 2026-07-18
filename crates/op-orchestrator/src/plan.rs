@@ -81,6 +81,15 @@ pub struct Subtask {
     /// port of TS `SubTask.existingSectionLabels` (`ai-types.ts:134`)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub existing_section_labels: Option<Vec<String>>,
+    /// Set by the retry ladder (`concurrent::run_subtask_retry_ladder`) on
+    /// attempt 2 ONLY when attempt 1 failed a self-check quality rejection
+    /// (not a transport/parse failure) — the rejection message, echoed back
+    /// into the retry prompt so the model can fix exactly that issue while
+    /// keeping the same skill tier. Execution-only, like
+    /// `generated_root_id`: never persisted, never present on a freshly
+    /// planned subtask.
+    #[serde(skip)]
+    pub retry_feedback: Option<String>,
 }
 
 /// 规划阶段的完整产物。字段对齐规划语料 `decomposition.md`。
@@ -200,6 +209,7 @@ pub fn build_fallback_plan(req: &DesignRequest) -> OrchestratorPlan {
                     screen: None,
                     generated_root_id: None,
                     existing_section_labels: None,
+                    retry_feedback: None,
                 },
                 Subtask {
                     id: "main-content".into(),
@@ -219,6 +229,7 @@ pub fn build_fallback_plan(req: &DesignRequest) -> OrchestratorPlan {
                     screen: None,
                     generated_root_id: None,
                     existing_section_labels: None,
+                    retry_feedback: None,
                 },
             ],
             style_guide_name: None,
@@ -248,6 +259,7 @@ pub fn build_fallback_plan(req: &DesignRequest) -> OrchestratorPlan {
                 screen: None,
                 generated_root_id: None,
                 existing_section_labels: None,
+                retry_feedback: None,
             }
         })
         .collect();
@@ -411,6 +423,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         };
         assert!(st.existing_section_labels.is_none());
     }
@@ -431,6 +444,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: Some(vec!["Hero".into(), "About".into()]),
+            retry_feedback: None,
         };
         let labels = st.existing_section_labels.as_ref().unwrap();
         assert_eq!(labels[0], "Hero");
@@ -453,6 +467,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         };
         let json = serde_json::to_string(&st).expect("serialize");
         assert!(

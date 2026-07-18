@@ -36,6 +36,7 @@ fn subtask_with_screen(id: &str, label: &str, screen: Option<&str>) -> Subtask {
         screen: screen.map(str::to_string),
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     }
 }
 

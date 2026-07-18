@@ -55,7 +55,7 @@
 
 use crate::model_profile::ModelTier;
 use crate::plan::{OrchestratorPlan, Subtask};
-use crate::retry::is_non_retryable;
+use crate::retry::{is_non_retryable, is_self_check_rejection};
 use crate::screen_groups::ScreenGroup;
 use crate::subagent::{apply_command_with_reveal, reveal_now_millis, run_subtask_with_reveal_at};
 use crate::types::{AbortFlag, DesignRequest, DocSink, LlmClient, Progress, SubtaskOutcome};
@@ -221,7 +221,32 @@ pub(crate) async fn run_subtask_retry_ladder(
         o.error.is_some() && o.node_count == 0 && !abort.is_set() && !non_retryable
     };
 
-    // Attempt 2 — reduced_complexity iff Basic tier.
+    // A self-check quality rejection (`orchestration_self_check` fatally
+    // rejected otherwise-real, otherwise-parsed content) is not evidence the
+    // model needs a narrower skill set — the content was fine except for the
+    // one flagged issue, so throwing skills away on attempt 2 only makes the
+    // REST of the design worse while doing nothing to fix that issue. Skill
+    // downgrade stays reserved for attempt 1 failures that actually suggest
+    // the model is struggling with the full prompt (stream errors, parse
+    // failures, blank output). Instead, attempt 2 retries at the SAME
+    // complexity/skill tier with the rejection reason echoed into the
+    // prompt (`prompt.rs`'s `retry_feedback` block) so the model can fix
+    // exactly that issue.
+    let attempt1_self_check_rejection = outcome1
+        .error
+        .as_deref()
+        .is_some_and(is_self_check_rejection);
+    let attempt2_subtask = if attempt1_self_check_rejection {
+        Subtask {
+            retry_feedback: outcome1.error.clone(),
+            ..subtask.clone()
+        }
+    } else {
+        subtask.clone()
+    };
+
+    // Attempt 2 — reduced_complexity iff Basic tier AND attempt 1 wasn't a
+    // self-check quality rejection.
     let outcome2 = if retryable(&outcome1) {
         tracing::warn!(
             subtask = %subtask.id,
@@ -238,13 +263,13 @@ pub(crate) async fn run_subtask_retry_ladder(
         });
         Some(
             run_subtask_with_reveal_at(
-                subtask,
+                &attempt2_subtask,
                 plan,
                 request,
                 llm,
                 sink,
                 abort,
-                tier == ModelTier::Basic,
+                tier == ModelTier::Basic && !attempt1_self_check_rejection,
                 false,
                 agent_indicator_epoch,
                 reveal_now_millis(),

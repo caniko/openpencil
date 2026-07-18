@@ -48,6 +48,25 @@ fn req_standard() -> DesignRequest {
     }
 }
 
+// Basic tier model id — the ONLY tier where attempt 2's `reduced_complexity`
+// flag has any effect at all (`compact_skills::apply_skill_filter`'s doc:
+// "Basic tier only"), so it's the tier that can actually distinguish this
+// module's quality-vs-transport retry-ladder split.
+fn req_basic() -> DesignRequest {
+    DesignRequest {
+        prompt: "a landing page".into(),
+        // "glm-4-plus" matches Basic tier in model_profile table
+        model: Some("glm-4-plus".into()),
+        provider: None,
+        design_md: None,
+        concurrency: 1,
+        append_context: None,
+        validation_enabled: true,
+
+        visual_ref_enabled: false,
+    }
+}
+
 const PLAN_JSON: &str = r##"{
   "rootFrame": { "id": "root", "name": "Page", "width": 1200, "height": 800,
                  "layout": "vertical", "gap": 0,
@@ -78,6 +97,25 @@ fn node_json(prefix: &str) -> String {
     format!(
         r#"I(null, {{"type":"frame","name":"Sec","x":0,"y":0,"width":1200,"height":300,"children":[{{"type":"text","content":"{prefix}","fontSize":18}}]}});"#
     )
+}
+
+// A radial ring whose progress arc (60px) is far smaller than its track
+// (120px) — `orchestration_self_check`'s `radial-stack-not-concentric`
+// flags this, and neither repair tier can auto-fix it (the arc-diameter
+// mismatch is too implausible to guess a fix for; see
+// `radial_preinsert_tests::explicit_but_unrepairable_radial_shapes_are_rejected_without_guessing`).
+// This parses fine as script-gen — the rejection comes from self-check, not
+// from a parse/stream failure — so it's the fixture for proving the retry
+// ladder treats a QUALITY rejection differently from a transport failure.
+fn radial_reject_script() -> String {
+    r##"I(null, {"type":"frame","name":"Ring Section","x":0,"y":0,"width":1200,"height":300,"children":[
+        {"type":"frame","name":"Steps Ring","width":120,"height":120,"children":[
+            {"type":"ellipse","name":"track","width":120,"height":120,"innerRadius":0.82,"sweepAngle":360,"fill":[{"type":"solid","color":"#22C55E"}]},
+            {"type":"ellipse","name":"progress","width":60,"height":60,"innerRadius":0.82,"startAngle":-90,"sweepAngle":264,"fill":[{"type":"solid","color":"#22C55E"}]},
+            {"type":"frame","name":"centre","width":80,"height":44,"children":[{"type":"text","content":"64%"}]}
+        ]}
+    ]});"##
+        .into()
 }
 
 fn existing_root_json(
@@ -413,6 +451,93 @@ fn subtask_retries_on_attempt1_zero_succeeds_on_attempt2() {
     assert_eq!(summary.subtasks.len(), 2);
     assert!(summary.total_nodes >= 2);
     assert_eq!(sink.batch_depth, 0);
+}
+
+/// A self-check quality rejection on attempt 1 must NOT downgrade attempt
+/// 2's skill tier, even on a Basic-tier model that would otherwise always
+/// narrow to `retryAllowed` on retry — the content was real, just flagged
+/// for one geometry issue, so throwing skills away only makes the rest of
+/// the design worse. Attempt 2's prompt must also carry the rejection
+/// reason so the model can fix exactly that issue.
+#[test]
+fn self_check_rejection_keeps_full_skills_and_injects_feedback_on_attempt2() {
+    let llm = ScriptedLlm::new(vec![
+        ScriptResponse::Text(PLAN_JSON.into()),
+        // hero attempt 1 (Basic tier, full complexity): parses fine, but
+        // self-check fatally rejects the mismatched ring — zero nodes land.
+        ScriptResponse::Text(radial_reject_script()),
+        // hero attempt 2: must stay full complexity despite Basic tier.
+        ScriptResponse::Text(node_json("hero")),
+        // feat attempt 1: succeeds normally.
+        ScriptResponse::Text(node_json("feat")),
+    ]);
+    let mut sink = VecDocSink::new();
+    let mut on_progress = |_p: Progress| {};
+    let summary = futures::executor::block_on(Orchestrator::new().run(
+        req_basic(),
+        &mut sink,
+        &llm,
+        &mut on_progress,
+        &AbortFlag::new(),
+        &stub_providers(),
+    ))
+    .expect("attempt 2 recovers after the self-check rejection");
+    assert_eq!(summary.subtasks.len(), 2);
+
+    // Call order: [0] planning, [1] hero attempt 1, [2] hero attempt 2, [3] feat.
+    let prompts = llm.system_prompts();
+    assert_eq!(prompts.len(), 4, "unexpected call count: {prompts:?}");
+    assert_eq!(
+        prompts[1], prompts[2],
+        "attempt 2 after a self-check rejection must resolve the IDENTICAL \
+         (full) skill set attempt 1 used — a Basic-tier model would \
+         otherwise narrow this to the retryAllowed set"
+    );
+}
+
+/// The mirror case: an attempt-1 TRANSPORT failure (not a self-check
+/// rejection) on a Basic-tier model must still downgrade attempt 2 to
+/// `reduced_complexity`, exactly as before this task — skill downgrade
+/// stays reserved for failures that suggest the model is struggling with
+/// the full prompt, not for a quality gate on otherwise-fine content.
+#[test]
+fn transport_failure_still_downgrades_skills_on_attempt2_for_basic_tier() {
+    use crate::types::LlmError;
+    let llm = ScriptedLlm::new(vec![
+        ScriptResponse::Text(PLAN_JSON.into()),
+        // hero attempt 1: a stream error — NOT a self-check rejection.
+        ScriptResponse::Fail(LlmError {
+            message: "stream disconnected before completion".into(),
+            aborted: false,
+        }),
+        // hero attempt 2: reduced_complexity narrows the skill set.
+        ScriptResponse::Text(node_json("hero")),
+        // feat attempt 1: succeeds normally.
+        ScriptResponse::Text(node_json("feat")),
+    ]);
+    let mut sink = VecDocSink::new();
+    let mut on_progress = |_p: Progress| {};
+    let summary = futures::executor::block_on(Orchestrator::new().run(
+        req_basic(),
+        &mut sink,
+        &llm,
+        &mut on_progress,
+        &AbortFlag::new(),
+        &stub_providers(),
+    ))
+    .expect("attempt 2 recovers after the transport failure");
+    assert_eq!(summary.subtasks.len(), 2);
+
+    let prompts = llm.system_prompts();
+    assert_eq!(prompts.len(), 4, "unexpected call count: {prompts:?}");
+    assert!(
+        prompts[2].len() < prompts[1].len(),
+        "attempt 2 after a plain transport failure must still narrow to the \
+         reduced-complexity skill set on Basic tier (attempt 1: {} chars, \
+         attempt 2: {} chars)",
+        prompts[1].len(),
+        prompts[2].len()
+    );
 }
 
 /// Subtask fails all 3 attempts → `OrchestratorError::AllFailed` with the

@@ -132,6 +132,7 @@ fn subagent_prompt_carries_subtask_and_script_format() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     assert!(cr.user_prompt.contains("Hero"));
@@ -160,6 +161,7 @@ fn subagent_prompt_reduced_complexity_carries_script_format() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), true, false);
     assert!(cr.user_prompt.contains("Hero"));
@@ -190,6 +192,7 @@ fn subagent_prompt_carries_ts_layout_contract() {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         },
         Subtask {
             id: "categories".into(),
@@ -204,6 +207,7 @@ fn subagent_prompt_carries_ts_layout_contract() {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         },
     ];
     let (cr, _) = bsp(
@@ -249,6 +253,7 @@ fn subagent_prompt_minimal_skills_has_schema_and_script_format() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     // minimal_skills=true: the system prompt should contain schema skill
     // content plus the script-gen protocol suffix, but NOT layout/text-rules
@@ -287,6 +292,7 @@ fn subagent_prompt_reduced_complexity_basic_is_shorter_than_full() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     // req() uses model "claude" which is Full tier — no narrowing.
     // Use a basic-tier model to test narrowing.
@@ -327,6 +333,7 @@ fn subagent_prompt_reduced_complexity_full_tier_skill_filtering_is_noop() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     // req() uses "claude" which maps to Full tier → reduced_complexity's skill
     // narrowing is a no-op there (unlike Basic, which drops to the
@@ -375,6 +382,7 @@ fn subagent_prompt_reduced_complexity_keeps_script_gen_even_on_full_tier() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let (full_cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     let (reduced_cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), true, false);
@@ -493,6 +501,7 @@ fn subagent_prompt_basic_mobile_food_keeps_mobile_app_skill() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let (_, report) = bsp(
@@ -546,6 +555,7 @@ fn subagent_prompt_honors_explicit_radius_and_spacing_numbers() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let (cr, _) = bsp(
@@ -606,6 +616,7 @@ fn mobile_food_prompt_avoids_fixed_food_template() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let (cr, _) = bsp(
@@ -683,6 +694,7 @@ fn chinese_mobile_food_prompt_carries_language_consistency_rule() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let (cr, report) = bsp(
@@ -865,6 +877,7 @@ fn subtask() -> crate::plan::Subtask {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     }
 }
 
@@ -987,6 +1000,7 @@ fn subagent_prompt_append_mode_injected_when_labels_present() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: Some(vec!["Hero".into(), "Pricing".into()]),
+        retry_feedback: None,
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     assert!(
@@ -1020,6 +1034,7 @@ fn subagent_prompt_no_append_mode_when_labels_none() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     assert!(
@@ -1045,11 +1060,80 @@ fn subagent_prompt_no_append_mode_when_labels_empty() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: Some(vec![]),
+        retry_feedback: None,
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     assert!(
         !cr.user_prompt.contains("APPEND MODE"),
         "user_prompt must NOT contain APPEND MODE block when labels is empty"
+    );
+}
+
+// ── retry_feedback: self-check rejection echoed into the retry prompt ─────
+
+/// When the retry ladder sets `retry_feedback` (attempt 2 after a self-check
+/// quality rejection — see `concurrent::run_subtask_retry_ladder`), the
+/// user prompt must carry the rejection reason and tell the model to keep
+/// its full skill set, not simplify.
+#[test]
+fn subagent_prompt_injects_self_check_feedback_when_present() {
+    let st = crate::plan::Subtask {
+        id: "hero".into(),
+        label: "Hero".into(),
+        region: crate::plan::Region {
+            width: 1200.0,
+            height: 400.0,
+        },
+        id_prefix: "hero".into(),
+        parent_frame_id: None,
+        elements: None,
+        screen: None,
+        generated_root_id: None,
+        existing_section_labels: None,
+        retry_feedback: Some(
+            "self-check failed: radial-stack-not-concentric at n14: progress-ring track, \
+             progress arc, and measurable centre content must share one point"
+                .into(),
+        ),
+    };
+    let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
+    assert!(
+        cr.user_prompt.contains("SELF-CHECK FIX REQUIRED"),
+        "user_prompt must contain the self-check feedback block"
+    );
+    assert!(
+        cr.user_prompt.contains("radial-stack-not-concentric"),
+        "user_prompt must echo the actual rejection reason verbatim"
+    );
+    assert!(
+        cr.user_prompt.contains("Keep using the full skill set"),
+        "user_prompt must tell the model NOT to simplify in response to the rejection"
+    );
+}
+
+/// When `retry_feedback` is `None` (attempt 1, or any non-quality-rejection
+/// retry), the user prompt must NOT contain the self-check feedback block.
+#[test]
+fn subagent_prompt_omits_self_check_feedback_when_absent() {
+    let st = crate::plan::Subtask {
+        id: "hero".into(),
+        label: "Hero".into(),
+        region: crate::plan::Region {
+            width: 1200.0,
+            height: 400.0,
+        },
+        id_prefix: "hero".into(),
+        parent_frame_id: None,
+        elements: None,
+        screen: None,
+        generated_root_id: None,
+        existing_section_labels: None,
+        retry_feedback: None,
+    };
+    let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
+    assert!(
+        !cr.user_prompt.contains("SELF-CHECK FIX REQUIRED"),
+        "user_prompt must not mention self-check feedback when there is none"
     );
 }
 
@@ -1082,6 +1166,7 @@ fn subtask_intent_includes_prompt_label_and_hints() {
         screen: Some("home".into()),
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let intent = subtask_intent(&req, &sub);
     assert!(
@@ -1384,6 +1469,7 @@ fn basic_tier_components_prompt_keeps_both_manifest_and_teaching() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let lib = library_with(5);
@@ -1499,6 +1585,7 @@ fn tight_budget_dashboard_keeps_component_composition() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let lib = library_with(5);
@@ -1599,6 +1686,7 @@ fn tight_budget_dashboard_without_library_does_not_pin_component_composition() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
 
     let (cr, report) = build_subagent_prompt(

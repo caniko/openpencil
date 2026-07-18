@@ -125,6 +125,7 @@ fn ensure_requested_bottom_nav_subtask(plan: &mut OrchestratorPlan, req: &Design
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     });
 }
 
@@ -270,6 +271,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         }
     }
 
@@ -556,6 +558,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         };
         // chart subtask — LLM-provided height 300, within [inferred*0.6, inferred*1.6]
         // inferred for "chart" = 320  →  min=192, max=512  →  300 in range → keep 300
@@ -572,6 +575,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         };
         // metric subtask — LLM-provided height 0 (invalid) → use inferred = 160
         let st_metric = Subtask {
@@ -587,6 +591,7 @@ mod tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         };
         OrchestratorPlan {
             root_frame: RootFrameSpec {
@@ -687,6 +692,7 @@ mod tests {
                 screen: None,
                 generated_root_id: None,
                 existing_section_labels: None,
+                retry_feedback: None,
             }],
             style_guide_name: None,
         };
@@ -727,6 +733,7 @@ mod tests {
                 screen: None,
                 generated_root_id: None,
                 existing_section_labels: None,
+                retry_feedback: None,
             }],
             style_guide_name: None,
         };
