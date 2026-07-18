@@ -58,6 +58,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "topbar.closeConfirmDetail" => "การเปลี่ยนแปลงของคุณจะสูญหายหากไม่บันทึก",
         "topbar.dontSave" => "ไม่บันทึก",
         "topbar.agentsAndMcp" => "เอเจนต์และ MCP",
+        "topbar.mcp" => "MCP",
         "topbar.agentSingular" => "เอเจนต์",
         "topbar.agentPlural" => "เอเจนต์",
         "topbar.setupAgentsMcp" => "ตั้งค่าเอเจนต์และ MCP",

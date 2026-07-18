@@ -58,6 +58,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "topbar.closeConfirmDetail" => "저장하지 않으면 변경 사항이 손실됩니다.",
         "topbar.dontSave" => "저장 안 함",
         "topbar.agentsAndMcp" => "에이전트 & MCP",
+        "topbar.mcp" => "MCP",
         "topbar.agentSingular" => "에이전트",
         "topbar.agentPlural" => "에이전트",
         "topbar.setupAgentsMcp" => "에이전트 & MCP 설정",

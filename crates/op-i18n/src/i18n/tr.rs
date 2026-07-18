@@ -58,6 +58,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "topbar.closeConfirmDetail" => "Kaydetmezseniz değişiklikleriniz kaybolacaktır.",
         "topbar.dontSave" => "Kaydetme",
         "topbar.agentsAndMcp" => "Ajanlar ve MCP",
+        "topbar.mcp" => "MCP",
         "topbar.agentSingular" => "ajan",
         "topbar.agentPlural" => "ajan",
         "topbar.setupAgentsMcp" => "Ajanları ve MCP Kur",

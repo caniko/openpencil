@@ -226,7 +226,11 @@ impl TopBar {
             mcp_count,
             theme: theme_for(ui),
             label_edited: translate(ui, "topbar.edited"),
-            label_agents_and_mcp: translate(ui, "topbar.agentsAndMcp"),
+            label_agents_and_mcp: if ui.embed == op_editor_core::EmbedHost::VsCode {
+                translate(ui, "topbar.mcp")
+            } else {
+                translate(ui, "topbar.agentsAndMcp")
+            },
             label_agent_singular: translate(ui, "topbar.agentSingular"),
             label_agent_plural: translate(ui, "topbar.agentPlural"),
             traffic_hover: ui.topbar_traffic_hover,

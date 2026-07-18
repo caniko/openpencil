@@ -58,6 +58,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "topbar.closeConfirmDetail" => "Các thay đổi của bạn sẽ bị mất nếu không lưu.",
         "topbar.dontSave" => "Không lưu",
         "topbar.agentsAndMcp" => "Agent & MCP",
+        "topbar.mcp" => "MCP",
         "topbar.agentSingular" => "agent",
         "topbar.agentPlural" => "agent",
         "topbar.setupAgentsMcp" => "Thiết lập Agent & MCP",

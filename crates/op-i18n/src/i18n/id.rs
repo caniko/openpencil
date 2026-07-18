@@ -58,6 +58,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "topbar.closeConfirmDetail" => "Perubahan Anda akan hilang jika tidak disimpan.",
         "topbar.dontSave" => "Jangan simpan",
         "topbar.agentsAndMcp" => "Agent & MCP",
+        "topbar.mcp" => "MCP",
         "topbar.agentSingular" => "agen",
         "topbar.agentPlural" => "agen",
         "topbar.setupAgentsMcp" => "Pengaturan Agent & MCP",
