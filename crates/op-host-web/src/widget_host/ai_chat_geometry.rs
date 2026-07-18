@@ -20,6 +20,10 @@ impl WidgetHost {
         viewport_w: f32,
         viewport_h: f32,
     ) -> Option<Rect> {
+        if self.editor_state.editor_ui.embed == op_editor_core::EmbedHost::VsCode {
+            // The VS Code plugin is MCP-driven; the in-editor chat is hidden.
+            return None;
+        }
         let (cx0, cy0, cw, ch) = self.canvas_region(viewport_w, viewport_h);
         if self.editor_state.chat.maximized && !self.editor_state.chat.collapsed {
             let inset = 12.0;

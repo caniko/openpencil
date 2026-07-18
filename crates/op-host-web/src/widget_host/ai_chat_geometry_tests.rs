@@ -27,6 +27,13 @@ fn ai_chat_maximize_click_expands_panel_geometry_like_ts() {
 }
 
 #[test]
+fn vscode_embed_has_no_chat_rect() {
+    let mut host = WidgetHost::new();
+    host.editor_state.editor_ui.embed = op_editor_core::EmbedHost::VsCode;
+    assert!(host.ai_chat_rect(1600.0, 1000.0).is_none());
+}
+
+#[test]
 fn ai_chat_collapse_click_stays_expanded_while_streaming_like_ts() {
     let mut host = WidgetHost::new();
     host.editor_state

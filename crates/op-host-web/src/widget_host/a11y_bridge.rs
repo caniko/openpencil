@@ -199,8 +199,15 @@ impl WidgetHost {
     pub(crate) fn apply_a11y_action(&mut self, target: u64, is_focus: bool) -> bool {
         match target {
             // AIChat panel — focus or click both focus + ready the chat
-            // input (mirrors `click.rs` `AIChatHit::FocusInput`).
+            // input (mirrors `click.rs` `AIChatHit::FocusInput`). The a11y
+            // tree only emits this node when `ai_chat_rect` is Some, but a
+            // stale assistive-tech target could still replay the id, so
+            // gate here too — the VS Code embed's chat is MCP-driven and
+            // must never accept keyboard focus.
             AI_CHAT_WIDGET_ID => {
+                if self.editor_state.editor_ui.embed == op_editor_core::EmbedHost::VsCode {
+                    return false;
+                }
                 self.a11y_focus_chat_input();
                 true
             }

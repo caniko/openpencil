@@ -92,7 +92,15 @@ impl WidgetHost {
     /// Cmd/Ctrl+T — open a fresh chat tab (MT.3). Preserves all existing tabs
     /// and leaves any in-flight run bound to its own tab (the web run binding
     /// lives in `web_chat`'s RUNNING_TAB, untouched here).
+    ///
+    /// The VS Code embed has no chat panel to show the new tab in (its chat
+    /// is MCP-driven), and this shortcut isn't gated on `ai_chat_rect` like
+    /// every mouse-driven chat path — left unguarded it would silently eat
+    /// the host IDE's own Cmd/Ctrl+T binding, so no-op instead of consuming.
     pub fn apply_new_chat_tab(&mut self) -> bool {
+        if self.editor_state.editor_ui.embed == op_editor_core::EmbedHost::VsCode {
+            return false;
+        }
         self.editor_state.chat.new_tab();
         // Session set mutated: rotate the transcript-cache owner NOW so a pointer
         // move before the next paint can't cross-pair the previous tab's geometry.
