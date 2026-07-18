@@ -111,6 +111,27 @@ impl McpServer {
 }
 
 impl AgentSettings {
+    /// True when an embedding host owns the MCP lifecycle
+    /// (`embed_mcp_url` set): the server card then reads as
+    /// always-running at the host's port, with no start/stop button
+    /// and no port editing — the daemon-internal `mcp_server` state
+    /// is meaningless in that surface.
+    pub fn mcp_host_managed(&self) -> bool {
+        self.embed_mcp_url.is_some()
+    }
+
+    /// The port component of `embed_mcp_url`, for the read-only port
+    /// display (e.g. `"63655"` from `http://127.0.0.1:63655/mcp`).
+    pub fn embed_mcp_port_text(&self) -> Option<&str> {
+        let url = self.embed_mcp_url.as_deref()?;
+        let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let authority = after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        authority.rsplit_once(':').map(|(_, port)| port)
+    }
+
     /// The client-config card's one-line display text. Prefers the
     /// embedding host's real endpoint (`embed_mcp_url`, set via the
     /// bridge init) over the daemon-internal `mcp_server` port.
@@ -344,5 +365,20 @@ mod embed_mcp_url_tests {
         assert!(settings
             .mcp_client_config_clipboard_text()
             .contains("\"url\": \"http://127.0.0.1:63655/mcp\""));
+    }
+}
+
+#[cfg(test)]
+mod embed_mcp_host_tests {
+    use super::*;
+
+    #[test]
+    fn host_managed_state_and_port_derive_from_the_embed_url() {
+        let mut settings = AgentSettings::default();
+        assert!(!settings.mcp_host_managed());
+        assert_eq!(settings.embed_mcp_port_text(), None);
+        settings.embed_mcp_url = Some("http://127.0.0.1:63655/mcp".into());
+        assert!(settings.mcp_host_managed());
+        assert_eq!(settings.embed_mcp_port_text(), Some("63655"));
     }
 }

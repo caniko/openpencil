@@ -45,7 +45,7 @@ fn server_card_top(content: Rect) -> f32 {
 }
 
 fn client_config_block_h(settings: &AgentSettings) -> f32 {
-    if settings.mcp_server.running {
+    if settings.mcp_host_managed() || settings.mcp_server.running {
         CLIENT_CONFIG_GAP + CLIENT_CONFIG_H
     } else {
         0.0
@@ -156,13 +156,21 @@ fn client_config_copy_button_rect(content: Rect) -> Rect {
 pub(super) const CLI_INTEGRATIONS_AVAILABLE: bool = !cfg!(target_arch = "wasm32");
 
 pub fn hit_test(content: Rect, settings: &AgentSettings, scrolled: Point2D) -> McpHit {
-    if (server_button_rect(content)).contains(scrolled) {
+    // Host-managed (embed): the extension owns the lifecycle — no
+    // start/stop, no port editing; the config card always copies.
+    let host_managed = settings.mcp_host_managed();
+    if !host_managed && (server_button_rect(content)).contains(scrolled) {
         return McpHit::ToggleServer;
     }
-    if settings.mcp_server.running && (client_config_copy_button_rect(content)).contains(scrolled) {
+    if (host_managed || settings.mcp_server.running)
+        && (client_config_copy_button_rect(content)).contains(scrolled)
+    {
         return McpHit::CopyClientConfig;
     }
-    if !settings.mcp_server.running && (port_field_rect(content)).contains(scrolled) {
+    if !host_managed
+        && !settings.mcp_server.running
+        && (port_field_rect(content)).contains(scrolled)
+    {
         return McpHit::FocusPort;
     }
     if CLI_INTEGRATIONS_AVAILABLE {
@@ -255,7 +263,10 @@ fn paint_server_card(
         radius: 10.0,
     }
     .paint(cx.backend, card, &tokens_from_theme(theme));
-    let running = settings.mcp_server.running;
+    // Host-managed (embed): the extension's proxy is alive by the time any
+    // editor mounts — the card reads always-running at the host's port.
+    let host_managed = settings.mcp_host_managed();
+    let running = host_managed || settings.mcp_server.running;
     let mid_y = card.origin.y + SERVER_CARD_H / 2.0;
     let dot = Rect {
         origin: Point2D::new(card.origin.x + 16.0, mid_y - 4.0),
@@ -303,10 +314,15 @@ fn paint_server_card(
         Point2D::new(port_field_x - 8.0 - port_label_w, mid_y + 4.0),
     );
     let port_field = port_field_rect(content);
-    let port_editable = !running;
+    let port_editable = !running && !host_managed;
     let focused = port_editable && matches!(settings.focus, Some(SettingsFocus::McpPort));
     let port_str = if focused {
         ui.settings_input.text().to_owned()
+    } else if host_managed {
+        settings
+            .embed_mcp_port_text()
+            .unwrap_or_default()
+            .to_owned()
     } else {
         format!("{}", settings.mcp_server.port)
     };
@@ -349,6 +365,11 @@ fn paint_server_card(
             .draw_text(&port_layout, Point2D::new(port_x, port_y));
     }
 
+    // Host-managed: no start/stop affordance — the extension owns the
+    // lifecycle (hit_test skips ToggleServer under the same gate).
+    if host_managed {
+        return;
+    }
     let btn_bg = if running { theme.muted } else { theme.primary };
     let btn_fg = if running {
         theme.foreground
@@ -398,7 +419,7 @@ fn paint_client_config(
     content: Rect,
     now_ms: u64,
 ) {
-    if !settings.mcp_server.running {
+    if !settings.mcp_host_managed() && !settings.mcp_server.running {
         return;
     }
     let rect = client_config_rect(content);
