@@ -1096,20 +1096,35 @@ CRITICAL LAYOUT CONSTRAINTS:\n\
     // (Mobile UI guardrails now load from the `mobile-ui` skill — see the
     // `isMobileScreen` flag + dynamic-content setup above.)
 
-    // Self-check quality-rejection feedback (retry ladder, attempt 2 only —
-    // see `retry::is_self_check_rejection` + `concurrent::run_subtask_retry_ladder`).
-    // Echoed back instead of silently narrowing the skill set: the content
-    // was otherwise real, so the model just needs to fix the one flagged
-    // geometry/structure issue, at the SAME skill tier attempt 1 used.
-    if let Some(reason) = subtask.retry_feedback.as_ref() {
-        user_prompt.push_str(&format!(
-            "\n\nSELF-CHECK FIX REQUIRED: your previous attempt at this exact \
-             section was rejected before insertion for this reason: {reason}\n\
+    // Quality-rejection feedback echoed back into a SAME-tier retry instead
+    // of silently narrowing the skill set — the content was otherwise
+    // real, so the model just needs to fix the flagged issue. Two sources,
+    // two wordings (`plan::RetryFeedback`):
+    // - `SelfCheck` — `orchestration_self_check` rejected it BEFORE
+    //   insertion (retry ladder attempt 2; `retry::is_self_check_rejection`).
+    // - `Geometry` — the REAL resolved layout of an already-INSERTED
+    //   subtree proved a structural violation (the `geometry_echo` step,
+    //   `concurrent::run_subtask_retry_ladder`'s tail).
+    if let Some(feedback) = subtask.retry_feedback.as_ref() {
+        let block = match feedback {
+            crate::plan::RetryFeedback::SelfCheck(reason) => format!(
+                "\n\nSELF-CHECK FIX REQUIRED: your previous attempt at this exact \
+                 section was rejected before insertion for this reason: {reason}\n\
 - Regenerate the section addressing that reason specifically — do not change \
   anything else about the approach.\n\
 - Keep using the full skill set and design detail from your previous attempt; \
   the rejection was a geometry/structure issue, not a signal to simplify."
-        ));
+            ),
+            crate::plan::RetryFeedback::Geometry(reason) => format!(
+                "\n\nGEOMETRY FIX REQUIRED: the REAL resolved layout of your previous \
+                 attempt at this exact section has these structural problems:\n{reason}\n\
+- Regenerate the section fixing exactly these — do not change anything else \
+  about the approach.\n\
+- Keep using the full skill set and design detail from your previous attempt; \
+  these are layout/structure problems, not a signal to simplify."
+            ),
+        };
+        user_prompt.push_str(&block);
     }
 
     // Port of orchestrator-sub-agent.ts:739-748 — APPEND MODE prompt injection.

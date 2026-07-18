@@ -627,6 +627,7 @@ mod subtask_retry_tests {
             screen: None,
             generated_root_id: None,
             existing_section_labels: None,
+            retry_feedback: None,
         }
     }
 

@@ -662,6 +662,9 @@ fn progress_label(p: &Progress) -> String {
         } => {
             format!("  ▸ retry #{attempt}: {reason}")
         }
+        Progress::GeometryEcho { issue_count, .. } => {
+            format!("  ▸ geometry echo: {issue_count} issue(s) → retry")
+        }
         Progress::SubtaskNodes { id, nodes_so_far } => {
             format!("• Subtask `{id}` — {nodes_so_far} node(s) so far")
         }

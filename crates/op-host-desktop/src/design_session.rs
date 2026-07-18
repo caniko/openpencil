@@ -340,6 +340,16 @@ fn apply_progress(msg: &mut ChatMessage, progress: &[Progress], locale: Locale) 
                 ChatActivityStatus::Running,
                 Some(element_count(locale, *nodes_so_far)),
             ),
+            // Not translated — same "diagnostic confirmation line" treatment
+            // as the D-lite lines above; this is the geometry_echo in-loop
+            // self-correction step announcing itself (keeps the subtask's
+            // row Running while it retries against a real layout finding).
+            Progress::GeometryEcho { id, issue_count } => update_activity(
+                msg,
+                id,
+                ChatActivityStatus::Running,
+                Some(format!("Fixing {issue_count} layout issue(s)…")),
+            ),
             // Not translated — this is a diagnostic confirmation line (D-lite
             // "three-piece" visibility fix) rather than a narrated sentence,
             // same treatment as the raw subtask id/error text already

@@ -1090,11 +1090,11 @@ fn subagent_prompt_injects_self_check_feedback_when_present() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
-        retry_feedback: Some(
+        retry_feedback: Some(crate::plan::RetryFeedback::SelfCheck(
             "self-check failed: radial-stack-not-concentric at n14: progress-ring track, \
              progress arc, and measurable centre content must share one point"
                 .into(),
-        ),
+        )),
     };
     let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
     assert!(
@@ -1134,6 +1134,48 @@ fn subagent_prompt_omits_self_check_feedback_when_absent() {
     assert!(
         !cr.user_prompt.contains("SELF-CHECK FIX REQUIRED"),
         "user_prompt must not mention self-check feedback when there is none"
+    );
+}
+
+/// `RetryFeedback::Geometry` (the `geometry_echo` step) must use DISTINCT
+/// wording from the self-check block — "GEOMETRY FIX REQUIRED", not
+/// "SELF-CHECK FIX REQUIRED" — so the model can tell "real content with a
+/// resolved-layout problem" apart from "rejected before it even landed".
+#[test]
+fn subagent_prompt_injects_geometry_feedback_with_distinct_wording() {
+    let st = crate::plan::Subtask {
+        id: "hero".into(),
+        label: "Hero".into(),
+        region: crate::plan::Region {
+            width: 1200.0,
+            height: 400.0,
+        },
+        id_prefix: "hero".into(),
+        parent_frame_id: None,
+        elements: None,
+        screen: None,
+        generated_root_id: None,
+        existing_section_labels: None,
+        retry_feedback: Some(crate::plan::RetryFeedback::Geometry(
+            "Card (n9): resolved 420px wide inside its 390px parent — it spills out".into(),
+        )),
+    };
+    let (cr, _) = bsp(&st, &plan(), &req(), AbortFlag::new(), false, false);
+    assert!(
+        cr.user_prompt.contains("GEOMETRY FIX REQUIRED"),
+        "user_prompt must use the geometry-specific wording, not the self-check one"
+    );
+    assert!(
+        !cr.user_prompt.contains("SELF-CHECK FIX REQUIRED"),
+        "the two feedback kinds must not share a label"
+    );
+    assert!(
+        cr.user_prompt.contains("resolved 420px wide"),
+        "user_prompt must echo the actual diagnostic line verbatim"
+    );
+    assert!(
+        cr.user_prompt.contains("Keep using the full skill set"),
+        "user_prompt must tell the model NOT to simplify in response to the diagnostic"
     );
 }
 

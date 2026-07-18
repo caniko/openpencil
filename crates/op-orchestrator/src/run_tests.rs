@@ -540,6 +540,121 @@ fn transport_failure_still_downgrades_skills_on_attempt2_for_basic_tier() {
     );
 }
 
+// ── geometry_echo end-to-end (rail-collapse fixture) ────────────────────
+
+const RAIL_PLAN_JSON: &str = r##"{
+  "rootFrame": { "id": "root", "name": "Page", "width": 375, "height": 800,
+                 "layout": "vertical", "gap": 0,
+                 "fill": [{ "type": "solid", "color": "#FFFFFF" }] },
+  "subtasks": [
+    { "id": "goals", "label": "Savings Goals", "region": { "width": 375, "height": 200 } }
+  ]
+}"##;
+
+/// The exact "Savings Goals" rail shape `geometry_rail_collapse_tests.rs`
+/// (de-identified real user report) and
+/// `geometry_validation_tests.rs::rail_width_collapse_is_echoed_for_the_model_under_real_layout`
+/// both key off: a 200px fixed `Emergency Fund` card starves its two
+/// `fill_container` siblings down to ~51px in the 327px-inner rail —
+/// truncated titles, ballooned card height from forced wrapping.
+fn rail_collapse_script() -> String {
+    r##"I(null, {"type":"frame","name":"Goals Rail","layout":"horizontal","width":327,"height":"fit_content","gap":12,"children":[
+        {"type":"frame","name":"Emergency Fund","layout":"vertical","width":200,"height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]},
+        {"type":"frame","name":"New Car","layout":"vertical","width":"fill_container","height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]},
+        {"type":"frame","name":"Vacation","layout":"vertical","width":"fill_container","height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]}
+    ]});"##
+        .into()
+}
+
+/// The model's in-loop self-correction: same rail, all THREE cards
+/// `fill_container` — no fixed reference left to starve against at all.
+fn rail_fixed_script() -> String {
+    r##"I(null, {"type":"frame","name":"Goals Rail","layout":"horizontal","width":327,"height":"fit_content","gap":12,"children":[
+        {"type":"frame","name":"Emergency Fund","layout":"vertical","width":"fill_container","height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]},
+        {"type":"frame","name":"New Car","layout":"vertical","width":"fill_container","height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]},
+        {"type":"frame","name":"Vacation","layout":"vertical","width":"fill_container","height":"fit_content","fill":[{"type":"solid","color":"#FFFFFF"}]}
+    ]});"##
+        .into()
+}
+
+/// End-to-end: attempt 1 lands the collapsed rail (self-check has no
+/// concentricity-style gate for THIS failure mode, so it inserts fine) —
+/// `geometry_echo` must catch it via the REAL resolved layout, retry
+/// in-loop, and land the balanced version BEFORE `finalize_design`'s
+/// deterministic geometry fixers ever get a chance to touch it. Proof that
+/// the deterministic net stayed idle: the fixer's ONLY possible move here
+/// (`fix_rail_width_collapse`) requires a FIXED-width reference card to
+/// widen siblings toward — the echoed replacement has none (all three
+/// cards are the `fill_container` keyword, not a number), so if the
+/// resolved widths come back balanced, that widening move structurally
+/// could not have run.
+#[test]
+fn geometry_echo_salvages_the_rail_collapse_fixture_before_the_deterministic_net() {
+    let llm = ScriptedLlm::new(vec![
+        ScriptResponse::Text(RAIL_PLAN_JSON.into()),
+        ScriptResponse::Text(rail_collapse_script()),
+        ScriptResponse::Text(rail_fixed_script()),
+    ]);
+    let mut sink = VecDocSink::new();
+    let mut events: Vec<Progress> = Vec::new();
+    let mut on_progress = |p: Progress| events.push(p);
+
+    let summary = futures::executor::block_on(Orchestrator::new().run(
+        req(),
+        &mut sink,
+        &llm,
+        &mut on_progress,
+        &AbortFlag::new(),
+        &stub_providers(),
+    ))
+    .expect("geometry_echo salvages the collapsed rail");
+    assert_eq!(summary.subtasks.len(), 1);
+
+    // Exactly 3 LLM calls total: planning + attempt 1 + the ONE echo retry
+    // — no salvage pass, no third subtask attempt (attempt 1 already
+    // succeeded; geometry_echo is not the zero-node ladder).
+    assert_eq!(llm.system_prompts().len(), 3, "unexpected call count");
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Progress::GeometryEcho { issue_count, .. } if *issue_count >= 2)),
+        "must announce the echo with the real rail-collapse issue count: {events:?}"
+    );
+
+    // Real layout proof: no remaining rail-collapse diagnostic.
+    let issues = crate::geometry_validation::geometry_diagnostics(&sink.state);
+    assert!(
+        !issues.iter().any(|i| i.contains("collapsed to")),
+        "the final document must have no rail-collapse violation left: {issues:?}"
+    );
+
+    // Structural proof the deterministic net's widening fixer never had
+    // anything to act on: the surviving cards are still the keyword
+    // `fill_container`, never rewritten to a numeric width.
+    let root = &sink.state.active_children()[0];
+    let root_json = serde_json::to_value(root).expect("serialize root");
+    fn find_by_name<'a>(v: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+        if v.get("name").and_then(|x| x.as_str()) == Some(name) {
+            return Some(v);
+        }
+        v.get("children")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+            .find_map(|c| find_by_name(c, name))
+    }
+    for name in ["Emergency Fund", "New Car", "Vacation"] {
+        let card = find_by_name(&root_json, name).unwrap_or_else(|| panic!("{name} present"));
+        assert_eq!(
+            card["width"],
+            serde_json::json!("fill_container"),
+            "{name} must still be the fill_container keyword — a numeric width here \
+             would mean the deterministic fixer (not the echo) made the call"
+        );
+    }
+}
+
 /// Subtask fails all 3 attempts → `OrchestratorError::AllFailed` with the
 /// final failure context.
 #[test]

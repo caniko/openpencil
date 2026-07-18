@@ -220,6 +220,7 @@ fn pump_progress_captures_failed_subtask_specs_for_manual_retry() {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     };
     let fake_worker = thread::spawn(move || {
         let sink = RemoteDocSink::new(cmd_tx, EditorState::new());
@@ -277,6 +278,7 @@ fn persisted_subtask_json() -> String {
         screen: None,
         generated_root_id: None,
         existing_section_labels: None,
+        retry_feedback: None,
     })
     .unwrap()
 }

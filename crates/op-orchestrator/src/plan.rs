@@ -81,15 +81,31 @@ pub struct Subtask {
     /// port of TS `SubTask.existingSectionLabels` (`ai-types.ts:134`)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub existing_section_labels: Option<Vec<String>>,
-    /// Set by the retry ladder (`concurrent::run_subtask_retry_ladder`) on
-    /// attempt 2 ONLY when attempt 1 failed a self-check quality rejection
-    /// (not a transport/parse failure) — the rejection message, echoed back
-    /// into the retry prompt so the model can fix exactly that issue while
-    /// keeping the same skill tier. Execution-only, like
-    /// `generated_root_id`: never persisted, never present on a freshly
-    /// planned subtask.
+    /// Set by the retry ladder (`concurrent::run_subtask_retry_ladder`) to
+    /// echo a reason back into the SAME-tier retry prompt instead of
+    /// silently narrowing the skill set — see [`RetryFeedback`] for the two
+    /// cases and their exact wording (`prompt.rs`'s injection). Execution-
+    /// only, like `generated_root_id`: never persisted, never present on a
+    /// freshly planned subtask.
     #[serde(skip)]
-    pub retry_feedback: Option<String>,
+    pub retry_feedback: Option<RetryFeedback>,
+}
+
+/// Why a subtask is being retried WITH its rejection reason echoed into the
+/// prompt (as opposed to a plain zero-node retry, which carries no
+/// feedback) — drives the exact wording `prompt.rs`'s `retry_feedback`
+/// block injects, so the model can tell "geometry problem in real content
+/// you should keep" apart from "structural problem caught before your
+/// content even landed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetryFeedback {
+    /// `orchestration_self_check` fatally rejected otherwise-parsed content
+    /// BEFORE insertion — carries the self-check `failure_message()`.
+    SelfCheck(String),
+    /// The REAL resolved layout of an already-INSERTED subtree proved a
+    /// structural violation (`geometry_validation::geometry_diagnostics_for_roots`,
+    /// the `geometry_echo` step) — carries the joined diagnostic lines.
+    Geometry(String),
 }
 
 /// 规划阶段的完整产物。字段对齐规划语料 `decomposition.md`。

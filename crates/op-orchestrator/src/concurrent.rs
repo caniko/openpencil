@@ -58,7 +58,9 @@ use crate::plan::{OrchestratorPlan, Subtask};
 use crate::retry::{is_non_retryable, is_self_check_rejection};
 use crate::screen_groups::ScreenGroup;
 use crate::subagent::{apply_command_with_reveal, reveal_now_millis, run_subtask_with_reveal_at};
-use crate::types::{AbortFlag, DesignRequest, DocSink, LlmClient, Progress, SubtaskOutcome};
+use crate::types::{
+    AbortFlag, DesignRequest, DocSink, GeometryEchoBudget, LlmClient, Progress, SubtaskOutcome,
+};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use op_editor_core::{EditorCommand, EditorState};
@@ -174,6 +176,11 @@ impl DocSink for BufferDocSink {
 /// the canvas reveal/indicator overlay to them here would race the replay
 /// that makes them real) and `Some(epoch)` for the sequential path, which
 /// writes directly to the real sink.
+///
+/// After the ladder settles on a winning outcome, one more thing can
+/// happen before it's returned: the `geometry_echo` step
+/// ([`maybe_geometry_echo`]) — see that function's doc for the full
+/// contract (budget, buffered-sink no-op, replace-on-success semantics).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_subtask_retry_ladder(
     subtask: &Subtask,
@@ -184,6 +191,7 @@ pub(crate) async fn run_subtask_retry_ladder(
     abort: &AbortFlag,
     tier: ModelTier,
     agent_indicator_epoch: Option<u64>,
+    geometry_echo_budget: &GeometryEchoBudget,
     on_progress: &mut dyn FnMut(Progress),
 ) -> SubtaskOutcome {
     on_progress(Progress::SubtaskStarted {
@@ -238,7 +246,10 @@ pub(crate) async fn run_subtask_retry_ladder(
         .is_some_and(is_self_check_rejection);
     let attempt2_subtask = if attempt1_self_check_rejection {
         Subtask {
-            retry_feedback: outcome1.error.clone(),
+            retry_feedback: outcome1
+                .error
+                .clone()
+                .map(crate::plan::RetryFeedback::SelfCheck),
             ..subtask.clone()
         }
     } else {
@@ -318,7 +329,142 @@ pub(crate) async fn run_subtask_retry_ladder(
         None
     };
 
-    outcome3.unwrap_or_else(|| outcome2.unwrap_or(outcome1))
+    // Whichever attempt actually won, carry along the (reduced_complexity,
+    // minimal_skills) it used — the geometry_echo retry below reuses the
+    // SAME tier, never escalating or de-escalating.
+    let (outcome, reduced_complexity, minimal_skills) = if let Some(o3) = outcome3 {
+        (o3, true, true)
+    } else if let Some(o2) = outcome2 {
+        (
+            o2,
+            tier == ModelTier::Basic && !attempt1_self_check_rejection,
+            false,
+        )
+    } else {
+        (outcome1, false, false)
+    };
+
+    maybe_geometry_echo(
+        subtask,
+        plan,
+        request,
+        llm,
+        sink,
+        abort,
+        reduced_complexity,
+        minimal_skills,
+        agent_indicator_epoch,
+        geometry_echo_budget,
+        on_progress,
+        outcome,
+    )
+    .await
+}
+
+/// One in-loop self-correction round: after a subtask's content actually
+/// LANDED (`outcome.node_count > 0`), run the REAL resolved layout + the
+/// geometry-detector family's DETECT-only half
+/// (`geometry_validation::geometry_diagnostics_for_roots`) against exactly
+/// what this subtask inserted. Any violation gets echoed back into a
+/// same-tier, same-skill retry — ONE round only, matching the self-check
+/// quality-rejection contract above (`RetryFeedback::Geometry`,
+/// `prompt.rs`'s "GEOMETRY FIX REQUIRED" wording). If the retry produces
+/// real content, it REPLACES the original insert (delete the old roots,
+/// adopt the new outcome); if it fails, the ORIGINAL — still-violated but
+/// real — content is kept. Either way, `cleanup.rs`'s deterministic
+/// geometry fixers remain the final net, unchanged: this step is a
+/// best-effort head-start on correctness, not a replacement for them.
+///
+/// A no-op (zero extra LLM calls) whenever:
+/// - `outcome.node_count == 0` — nothing landed, nothing to check;
+/// - `outcome.inserted_root_ids` is empty — the concurrent screen-group
+///   path's [`BufferDocSink`] never surfaces real ids (its `state()` is a
+///   frozen pre-phase snapshot that never reflects its own buffered
+///   inserts — see that type's doc), so there is nothing live to lay out
+///   or address for a replace. Geometry echo is therefore SEQUENTIAL-PATH
+///   ONLY today; a buffered worker's subtasks fall back to the
+///   deterministic net after replay, same as before this step existed.
+/// - the diagnostics come back empty — the common case, zero cost;
+/// - the run-wide [`GeometryEchoBudget`] is exhausted.
+#[allow(clippy::too_many_arguments)]
+async fn maybe_geometry_echo(
+    subtask: &Subtask,
+    plan: &OrchestratorPlan,
+    request: &DesignRequest,
+    llm: &dyn LlmClient,
+    sink: &mut dyn DocSink,
+    abort: &AbortFlag,
+    reduced_complexity: bool,
+    minimal_skills: bool,
+    agent_indicator_epoch: Option<u64>,
+    budget: &GeometryEchoBudget,
+    on_progress: &mut dyn FnMut(Progress),
+    outcome: SubtaskOutcome,
+) -> SubtaskOutcome {
+    if outcome.node_count == 0 || outcome.inserted_root_ids.is_empty() || abort.is_set() {
+        return outcome;
+    }
+    let issues = crate::geometry_validation::geometry_diagnostics_for_roots(
+        sink.state(),
+        &outcome.inserted_root_ids,
+    );
+    if issues.is_empty() {
+        return outcome;
+    }
+    if !budget.try_consume() {
+        return outcome;
+    }
+
+    on_progress(Progress::GeometryEcho {
+        id: subtask.id.clone(),
+        issue_count: issues.len(),
+    });
+    tracing::info!(
+        subtask = %subtask.id,
+        issue_count = issues.len(),
+        "geometry echo: resolved-layout violation(s) found, retrying in-loop"
+    );
+
+    let echo_subtask = Subtask {
+        retry_feedback: Some(crate::plan::RetryFeedback::Geometry(issues.join("\n"))),
+        ..subtask.clone()
+    };
+    let retried = run_subtask_with_reveal_at(
+        &echo_subtask,
+        plan,
+        request,
+        llm,
+        sink,
+        abort,
+        reduced_complexity,
+        minimal_skills,
+        agent_indicator_epoch,
+        reveal_now_millis(),
+        None,
+    )
+    .await;
+
+    if retried.node_count == 0 {
+        // The echo retry itself failed (LLM error, parse failure, or a
+        // fresh self-check rejection) — keep the ORIGINAL, still-real
+        // content rather than lose it; the deterministic net in
+        // `cleanup.rs` picks up whatever geometry issues remain.
+        return outcome;
+    }
+
+    // Adopt the corrected content: drop the original insert now that a
+    // real replacement has landed. Delete-then-keep-the-new-insert rather
+    // than a literal `EditorCommand::ReplaceSubtree` (which is 1-old-root-
+    // to-1-new-node only) because a subtask can produce N top-level roots
+    // on either side — this generalizes to N-old/M-new without assuming a
+    // 1:1 shape.
+    for root_id in &outcome.inserted_root_ids {
+        sink.apply(EditorCommand::DeleteNode {
+            node_id: op_editor_core::NodeId::new(root_id.clone()),
+            page_id: None,
+        });
+    }
+    retried
 }
 
 // ── Screen-group worker + concurrent executor ───────────────────────────────
@@ -355,6 +501,7 @@ async fn run_screen_group_worker(
     tier: ModelTier,
     mut buffer: BufferDocSink,
     semaphore: Arc<Semaphore>,
+    geometry_echo_budget: &GeometryEchoBudget,
     progress_tx: mpsc::UnboundedSender<Progress>,
 ) -> WorkerResult {
     let mut outcomes = Vec::with_capacity(group.indices.len());
@@ -379,7 +526,12 @@ async fn run_screen_group_worker(
             let _ = ptx.send(p);
         };
         // `agent_indicator_epoch: None` — see `run_subtask_retry_ladder`'s
-        // doc: this writes into `buffer`, not the real document yet.
+        // doc: this writes into `buffer`, not the real document yet. The
+        // geometry_echo step inside the ladder is a guaranteed no-op here
+        // too, for the same reason (`buffer.state()` never reflects its
+        // own buffered inserts, so `inserted_root_ids` comes back empty) —
+        // the budget is still threaded through for when that limitation
+        // lifts, not because it's spent here.
         let outcome = run_subtask_retry_ladder(
             subtask,
             plan,
@@ -389,6 +541,7 @@ async fn run_screen_group_worker(
             abort,
             tier,
             None,
+            geometry_echo_budget,
             &mut emit,
         )
         .await;
@@ -470,6 +623,7 @@ pub(crate) async fn run_screen_groups_concurrent(
     tier: ModelTier,
     effective_concurrency: u32,
     agent_indicator_epoch: Option<u64>,
+    geometry_echo_budget: &GeometryEchoBudget,
     on_progress: &mut dyn FnMut(Progress),
 ) -> ConcurrentPhaseResult {
     // Item 4: a fact-line up front makes ⚡Nx's effect legible instead of
@@ -500,6 +654,7 @@ pub(crate) async fn run_screen_groups_concurrent(
                 tier,
                 BufferDocSink::new(snapshot.clone()),
                 Arc::clone(&semaphore),
+                geometry_echo_budget,
                 progress_tx.clone(),
             );
             async move { (g_idx, fut.await) }

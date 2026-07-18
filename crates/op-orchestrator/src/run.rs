@@ -155,6 +155,19 @@ impl Orchestrator {
                 .collect(),
         });
 
+        // Run-wide `geometry_echo` budget (`concurrent::run_subtask_retry_ladder`'s
+        // tail step) — `min(subtask_count, 6)` unless the
+        // `OPENPENCIL_GEOMETRY_ECHO=0` rollback valve is set. Constructed
+        // ONCE per run and shared (by reference) across BOTH the sequential
+        // loop and every screen-group worker below, so the cap is a
+        // genuine run-wide total, not per-path. See `geometry_echo_cap`'s
+        // doc for why the env read stays this one untested line.
+        let geometry_echo_budget =
+            crate::types::GeometryEchoBudget::new(crate::types::geometry_echo_cap(
+                plan.subtasks.len(),
+                std::env::var("OPENPENCIL_GEOMETRY_ECHO").ok().as_deref(),
+            ));
+
         // Dashboards (formerly a bespoke sidebar+main scaffold) flow through
         // the same single-root pipeline as any other single-screen plan —
         // they produced byte-identical per-subtask output, only differing in
@@ -439,6 +452,7 @@ impl Orchestrator {
                 tier,
                 effective_concurrency,
                 self.agent_indicator_epoch,
+                &geometry_echo_budget,
                 on_progress,
             )
             .await;
@@ -489,6 +503,7 @@ impl Orchestrator {
                     abort,
                     tier,
                     self.agent_indicator_epoch,
+                    &geometry_echo_budget,
                     on_progress,
                 )
                 .await;

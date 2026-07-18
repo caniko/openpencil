@@ -9,7 +9,7 @@ use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorCommand, EditorState, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -230,6 +230,53 @@ impl AbortFlag {
     }
 }
 
+/// Run-scoped budget for the `geometry_echo` in-loop self-correction step
+/// (`concurrent::run_subtask_retry_ladder`) — caps the TOTAL number of
+/// subtasks across one `Orchestrator::run()` call that may spend an extra
+/// LLM call self-correcting a geometry violation, so a slow model or a
+/// systematically-violating design can't compound retry cost across the
+/// whole run. Cheap, cloneable `Arc<AtomicUsize>` semantics — same shape as
+/// [`AbortFlag`], threaded the same way (by reference) down to every place
+/// that runs a subtask.
+#[derive(Debug, Clone)]
+pub struct GeometryEchoBudget(Arc<AtomicUsize>);
+
+impl GeometryEchoBudget {
+    pub fn new(cap: usize) -> Self {
+        Self(Arc::new(AtomicUsize::new(cap)))
+    }
+
+    /// Consume one unit of budget iff any remains. Returns `true` when the
+    /// caller may proceed with an echo retry — `false` means the run-wide
+    /// cap is already exhausted (or was `0` to begin with, e.g. the
+    /// `OPENPENCIL_GEOMETRY_ECHO=0` rollback valve — see
+    /// [`geometry_echo_cap`]).
+    pub(crate) fn try_consume(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+}
+
+/// `min(subtask_count, 6)` unless `env_value == Some("0")` (the
+/// `OPENPENCIL_GEOMETRY_ECHO=0` rollback safety valve — geometry echo
+/// defaults ON), in which case `0`. A zero-budget [`GeometryEchoBudget`]
+/// degrades to a no-op exactly like "no budget left", so disabling the env
+/// var needs no separate branch anywhere the budget is consumed.
+///
+/// Takes the env value as a plain `Option<&str>` (rather than reading
+/// `std::env::var` itself) so this — the actual cap LOGIC — stays a pure,
+/// directly-testable function; only the one-line call site in `run.rs`
+/// touches the real process environment (untested glue, matching this
+/// crate's `is_self_check_rejection` / thin-adapter convention elsewhere).
+pub(crate) fn geometry_echo_cap(subtask_count: usize, env_value: Option<&str>) -> usize {
+    if env_value == Some("0") {
+        0
+    } else {
+        subtask_count.min(6)
+    }
+}
+
 /// 规划 prompt 的构造模式 —— TS rich/minimal/compact 三档。
 /// Plan B 的格式化器与 Plan C 的 `build_orchestrator_prompt` 共用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +344,15 @@ pub enum Progress {
         id: String,
         attempt: u8,
         reason: String,
+    },
+    /// Emitted once, right before a `geometry_echo` in-loop self-correction
+    /// retry starts (`concurrent::run_subtask_retry_ladder`'s tail) — a
+    /// fact line so the progress panel shows this step actually working,
+    /// not a silent extra LLM call. `issue_count` is how many diagnostic
+    /// lines `geometry_validation::geometry_diagnostics_for_roots` found.
+    GeometryEcho {
+        id: String,
+        issue_count: usize,
     },
     /// Emitted after each sub-agent LLM reply is applied — lets the UI
     /// show a live node count while the subtask is still running.
@@ -571,6 +627,62 @@ mod tests {
         let clone = flag.clone();
         flag.set();
         assert!(clone.is_set());
+    }
+
+    // ── geometry_echo budget ────────────────────────────────────────────────
+
+    #[test]
+    fn geometry_echo_budget_consumes_down_to_zero_then_refuses() {
+        let budget = GeometryEchoBudget::new(2);
+        assert!(budget.try_consume());
+        assert!(budget.try_consume());
+        assert!(!budget.try_consume(), "cap of 2 must refuse a 3rd consume");
+        assert!(
+            !budget.try_consume(),
+            "stays exhausted, does not wrap around"
+        );
+    }
+
+    #[test]
+    fn geometry_echo_budget_of_zero_never_consumes() {
+        let budget = GeometryEchoBudget::new(0);
+        assert!(!budget.try_consume());
+    }
+
+    #[test]
+    fn geometry_echo_budget_is_shared_across_clones() {
+        // Same shape as `AbortFlag` — clones share the SAME underlying
+        // counter (run-wide, not per-clone), since it's threaded by
+        // reference/clone through both the sequential loop and every
+        // screen-group worker.
+        let budget = GeometryEchoBudget::new(1);
+        let clone = budget.clone();
+        assert!(clone.try_consume());
+        assert!(
+            !budget.try_consume(),
+            "the clone's consume must be visible here too"
+        );
+    }
+
+    #[test]
+    fn geometry_echo_cap_is_min_of_subtask_count_and_six_by_default() {
+        assert_eq!(geometry_echo_cap(3, None), 3);
+        assert_eq!(geometry_echo_cap(9, None), 6);
+        assert_eq!(geometry_echo_cap(0, None), 0);
+    }
+
+    #[test]
+    fn geometry_echo_cap_is_zero_when_env_says_zero() {
+        assert_eq!(geometry_echo_cap(9, Some("0")), 0);
+    }
+
+    #[test]
+    fn geometry_echo_cap_ignores_other_env_values() {
+        // Only the literal "0" disables it — any other value (including a
+        // typo'd truthy string) leaves the default cap in effect rather
+        // than silently doing something else.
+        assert_eq!(geometry_echo_cap(9, Some("1")), 6);
+        assert_eq!(geometry_echo_cap(9, Some("false")), 6);
     }
 
     // ── Task A1: AppendContext + DesignRequest.append_context ─────────────────

@@ -23,6 +23,10 @@ use serde_json::Value;
 
 use crate::types::DocSink;
 
+#[path = "geometry_echo.rs"]
+mod geometry_echo;
+pub(crate) use geometry_echo::geometry_diagnostics_for_roots;
+
 #[derive(Clone, Copy)]
 struct Rect {
     x: f64,
@@ -1124,8 +1128,65 @@ fn collect_diagnostics(v: &Value, rects: &HashMap<String, Rect>, out: &mut Vec<S
     collect_vertical_spill_diagnostics(v, rects, out);
     collect_sibling_jam_diagnostics(v, rects, out);
     collect_starved_fill_diagnostics(v, rects, out);
+    collect_rail_width_collapse_diagnostics(v, rects, out);
     for c in children(v) {
         collect_diagnostics(c, rects, out);
+    }
+}
+
+/// Detect-only twin of [`collect_rail_width_collapse_fixes`] — same
+/// reference-card / collapse-ratio condition, but reports instead of
+/// fixing, so the `geometry_echo` in-loop step (which only ever runs the
+/// DETECT half of this detector family) can catch the exact failure mode
+/// that fixer exists for: a card rail whose `fill_container` siblings
+/// collapsed beside a fixed-width reference card (root-cause fixture:
+/// `geometry_rail_collapse_tests.rs`'s de-identified "Savings Goals" rail —
+/// a 200px fixed card 1 starving cards 2/3 down to ~51px, truncating their
+/// titles and ballooning their height from forced wrapping).
+fn collect_rail_width_collapse_diagnostics(
+    v: &Value,
+    rects: &HashMap<String, Rect>,
+    out: &mut Vec<String>,
+) {
+    if layout_str(v) != Some("horizontal") {
+        return;
+    }
+    let cards = children(v);
+    let Some(ref_w) = cards
+        .iter()
+        .filter_map(fixed_width)
+        .fold(None, |acc: Option<f64>, w| {
+            Some(acc.map_or(w, |a| a.max(w)))
+        })
+    else {
+        return;
+    };
+    for c in cards {
+        if out.len() >= MAX_DIAGNOSTICS {
+            return;
+        }
+        if c.get("width").and_then(Value::as_str) != Some("fill_container") {
+            continue;
+        }
+        let Some(cid) = c.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(cr) = rects.get(cid) else {
+            continue;
+        };
+        if cr.w <= 0.0 {
+            continue;
+        }
+        if cr.w < RAIL_COLLAPSE_FLOOR && ref_w / cr.w > RAIL_COLLAPSE_RATIO {
+            out.push(format!(
+                "{}: fill_container sibling collapsed to {}px beside a {}px fixed-width \
+                 reference card in the same row — widen it to match the reference (or make \
+                 the reference fill_container too) so it isn't starved",
+                diag_label(c),
+                cr.w.round(),
+                ref_w.round()
+            ));
+        }
     }
 }
 

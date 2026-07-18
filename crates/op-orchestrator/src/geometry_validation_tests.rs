@@ -1822,6 +1822,49 @@ fn desktop_roots_and_nav_last_mobile_roots_emit_no_nav_order_echo() {
     );
 }
 
+/// `geometry_diagnostics`'s detect-only twin of `fix_rail_width_collapse`
+/// against REAL jian layout — the same "Savings Goals" rail shape
+/// `geometry_rail_collapse_tests.rs` proves the FIX for, but here just
+/// checking the DIAGNOSTIC fires (this is what `geometry_echo` consumes;
+/// the fixer stays the deterministic-net fallback, untouched).
+#[test]
+fn rail_width_collapse_is_echoed_for_the_model_under_real_layout() {
+    let doc: jian_ops_schema::PenDocument = serde_json::from_value(serde_json::json!({
+        "version": "1.0",
+        "children": [{
+            "type": "frame", "id": "rail", "name": "Goals Rail", "layout": "horizontal",
+            "width": 327, "height": "fit_content", "gap": 12,
+            "children": [
+                { "type": "frame", "id": "c1", "name": "Emergency Fund", "layout": "vertical",
+                  "width": 200, "height": "fit_content" },
+                { "type": "frame", "id": "c2", "name": "New Car", "layout": "vertical",
+                  "width": "fill_container", "height": "fit_content" },
+                { "type": "frame", "id": "c3", "name": "Vacation", "layout": "vertical",
+                  "width": "fill_container", "height": "fit_content" }
+            ]
+        }]
+    }))
+    .expect("doc");
+    let state = op_editor_core::EditorState::from_document(doc);
+    let issues = super::geometry_diagnostics(&state);
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.contains("New Car") && i.contains("collapsed to")),
+        "New Car's fill_container width starved beside the 200px reference must be echoed: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.contains("Vacation") && i.contains("collapsed to")),
+        "Vacation's fill_container width starved beside the 200px reference must be echoed: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|i| i.contains("Emergency Fund")),
+        "the fixed-width REFERENCE card is never itself the violation: {issues:?}"
+    );
+}
+
 /// GLM-5.2 measured (test0711-1.op): a 300px-tall image inside a 42px
 /// "Avatar" strip painted across half the header. The width-overflow echo
 /// is blind to the vertical axis — this echo covers it.
