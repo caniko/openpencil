@@ -33,6 +33,12 @@ const ctx = await esbuild.context({
   format: "cjs",
   platform: "node",
   target: "node18",
+  // Prefer ESM entry points. jsonc-parser's UMD `main` wraps its submodule
+  // requires (`require("./impl/format")`) in a factory esbuild can't statically
+  // link, so they survive as runtime requires that fail at load ("Cannot find
+  // module './impl/format'") — crashing extension activation. Its ESM `module`
+  // entry uses static imports esbuild bundles cleanly.
+  mainFields: ["module", "main"],
   sourcemap: true,
 });
 

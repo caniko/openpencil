@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run OpenPencil Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "/private/tmp/claude-501/-Users-kayshen-Workspace-ZSeven-W-openpencil/9ad30769-086a-43a5-ab3c-81ea1ac1e9b2/scratchpad/op-vscode-testws"
+      ],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"]
+    }
+  ]
+}

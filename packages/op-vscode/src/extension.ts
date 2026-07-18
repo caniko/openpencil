@@ -39,12 +39,22 @@ const placeholderUris: vscode.Uri[] = [];
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("OpenPencil");
+  // Mirror to the dev-tools console (console.log shows in the Extension
+  // Development Host debug console) AND the "OpenPencil" Output channel, so the
+  // manual test matrix is observable from either surface.
   const logger: DaemonLogger = {
-    info: (l) => output?.appendLine(l),
-    error: (l) => output?.appendLine(`[error] ${l}`),
+    info: (l) => {
+      output?.appendLine(l);
+      console.log(`[OpenPencil] ${l}`);
+    },
+    error: (l) => {
+      output?.appendLine(`[error] ${l}`);
+      console.error(`[OpenPencil] ${l}`);
+    },
   };
   const state: AppState = { trusted: vscode.workspace.isTrusted };
   currentState = state;
+  logger.info(`activate: trusted=${state.trusted}`);
 
   // Commands are registered ONCE; handlers dispatch through the mutable state.
   registerCommands(context, state);
@@ -108,6 +118,7 @@ async function assemble(
     );
   }
   await context.workspaceState.update(PROXY_PORT_KEY, proxyPort);
+  logger.info(`assembled: MCP proxy listening on 127.0.0.1:${proxyPort}`);
 
   state.assembled = { pool, proxy, registry, proxyPort };
   context.subscriptions.push(

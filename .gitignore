@@ -42,3 +42,4 @@ Cargo.lock.merge-conflict
 
 tools/__pycache__/
 openpencil-docs
+output
