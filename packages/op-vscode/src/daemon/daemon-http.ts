@@ -56,6 +56,38 @@ export class DaemonHttp {
     return await res.text();
   }
 
+  /** POST /api/figma/convert: sends raw `.fig` bytes (base64) and returns the
+   *  converted `.op` document, re-serialized as a JSON string (the caller uses
+   *  it directly as bootJson). The daemon returns a JSON body on both 200
+   *  ({"ok":true,"doc":...}) and 400 ({"ok":false,"error":...}) — any other
+   *  status is rejected on status alone, before attempting to parse a body
+   *  that isn't guaranteed to be JSON (mirrors version()/getDocument()'s
+   *  check-status-first style). Content-Type must be application/json — the
+   *  daemon rejects sensitive POSTs without it. */
+  async figmaConvert(name: string, bytesB64: string): Promise<string> {
+    const res = await this.fetch("/api/figma/convert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, bytesB64 }),
+    });
+    if (res.status !== 200 && res.status !== 400) {
+      throw new Error(`figmaConvert: unexpected status ${res.status}`);
+    }
+    const body = (await res.json()) as unknown;
+    if (typeof body !== "object" || body === null) {
+      throw new Error(`figmaConvert: response is not an object (status ${res.status})`);
+    }
+    const rec = body as Record<string, unknown>;
+    if (rec.ok !== true) {
+      const message = typeof rec.error === "string" ? rec.error : `unexpected status ${res.status}`;
+      throw new Error(`figmaConvert: ${message}`);
+    }
+    if (typeof rec.doc !== "object" || rec.doc === null) {
+      throw new Error(`figmaConvert: response missing "doc"`);
+    }
+    return JSON.stringify(rec.doc);
+  }
+
   /** POST /mcp passthrough for the McpProxy: forwards a raw JSON-RPC body and
    *  returns the status, headers, and body verbatim (plus the injected token). */
   async mcpRaw(

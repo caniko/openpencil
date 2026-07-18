@@ -27,6 +27,9 @@
         "selector": [
           {
             "filenamePattern": "*.op"
+          },
+          {
+            "filenamePattern": "*.fig"
           }
         ],
         "priority": "default"

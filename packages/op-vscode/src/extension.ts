@@ -11,6 +11,7 @@ import { DaemonPool } from "./daemon/daemon-pool";
 import { McpProxy } from "./mcp/mcp-proxy";
 import { SessionRegistry } from "./session/session-registry";
 import { PenEditorProvider } from "./vscode/pen-editor-provider";
+import { isFigPath } from "./vscode/fig-source";
 import { resolveDaemonBinary } from "./vscode/restart-source";
 import { configureMcpCommand, removeMcpCommand } from "./vscode/configure-command";
 import { installSkillCommand, removeSkillCommand } from "./vscode/skill-command";
@@ -157,7 +158,10 @@ function makeSpawn(logger: DaemonLogger) {
     if (!binary) throw new Error("op-host-web-server binary not found; set openpencil.dev.daemonPath");
     return DaemonClient.spawn({
       command: [binary],
-      filePath,
+      // The daemon's --file flag only understands .op JSON; a .fig source is
+      // converted after boot (see bootAndMount), so start it with the
+      // starter doc instead and deliver content via open-document.
+      filePath: isFigPath(filePath) ? undefined : filePath,
       allowOrigin,
       logger,
       expectedVersion: undefined,

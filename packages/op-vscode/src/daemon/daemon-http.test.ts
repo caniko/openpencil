@@ -132,3 +132,51 @@ test("rejects when the daemon never responds (injected short timeout)", async ()
   });
   await expect(new DaemonHttp(base, TOKEN, 200).version()).rejects.toThrow();
 });
+
+test("figmaConvert sends the token header and application/json content-type", async () => {
+  let seenToken: string | undefined;
+  let seenContentType: string | undefined;
+  let receivedBody = "";
+  const base = await stub((req, res) => {
+    seenToken = req.headers["x-openpencil-token"] as string | undefined;
+    seenContentType = req.headers["content-type"] as string | undefined;
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      receivedBody = Buffer.concat(chunks).toString();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"ok":true,"doc":{"version":"1.0.0","children":[]}}');
+    });
+  });
+  const json = await new DaemonHttp(base, TOKEN).figmaConvert("design.fig", "Zmln");
+  expect(seenToken).toBe(TOKEN);
+  expect(seenContentType).toBe("application/json");
+  expect(receivedBody).toBe('{"name":"design.fig","bytesB64":"Zmln"}');
+  expect(json).toBe(JSON.stringify({ version: "1.0.0", children: [] }));
+});
+
+test("figmaConvert throws on {ok:false,error} (400)", async () => {
+  const base = await stub((_req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end('{"ok":false,"error":"malformed fig file"}');
+  });
+  await expect(new DaemonHttp(base, TOKEN).figmaConvert("design.fig", "Zmln")).rejects.toThrow(
+    "malformed fig file",
+  );
+});
+
+test("figmaConvert throws on a non-200/400 status", async () => {
+  const base = await stub((_req, res) => {
+    res.writeHead(500, { "content-type": "text/plain" });
+    res.end("internal error");
+  });
+  await expect(new DaemonHttp(base, TOKEN).figmaConvert("design.fig", "Zmln")).rejects.toThrow();
+});
+
+test("figmaConvert throws when ok:true but doc is missing", async () => {
+  const base = await stub((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"ok":true}');
+  });
+  await expect(new DaemonHttp(base, TOKEN).figmaConvert("design.fig", "Zmln")).rejects.toThrow();
+});

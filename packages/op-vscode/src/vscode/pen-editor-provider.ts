@@ -16,6 +16,7 @@ import { encodeOutbound } from "../protocol/bridge";
 import { buildBootHtml, buildWebviewHtml } from "./webview-shell";
 import { pickRestartSource, resolveDaemonBinary, type LatestDurable } from "./restart-source";
 import { isShellControl, parseShellReadyOrigin } from "./shell-messages";
+import { encodeFigBytes, figSaveTargetPath, isFigPath } from "./fig-source";
 
 const SHELL_READY_TIMEOUT_MS = 5_000;
 const DAEMON_READY_TIMEOUT_MS = 10_000;
@@ -29,6 +30,19 @@ export class PenDocument implements vscode.CustomDocument {
     readonly uri: vscode.Uri,
     readonly bootJson: string,
     initialSource: LatestDurable["source"],
+    /** True for every `.fig`-sourced doc — fresh from disk OR restored from a
+     *  hot-exit backup. This (not `figBytesB64`) is THE fig-identity signal:
+     *  every fig-aware branch (save target, watcher conversion, revert,
+     *  restart) keys off `isFig`, because a backup-restored fig doc still
+     *  must never write its converted JSON back onto the original `.fig`. */
+    readonly isFig: boolean,
+    /** Base64 `.fig` bytes awaiting conversion. Set only for a `.fig` doc
+     *  opened fresh from disk (not from a backup, which is already-converted
+     *  JSON) — its presence alongside an empty `bootJson` is bootAndMount's
+     *  signal to convert before mounting. A backup-restored fig doc has
+     *  `isFig=true` but `figBytesB64=undefined`: it boots straight from the
+     *  backup JSON, no conversion needed. */
+    readonly figBytesB64?: string,
   ) {
     this.latestDurable = { source: initialSource, json: bootJson };
   }
@@ -73,11 +87,22 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     if (openContext.backupId) {
       // Hot-exit recovery: the backup bytes are authoritative and must survive
       // a subsequent daemon restart, so mark the durable source as "backup".
+      // A .fig doc's backup is already-converted JSON (PenSession backs up
+      // its live document state, not the raw .fig bytes), so it boots from
+      // the backup directly — no figBytesB64, no re-conversion — but isFig
+      // must still be set from the URI: this doc's uri is still the .fig
+      // file, and every fig-aware branch (save target, watcher, revert,
+      // restart) must keep treating it as one, or an implicit save would
+      // write converted JSON over the original .fig.
       const bytes = await vscode.workspace.fs.readFile(vscode.Uri.parse(openContext.backupId));
-      return new PenDocument(uri, decode(bytes), "backup");
+      return new PenDocument(uri, decode(bytes), "backup", isFigPath(uri.fsPath));
+    }
+    if (isFigPath(uri.fsPath)) {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return new PenDocument(uri, "", "disk", true, encodeFigBytes(bytes));
     }
     const bytes = await vscode.workspace.fs.readFile(uri);
-    return new PenDocument(uri, decode(bytes), "disk");
+    return new PenDocument(uri, decode(bytes), "disk", false);
   }
 
   async resolveCustomEditor(document: PenDocument, panel: vscode.WebviewPanel): Promise<void> {
@@ -125,6 +150,16 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
       this.logger.info(`bootAndMount: shell origin=${shellOrigin} — spawning daemon`);
       const client = await this.spawnAndAwaitReady(document.uri, shellOrigin);
       if (this.staleCleanup(key, token)) return;
+      if (document.figBytesB64 !== undefined && document.bootJson === "") {
+        this.logger.info(`bootAndMount: converting .fig bytes for ${key}`);
+        const http = new DaemonHttp(client.baseUrl, client.handshake.token);
+        const converted = await http.figmaConvert(path.basename(key), document.figBytesB64);
+        // Conversion can take seconds on large files; the panel may have
+        // closed meanwhile, so re-check staleness before touching document.
+        if (this.staleCleanup(key, token)) return;
+        (document as { bootJson: string }).bootJson = converted;
+        document.latestDurable = { source: "disk", json: converted };
+      }
       this.logger.info(`bootAndMount: daemon ready at ${client.baseUrl} — mounting editor`);
       await this.mountEditor(document, panel, client, watcherState);
       if (this.staleAfterMount(key, token, panel)) return;
@@ -222,6 +257,13 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     document.session = session;
     this.registry.register(key, session);
 
+    // A fig doc's watcher re-converts on every external edit to the source
+    // .fig file, so it needs its own DaemonHttp bound to this mount's daemon
+    // — including a backup-restored fig doc (isFig=true, figBytesB64
+    // undefined): it booted without conversion, but a subsequent external
+    // .fig edit still needs one.
+    const daemonHttp = document.isFig ? new DaemonHttp(client.baseUrl, client.handshake.token) : undefined;
+
     const disposables: vscode.Disposable[] = [];
     disposables.push(
       panel.webview.onDidReceiveMessage((raw: unknown) => {
@@ -246,7 +288,11 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
       if (Date.now() < watcherState.suppressUntil) return; // our own write
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
-        await session.externalFileChanged(decode(bytes), session.isRustDirty);
+        const json =
+          daemonHttp !== undefined
+            ? await daemonHttp.figmaConvert(path.basename(key), encodeFigBytes(bytes))
+            : decode(bytes);
+        await session.externalFileChanged(json, session.isRustDirty);
       } catch (err) {
         this.logger.error(`external change handling failed: ${String(err)}`);
       }
@@ -256,7 +302,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     // Terminal teardown (daemon release + mount disposal on panel close) is
     // anchored at the PANEL scope in resolveCustomEditor — registered once so it
     // survives restarts. Here we only record the live mount.
-    const ctx: MountContext = { document, panel, watcherState, session, disposables };
+    const ctx: MountContext = { document, panel, watcherState, session, disposables, daemonHttp };
     this.mounts.set(key, ctx);
 
     session.start();
@@ -303,11 +349,23 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
         }
         return;
       }
-      const source = pickRestartSource(document.latestDurable, wasDirty);
-      const bootJson =
-        source.from === "durable"
-          ? source.json
-          : decode(await vscode.workspace.fs.readFile(document.uri));
+      // A fig doc's on-disk bytes are raw fig-kiwi, never JSON — pickRestartSource's
+      // disk branch would decode them as text and hand the session garbage. Its
+      // latestDurable.json is always valid converted `.op` JSON (bootAndMount set
+      // it from the conversion; every save/backup/revert since keeps it current),
+      // so a fig restart always reopens from there, regardless of dirty state. Any
+      // .fig edit made on disk during the crash window is picked up separately by
+      // the watcher's onExternal reconvert on its next file-change event.
+      let bootJson: string;
+      if (document.isFig) {
+        bootJson = document.latestDurable.json;
+      } else {
+        const source = pickRestartSource(document.latestDurable, wasDirty);
+        bootJson =
+          source.from === "durable"
+            ? source.json
+            : decode(await vscode.workspace.fs.readFile(document.uri));
+      }
       (document as { bootJson: string }).bootJson = bootJson;
       const shellOrigin = await this.bootShellAndGetOrigin(panel);
       if (this.staleCleanup(filePath, token)) return;
@@ -339,7 +397,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
       contentChanged: () => this.onDidChange.fire({ document }),
       writeFile: async (bytes) => {
         watcherState.suppressUntil = Date.now() + WATCHER_DEBOUNCE_MS;
-        await atomicWrite(document.uri, bytes);
+        await atomicWrite(this.saveTargetUri(document), bytes);
         document.latestDurable = { source: "save", json: decode(bytes) };
       },
       writeBackup: async (name, bytes) => {
@@ -407,6 +465,17 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
   }
 
   async revertCustomDocument(document: PenDocument): Promise<void> {
+    if (document.isFig) {
+      // Re-converting from disk here would need a DaemonHttp bound to the
+      // live mount's daemon, which this per-document callback doesn't have
+      // (only the watcher's onExternal closure does — see mountEditor).
+      // Revert to the last converted/saved state instead; a genuine edit to
+      // the .fig file on disk lands via that watcher path, not revert.
+      const json = document.latestDurable.json;
+      await this.requireSession(document).revert(json);
+      document.latestDurable = { source: "revert", json };
+      return;
+    }
     const bytes = await vscode.workspace.fs.readFile(document.uri);
     const json = decode(bytes);
     await this.requireSession(document).revert(json);
@@ -442,6 +511,13 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     const dir = this.context.storageUri ?? this.context.globalStorageUri;
     return vscode.Uri.joinPath(dir, name);
   }
+  /** Where an implicit save (makeHost.writeFile) lands: a .fig doc redirects
+   *  to its sibling .op (the .fig source is never overwritten); everything
+   *  else saves back to its own uri. saveCustomDocumentAs is unaffected — a
+   *  user-driven Save As keeps its explicit destination. */
+  private saveTargetUri(document: PenDocument): vscode.Uri {
+    return document.isFig ? vscode.Uri.file(figSaveTargetPath(document.uri.fsPath)) : document.uri;
+  }
 }
 
 interface MountContext {
@@ -450,6 +526,9 @@ interface MountContext {
   watcherState: { suppressUntil: number };
   session: PenSession;
   disposables: vscode.Disposable[];
+  /** Bound to this mount's daemon; set only when `document` is a `.fig` doc
+   *  (used by the watcher's onExternal to re-convert on external edits). */
+  daemonHttp?: DaemonHttp;
 }
 
 // ---- module helpers ----
