@@ -87,17 +87,21 @@ pub struct NativeBackend {
     /// jian-skia's `SkiaMeasure`, so geometry sees the same typeface
     /// and synthetic-bold branch the painter uses.
     font_resolver: jian_skia::FontResolver,
-    /// Decoded-image cache keyed by [`op_editor_core::ChatImage::id`].
-    /// `draw_image` decodes the raw bytes once on first sight; later
-    /// frames reuse the cached `Image`. A decode failure is cached as
-    /// `None` so a corrupt attachment isn't re-decoded every frame.
-    /// Bounded to [`IMAGE_CACHE_CAP`] entries — `image_cache_order`
-    /// tracks insertion order so the oldest decode is evicted once
-    /// the cap is exceeded (a long image-heavy chat can't grow the
-    /// decoded-image set without bound; an evicted image re-decodes
-    /// on its next paint).
-    image_cache: std::collections::HashMap<u64, Option<skia_safe::Image>>,
-    image_cache_order: std::collections::VecDeque<u64>,
+    /// Image cache keyed by the stable source id. `cached_image`
+    /// wraps the encoded bytes once on first sight; later frames
+    /// reuse the cached `Image`. A decode failure is cached as `None`
+    /// so a corrupt payload isn't re-tried every frame. Eviction is
+    /// LRU by encoded-byte budget (see [`IMAGE_CACHE_BYTE_BUDGET`]) —
+    /// keeping handles alive preserves their skia `uniqueID`, which
+    /// keys skia's own decoded-bitmap/GPU-texture caches; evicting and
+    /// re-creating a handle mints a new id and forces a full re-decode
+    /// and re-upload on every paint. A small fixed entry cap caused
+    /// exactly that thrash on image-heavy Figma imports (700+ images).
+    image_cache: std::collections::HashMap<u64, ImageCacheEntry>,
+    /// Sum of `ImageCacheEntry::bytes` across `image_cache`.
+    image_cache_bytes: usize,
+    /// Monotonic use counter driving LRU eviction.
+    image_cache_tick: u64,
     svg_path_cache: std::collections::HashMap<u64, path::SvgPathCacheEntry>,
     svg_path_cache_order: std::collections::VecDeque<u64>,
     svg_raster_cache: std::collections::HashMap<path::SvgRasterKey, path::SvgRasterCacheEntry>,
@@ -109,9 +113,23 @@ pub struct NativeBackend {
     shader_cache: jian_skia::ShaderCache,
 }
 
-/// Maximum number of decoded chat images held at once. Decoded RGBA
-/// is far larger than the encoded source, so the cap is modest.
-const IMAGE_CACHE_CAP: usize = 48;
+/// One resident image: the (possibly failed) skia handle, the encoded
+/// payload size it pins, and its last-use tick for LRU eviction.
+struct ImageCacheEntry {
+    image: Option<skia_safe::Image>,
+    bytes: usize,
+    last_used: u64,
+}
+
+/// Encoded-byte budget for the image cache. `skia_safe::Image` handles
+/// hold the ENCODED payload (decode is lazy, inside skia's own
+/// budgeted bitmap/texture caches), so this bounds encoded bytes —
+/// generous enough that an image-heavy document (e.g. a Figma import
+/// with hundreds of down-scaled bitmaps) keeps every handle resident.
+const IMAGE_CACHE_BYTE_BUDGET: usize = 384 * 1024 * 1024;
+/// Safety cap on entry count — bounds accumulation of tiny / failed
+/// entries that contribute few bytes.
+const IMAGE_CACHE_MAX_ENTRIES: usize = 4096;
 
 const ROBOTO_TTF: &[u8] = include_bytes!("../../assets/Roboto-Regular.ttf");
 
@@ -170,7 +188,8 @@ impl NativeBackend {
                 default_typeface,
             ),
             image_cache: std::collections::HashMap::new(),
-            image_cache_order: std::collections::VecDeque::new(),
+            image_cache_bytes: 0,
+            image_cache_tick: 0,
             svg_path_cache: std::collections::HashMap::new(),
             svg_path_cache_order: std::collections::VecDeque::new(),
             svg_raster_cache: std::collections::HashMap::new(),
@@ -530,27 +549,50 @@ impl NativeBackend {
     /// No-op; surface resize is owned by `SharedSkiaContext::resize`.
     pub fn resize(&mut self, _width: u32, _height: u32) {}
 
-    /// Decode + cache the image for `id`. The first call decodes
+    /// Wrap + cache the image for `id`. The first call wraps
     /// `encoded`; later calls reuse the cached result (or cached
-    /// `None` on a decode failure) and ignore `encoded`. The cache is
-    /// bounded — once it exceeds [`IMAGE_CACHE_CAP`] the oldest entry
-    /// is evicted (it re-decodes on its next paint).
+    /// `None` on a decode failure) and ignore `encoded`. Eviction is
+    /// least-recently-used, bounded by [`IMAGE_CACHE_BYTE_BUDGET`]
+    /// encoded bytes and [`IMAGE_CACHE_MAX_ENTRIES`] entries (an
+    /// evicted image re-decodes on its next paint).
     pub(crate) fn cached_image(&mut self, id: u64, encoded: &[u8]) -> Option<skia_safe::Image> {
-        if let Some(hit) = self.image_cache.get(&id) {
-            return hit.clone();
+        self.image_cache_tick += 1;
+        let tick = self.image_cache_tick;
+        if let Some(hit) = self.image_cache.get_mut(&id) {
+            hit.last_used = tick;
+            return hit.image.clone();
         }
         let decoded = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded));
-        self.image_cache.insert(id, decoded.clone());
-        self.image_cache_order.push_back(id);
-        while self.image_cache.len() > IMAGE_CACHE_CAP {
-            match self.image_cache_order.pop_front() {
-                Some(oldest) => {
-                    self.image_cache.remove(&oldest);
-                }
-                None => break,
+        self.image_cache_bytes += encoded.len();
+        self.image_cache.insert(
+            id,
+            ImageCacheEntry {
+                image: decoded.clone(),
+                bytes: encoded.len(),
+                last_used: tick,
+            },
+        );
+        self.evict_images_over(IMAGE_CACHE_BYTE_BUDGET, IMAGE_CACHE_MAX_ENTRIES);
+        decoded
+    }
+
+    /// Evict least-recently-used image entries until the cache fits
+    /// both `byte_budget` and `max_entries`. Separated from
+    /// [`Self::cached_image`] so tests can exercise eviction with
+    /// small budgets.
+    fn evict_images_over(&mut self, byte_budget: usize, max_entries: usize) {
+        while self.image_cache_bytes > byte_budget || self.image_cache.len() > max_entries {
+            let Some((&oldest, _)) = self
+                .image_cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+            else {
+                break;
+            };
+            if let Some(entry) = self.image_cache.remove(&oldest) {
+                self.image_cache_bytes = self.image_cache_bytes.saturating_sub(entry.bytes);
             }
         }
-        decoded
     }
 
     /// Number of cached image entries — test accessor.

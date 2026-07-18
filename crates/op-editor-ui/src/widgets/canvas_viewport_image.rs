@@ -4,36 +4,75 @@ use crate::Rect;
 use crate::{Color, Point2D};
 use std::sync::{Arc, Mutex, OnceLock};
 
-const DATA_URL_CACHE_CAP: usize = 64;
+/// Byte budget for cached encoded-image payloads. The cache must hold
+/// the working set of an image-heavy document (a Figma import easily
+/// carries hundreds of bitmaps) — a small entry cap caused every frame
+/// to re-run the base64 decode for whatever fell off the end. Budget
+/// by bytes instead: wasm gets a smaller budget to respect the 32-bit
+/// heap.
+#[cfg(target_arch = "wasm32")]
+const DATA_URL_CACHE_BYTE_BUDGET: usize = 96 * 1024 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
+const DATA_URL_CACHE_BYTE_BUDGET: usize = 256 * 1024 * 1024;
+/// Safety cap on entry count — bounds accumulation of tiny payloads.
+const DATA_URL_CACHE_MAX_ENTRIES: usize = 4096;
 
 struct DataUrlCache {
-    entries: std::collections::HashMap<u64, Arc<[u8]>>,
-    order: std::collections::VecDeque<u64>,
+    entries: std::collections::HashMap<u64, (Arc<[u8]>, u64)>,
+    /// Sum of payload lengths across `entries`.
+    bytes: usize,
+    /// Monotonic use counter driving LRU eviction.
+    tick: u64,
 }
 
 impl DataUrlCache {
     fn new() -> Self {
         Self {
             entries: std::collections::HashMap::new(),
-            order: std::collections::VecDeque::new(),
+            bytes: 0,
+            tick: 0,
         }
     }
 
-    fn get(&self, id: u64) -> Option<Arc<[u8]>> {
-        self.entries.get(&id).cloned()
+    fn get(&mut self, id: u64) -> Option<Arc<[u8]>> {
+        self.tick += 1;
+        let tick = self.tick;
+        let (bytes, last_used) = self.entries.get_mut(&id)?;
+        *last_used = tick;
+        Some(Arc::clone(bytes))
+    }
+
+    /// Presence check that does not refresh the entry's LRU position.
+    fn contains(&self, id: u64) -> bool {
+        self.entries.contains_key(&id)
     }
 
     fn insert(&mut self, id: u64, bytes: Arc<[u8]>) {
-        if !self.entries.contains_key(&id) {
-            self.order.push_back(id);
+        self.tick += 1;
+        let tick = self.tick;
+        if let Some((old, _)) = self.entries.insert(id, (bytes, tick)) {
+            self.bytes = self.bytes.saturating_sub(old.len());
         }
-        self.entries.insert(id, bytes);
-        while self.entries.len() > DATA_URL_CACHE_CAP {
-            match self.order.pop_front() {
-                Some(oldest) => {
-                    self.entries.remove(&oldest);
-                }
-                None => break,
+        if let Some((fresh, _)) = self.entries.get(&id) {
+            self.bytes += fresh.len();
+        }
+        self.evict_over(DATA_URL_CACHE_BYTE_BUDGET, DATA_URL_CACHE_MAX_ENTRIES);
+    }
+
+    /// Evict least-recently-used entries until the cache fits both
+    /// `byte_budget` and `max_entries`. Separated from `insert` so
+    /// tests can exercise eviction with small budgets.
+    fn evict_over(&mut self, byte_budget: usize, max_entries: usize) {
+        while self.bytes > byte_budget || self.entries.len() > max_entries {
+            let Some((&oldest, _)) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, last_used))| *last_used)
+            else {
+                break;
+            };
+            if let Some((evicted, _)) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(evicted.len());
             }
         }
     }
@@ -157,7 +196,7 @@ pub fn mark_remote_image_failed(id: u64) {
 pub fn has_cached_image_bytes(id: u64) -> bool {
     data_url_cache()
         .lock()
-        .map(|cache| cache.get(id).is_some())
+        .map(|cache| cache.contains(id))
         .unwrap_or(false)
 }
 
@@ -186,7 +225,7 @@ pub(crate) fn image_source_bytes(src: &str, image_src_id: u64) -> Option<Arc<[u8
     } else {
         image_src_id
     };
-    if let Ok(cache) = data_url_cache().lock() {
+    if let Ok(mut cache) = data_url_cache().lock() {
         if let Some(bytes) = cache.get(id) {
             return Some(bytes);
         }
@@ -413,6 +452,35 @@ mod tests {
         let second = image_source_bytes(src, 7).expect("cached decode");
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert_eq!(data_url_cache_len_for_tests(), 1);
+    }
+
+    /// Eviction is LRU by byte budget: a payload set over budget must
+    /// drop the least-recently-USED entry, not the least-recently
+    /// inserted one — with hundreds of images painting every frame,
+    /// FIFO eviction of a still-visible image re-decodes it each paint.
+    #[test]
+    fn data_url_cache_evicts_least_recently_used_over_byte_budget() {
+        let _guard = lock_statics();
+        let payload = |b: u8| Arc::from(vec![b; 8].into_boxed_slice());
+        let mut cache = DataUrlCache::new();
+        cache.insert(1, payload(1));
+        cache.insert(2, payload(2));
+        cache.insert(3, payload(3));
+        assert_eq!(cache.bytes, 24);
+        // Touch id 1 so id 2 becomes least-recently-used.
+        assert!(cache.get(1).is_some());
+        cache.evict_over(16, usize::MAX);
+        assert!(cache.contains(1), "recently used entry survives");
+        assert!(!cache.contains(2), "LRU entry is evicted");
+        assert!(cache.contains(3));
+        assert_eq!(cache.bytes, 16, "byte accounting tracks eviction");
+        // Entry cap applies independently of the byte budget.
+        cache.evict_over(usize::MAX, 1);
+        assert_eq!(cache.entries.len(), 1);
+        // Re-inserting an existing id replaces its bytes, not doubles.
+        let survivor = *cache.entries.keys().next().expect("one entry");
+        cache.insert(survivor, Arc::from(vec![9u8; 4].into_boxed_slice()));
+        assert_eq!(cache.bytes, 4, "replacement swaps byte accounting");
     }
 
     #[test]

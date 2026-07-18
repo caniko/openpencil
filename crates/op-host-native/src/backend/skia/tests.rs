@@ -109,19 +109,38 @@ fn image_cache_caches_decode_failure_without_redecoding() {
 }
 
 #[test]
-fn image_cache_evicts_oldest_entries_past_capacity() {
+fn image_cache_evicts_least_recently_used_over_byte_budget() {
     let mut be = NativeBackend::with_dpi(1.0);
-    // Insert well past the cap — the cache must stay bounded.
-    for id in 0..(IMAGE_CACHE_CAP as u64 + 10) {
+    let png = encode_test_png(4, 3);
+    be.cached_image(1, &png);
+    be.cached_image(2, &png);
+    be.cached_image(3, &png);
+    assert_eq!(be.image_cache_len(), 3);
+    // Touch id 1 so id 2 becomes the least-recently-used entry.
+    be.cached_image(1, &png);
+    // A budget that only fits two payloads must evict exactly the
+    // LRU entry (id 2) — not the most recently touched (id 1).
+    be.evict_images_over(png.len() * 2, usize::MAX);
+    assert_eq!(be.image_cache_len(), 2, "one entry evicted");
+    be.cached_image(1, b"");
+    be.cached_image(3, b"");
+    assert_eq!(
+        be.image_cache_len(),
+        2,
+        "ids 1 and 3 survived — re-touching them adds no new entries"
+    );
+}
+
+#[test]
+fn image_cache_entry_cap_bounds_failed_decodes() {
+    let mut be = NativeBackend::with_dpi(1.0);
+    // Failed decodes carry ~no bytes, so only the entry cap bounds
+    // them. Insert past a small cap and evict.
+    for id in 0..10u64 {
         be.cached_image(id, b"garbage");
     }
-    assert!(
-        be.image_cache_len() <= IMAGE_CACHE_CAP,
-        "cache stays within the cap, got {}",
-        be.image_cache_len()
-    );
-    // The oldest id (0) was evicted; the newest is still resident.
-    assert_eq!(be.image_cache_len(), IMAGE_CACHE_CAP);
+    be.evict_images_over(usize::MAX, 4);
+    assert_eq!(be.image_cache_len(), 4, "entry cap enforced");
 }
 
 #[test]
