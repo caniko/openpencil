@@ -301,6 +301,27 @@ fn merge_core(
     // the conflicts the caller resolved to theirs — onto an `ours`
     // clone, which is the merged tree.
     let mut merged = ours_doc;
+    // Union the top-level deduplicated `images` tables first: nodes
+    // taken from theirs may carry `op-image:<id>` refs whose payloads
+    // only exist in theirs' table. Ids are content hashes, so an id
+    // present on both sides names the same payload and ours wins
+    // without loss.
+    if let (Some(Value::Object(theirs_images)), Some(merged_map)) =
+        (theirs_doc.get("images"), merged.as_object_mut())
+    {
+        if !theirs_images.is_empty() {
+            let ours_images = merged_map
+                .entry("images")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Value::Object(ours_images) = ours_images {
+                for (id, payload) in theirs_images {
+                    ours_images
+                        .entry(id.clone())
+                        .or_insert_with(|| payload.clone());
+                }
+            }
+        }
+    }
     if !take_theirs.is_empty() {
         apply_overrides(&mut merged, &theirs_nodes, &take_theirs);
     }

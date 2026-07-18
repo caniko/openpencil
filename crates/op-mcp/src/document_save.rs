@@ -38,9 +38,16 @@ impl McpTool for SaveDocument {
 }
 
 pub fn save_document_snapshot(state: &EditorState) -> SaveDocument {
-    SaveDocument {
-        document_json: serde_json::to_string(&state.doc).unwrap_or_else(|_| "{}".into()),
-    }
+    // Dedup shared image payloads into the `images` table so the
+    // written `.op` matches the desktop save format (loader resolves
+    // the refs back to inline on open).
+    let document_json = serde_json::to_value(&state.doc)
+        .map(|mut value| {
+            jian_ops_schema::image_table::externalize_images(&mut value);
+            value.to_string()
+        })
+        .unwrap_or_else(|_| "{}".into());
+    SaveDocument { document_json }
 }
 
 fn resolve_path(raw: &str) -> PathBuf {

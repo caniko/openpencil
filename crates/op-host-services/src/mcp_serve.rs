@@ -93,9 +93,14 @@ pub fn load_editor_state(path: &Path) -> Result<EditorState, String> {
     Ok(EditorState::from_document(loaded.value))
 }
 
-/// Serialize the editor state's canonical document back to `path`.
+/// Serialize the editor state's canonical document back to `path`,
+/// with shared image payloads deduplicated into the `images` table
+/// (mirrors `doc_io::save_to_path`; the loader resolves refs back).
 fn save_editor_state(state: &EditorState, path: &Path) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(&state.doc)
+    let mut value = serde_json::to_value(&state.doc)
+        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+    jian_ops_schema::image_table::externalize_images(&mut value);
+    let json = serde_json::to_string_pretty(&value)
         .map_err(|e| format!("serialize {}: {e}", path.display()))?;
     std::fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
 }

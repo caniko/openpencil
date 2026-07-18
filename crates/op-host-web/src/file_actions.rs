@@ -27,9 +27,14 @@ pub struct IngestedDoc {
 }
 
 /// Serialize the canonical document to the `.op` JSON the desktop /
-/// TS editors write. The web Save path downloads this as a Blob.
+/// TS editors write, with shared image payloads deduplicated into the
+/// `images` table. The web Save path downloads this as a Blob. (The
+/// live-sync push bodies below deliberately stay inline — the daemon
+/// consumes them straight from serde without the compat loader.)
 pub fn serialize_document(state: &EditorState) -> Result<String, String> {
-    serde_json::to_string_pretty(&state.doc).map_err(|e| e.to_string())
+    let mut value = serde_json::to_value(&state.doc).map_err(|e| e.to_string())?;
+    jian_ops_schema::image_table::externalize_images(&mut value);
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
 }
 
 /// Download file name for Save / Save As — the current display name

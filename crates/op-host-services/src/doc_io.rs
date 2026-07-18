@@ -69,6 +69,11 @@ pub fn sidecar_path(path: &std::path::Path) -> PathBuf {
 /// separate sidecar.
 pub fn save_to_path(state: &EditorState, path: &std::path::Path) -> Result<(), String> {
     let mut value = serde_json::to_value(&state.doc).map_err(|e| e.to_string())?;
+    // Deduplicate shared image payloads into the top-level `images`
+    // table — in memory every fill holds the full data URL (shared via
+    // `Arc`), but serializing that inline form writes one copy per
+    // reference. The loader resolves the refs back on open.
+    jian_ops_schema::image_table::externalize_images(&mut value);
     if let Some(obj) = value.as_object_mut() {
         obj.insert(
             "editorMeta".into(),

@@ -238,3 +238,36 @@ fn nested_children_are_walked() {
     assert!(r.is_clean());
     assert_eq!(node_x(&r.merged, "deep"), 4);
 }
+
+#[test]
+fn image_tables_union_across_branches() {
+    // A node taken from theirs can reference an `op-image:` payload
+    // that only exists in theirs' deduplicated image table — the
+    // merged document must carry the union of both tables. Ids are
+    // content hashes, so an id on both sides is the same payload and
+    // ours' copy wins.
+    let base = r#"{"version":"1.0","children":[{"id":"n1","type":"rect","x":0}]}"#;
+    let ours = r#"{"version":"1.0","images":{"aa":"data:ours"},
+        "children":[{"id":"n1","type":"rect","x":0}]}"#;
+    let theirs = r#"{"version":"1.0","images":{"bb":"data:theirs"},
+        "children":[{"id":"n1","type":"rect","x":0,"fill":"op-image:bb"}]}"#;
+    let r = merge_op_documents(base, ours, theirs).unwrap();
+    assert!(r.is_clean(), "pure property change auto-merges");
+    let images = r.merged.get("images").and_then(Value::as_object).unwrap();
+    assert_eq!(images.get("aa").and_then(Value::as_str), Some("data:ours"));
+    assert_eq!(
+        images.get("bb").and_then(Value::as_str),
+        Some("data:theirs")
+    );
+}
+
+#[test]
+fn theirs_only_image_table_reaches_the_merge() {
+    // Ours has no table at all — theirs' table must still be adopted.
+    let base = r#"{"version":"1.0","children":[]}"#;
+    let ours = r#"{"version":"1.0","children":[]}"#;
+    let theirs = r#"{"version":"1.0","images":{"cc":"data:x"},"children":[]}"#;
+    let r = merge_op_documents(base, ours, theirs).unwrap();
+    let images = r.merged.get("images").and_then(Value::as_object).unwrap();
+    assert_eq!(images.get("cc").and_then(Value::as_str), Some("data:x"));
+}
