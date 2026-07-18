@@ -79,6 +79,7 @@ pub mod table_repair;
 pub mod tree_heuristics;
 pub mod unfilled_screens;
 pub(crate) mod unify_shared_nav;
+pub(crate) mod unify_shared_status_bar;
 pub mod wire_screen_navigation;
 
 #[cfg(test)]

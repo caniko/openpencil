@@ -1479,6 +1479,13 @@ pub fn run_cleanup_passes(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_
     // stale per-screen one.
     crate::unify_shared_nav::unify_shared_nav(sink);
 
+    // Sibling pass to the above: screens missing the pinned status bar
+    // entirely (measured: 0718-1-k3-1 — two of three screens had no
+    // status-bar subtree at all) get one cloned in from whichever screen
+    // already has it. Same "reuse, don't redraw" shape, same shared choke
+    // point, so both the classic and loop-finalize paths pick it up.
+    crate::unify_shared_status_bar::unify_shared_status_bar(sink);
+
     // Track A of the interactive-preview plan: mark screen-shaped top-level
     // frames + wire their nav tabs / back buttons, so a multi-screen document
     // enters App Mode preview with zero model cooperation. Runs LAST — after
