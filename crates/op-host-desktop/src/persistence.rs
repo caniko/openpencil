@@ -367,7 +367,7 @@ pub fn run_action(
             ActionOutcome::Noop
         }
         FileAction::RelinkImage => {
-            crate::persistence_image::handle_relink_image(host, current_path.as_deref());
+            crate::persistence_image::handle_relink_image(host);
             ActionOutcome::Noop
         }
     }

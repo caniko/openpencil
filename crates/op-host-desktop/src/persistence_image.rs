@@ -1,7 +1,8 @@
 //! Image / SVG import handlers for [`super::persistence::run_action`].
 //!
 //! Split out of `persistence.rs` so that file stays under the 800-line
-//! cap. Two entry points:
+//! cap. Three entry points, all embed-not-link (every one ends in a
+//! `data:` URL — see the shared-.op portability audit, 2026-07-18):
 //!
 //! - [`handle_import_image_or_svg`] — toolbar shape-picker action:
 //!   pops `rfd::FileDialog`, decodes the file, and inserts a new
@@ -11,6 +12,9 @@
 //!   pops the same dialog and writes the chosen image into the
 //!   selected node's primary fill as
 //!   `PenFill::Image { url: <data-url> }`.
+//! - [`handle_relink_image`] — image-section warning row's Relink
+//!   button: pops the same dialog and rewrites the selected
+//!   `ImageNode.src` with the picked file's `data:` URL.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -154,14 +158,37 @@ pub fn handle_pick_fill_image(host: &mut WidgetHostNative) {
 }
 
 /// Handle the image-section warning row's Relink button: pop the
-/// image file dialog and rewrite the selected `ImageNode.src` —
-/// stored relative to the document when both share a root (TS
-/// `onUpdate({ src: toStoredAssetPath(result.filePath, documentPath) })`).
-pub fn handle_relink_image(host: &mut WidgetHostNative, current_path: Option<&Path>) {
+/// image file dialog, read the picked file, and rewrite the selected
+/// `ImageNode.src` as a `data:` URL — the SAME embed-not-link contract
+/// every other image-entry path already uses
+/// (`handle_import_image_or_svg`, `handle_pick_fill_image`).
+///
+/// This used to write a document-relative or absolute filesystem PATH
+/// (TS `onUpdate({ src: toStoredAssetPath(result.filePath, documentPath) })`).
+/// That "fixed" the warning locally — the relinked file exists on the
+/// relinking machine — but produced a document that is STILL not
+/// portable: share it, and the recipient hits the exact same missing-
+/// image report the Relink button was supposed to resolve, because
+/// their machine doesn't have that path either. Embedding closes that
+/// gap (shared-.op portability audit, 2026-07-18): the fixed reference
+/// is real content, not another local pointer.
+pub fn handle_relink_image(host: &mut WidgetHostNative) {
     let Some(path) = pick_image_path(host) else {
         return;
     };
-    let stored = to_stored_asset_path(&path, current_path);
+    apply_relink(host, &path);
+}
+
+/// Core of [`handle_relink_image`], factored out so the embed-then-write
+/// behavior is testable without a real file-picker dialog.
+fn apply_relink(host: &mut WidgetHostNative, path: &Path) {
+    let url = match read_as_data_url(path) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("[relink-image] {}: {e}", path.display());
+            return;
+        }
+    };
     let state = host.editor_state_mut();
     let id = state.selection.anchor.clone();
     if !id.is_real() {
@@ -171,7 +198,7 @@ pub fn handle_relink_image(host: &mut WidgetHostNative, current_path: Option<&Pa
     if let Some(jian_ops_schema::node::PenNode::Image(image)) =
         op_editor_core::walkers::find_node_mut(state.active_children_mut(), &id)
     {
-        image.src = stored.into();
+        image.src = url.into();
     }
     // Drop the stale asset check so the warning row clears on the
     // next pump (it re-probes the new src).
@@ -179,67 +206,62 @@ pub fn handle_relink_image(host: &mut WidgetHostNative, current_path: Option<&Pa
     host.mark_editor_state_dirty();
 }
 
-/// Port of TS `toStoredAssetPath` (document-assets.ts:87-104): an
-/// absolute picked path becomes document-relative when the document
-/// path shares its prefix (drive / root), else stays absolute.
-/// Separators normalize to `/` either way.
-fn to_stored_asset_path(asset: &Path, document: Option<&Path>) -> String {
-    let normalized = asset.display().to_string().replace('\\', "/");
-    let Some(doc_dir) = document.and_then(Path::parent) else {
-        return normalized;
-    };
-    let base = doc_dir.display().to_string().replace('\\', "/");
-    let base_parts: Vec<&str> = base.split('/').filter(|s| !s.is_empty()).collect();
-    let target_parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-    // Windows drive prefixes must match case-insensitively (TS
-    // extractPathPrefix comparison); on POSIX both prefixes are `/`.
-    let drive = |parts: &[&str]| -> String {
-        parts
-            .first()
-            .filter(|p| p.len() == 2 && p.as_bytes()[1] == b':')
-            .map(|p| p.to_lowercase())
-            .unwrap_or_default()
-    };
-    if drive(&base_parts) != drive(&target_parts) {
-        return normalized;
-    }
-    let mut shared = 0;
-    while shared < base_parts.len()
-        && shared < target_parts.len()
-        && base_parts[shared].eq_ignore_ascii_case(target_parts[shared])
-    {
-        shared += 1;
-    }
-    let ups = base_parts.len() - shared;
-    let mut segments: Vec<String> = std::iter::repeat_n("..".to_string(), ups).collect();
-    segments.extend(target_parts[shared..].iter().map(|s| s.to_string()));
-    if segments.is_empty() {
-        ".".to_string()
-    } else {
-        segments.join("/")
-    }
-}
-
 #[cfg(test)]
 mod relink_tests {
-    use super::to_stored_asset_path;
-    use std::path::Path;
+    use super::apply_relink;
+    use op_host_native::widget_host::WidgetHostNative;
 
+    /// The Relink button must embed the picked file, not point at its
+    /// path — a path is only ever valid on the machine that picked it,
+    /// so a "fixed" reference that's still a path reproduces the exact
+    /// missing-image report for anyone the document is shared with.
     #[test]
-    fn stored_path_relativizes_against_the_document_dir() {
-        let doc = Path::new("/projects/site/design.op");
-        assert_eq!(
-            to_stored_asset_path(Path::new("/projects/site/assets/a.png"), Some(doc)),
-            "assets/a.png"
+    fn relink_embeds_the_picked_file_as_a_data_url_instead_of_a_path() {
+        let mut host = WidgetHostNative::new();
+        let id = host
+            .editor_state_mut()
+            .insert_image_node_at_viewport("Photo", "assets/broken.png")
+            .expect("image node inserted and selected");
+
+        let tmp_path =
+            std::env::temp_dir().join(format!("op-relink-test-{}.png", std::process::id()));
+        std::fs::write(&tmp_path, b"not a real png, just bytes to embed").expect("write temp file");
+        apply_relink(&mut host, &tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        let node = op_editor_core::walkers::find_node(host.editor_state().active_children(), &id)
+            .expect("image node still present");
+        let jian_ops_schema::node::PenNode::Image(image) = node else {
+            panic!("expected an image node, got {node:?}");
+        };
+        assert!(
+            image.src.starts_with("data:image/png;base64,"),
+            "relink must embed as a data: URL, not store the picked path: {}",
+            image.src
         );
+    }
+
+    /// A read failure (file vanished between pick and read, unreadable
+    /// permissions, …) must leave the node's `src` untouched — no
+    /// fallback to writing the unreadable path either.
+    #[test]
+    fn relink_leaves_src_untouched_when_the_file_cannot_be_read() {
+        let mut host = WidgetHostNative::new();
+        host.editor_state_mut()
+            .insert_image_node_at_viewport("Photo", "assets/broken.png")
+            .expect("image node inserted and selected");
+
+        let missing_path = std::env::temp_dir().join("op-relink-test-does-not-exist.png");
+        apply_relink(&mut host, &missing_path);
+
+        let node = host.editor_state().selected_node().expect("still selected");
+        let jian_ops_schema::node::PenNode::Image(image) = node else {
+            panic!("expected an image node, got {node:?}");
+        };
         assert_eq!(
-            to_stored_asset_path(Path::new("/projects/shared/b.png"), Some(doc)),
-            "../shared/b.png"
-        );
-        // No document → absolute, normalized.
-        assert_eq!(
-            to_stored_asset_path(Path::new("/projects/site/assets/a.png"), None),
-            "/projects/site/assets/a.png"
+            image.src.as_str(),
+            "assets/broken.png",
+            "a read failure must not overwrite the existing src"
         );
     }
 }

@@ -46,8 +46,15 @@ pub enum ImageGeneratePhase {
 /// Host-checked status of the selected image node's `src` asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageAssetStatus {
-    /// Remote / data URL, or a local file that exists.
+    /// Remote / data URL — fully portable, nothing to warn about.
     Ok,
+    /// A local filesystem path that DOES resolve on this machine
+    /// (Divergence from TS, which folds this into `Ok`: a path that
+    /// happens to exist here is still only a pointer, not the image
+    /// content — sharing the document reproduces the exact "file is
+    /// missing" report for anyone without that same path. See the
+    /// shared-.op portability audit, 2026-07-18.)
+    LinkedLocal,
     /// Relative path with no document path to resolve against
     /// (TS "Relative image path cannot be resolved yet").
     Unresolved,

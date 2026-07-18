@@ -52,7 +52,9 @@ const EMPTY_STATE_H: f32 = 90.0; // TS py-8 icon + label block
 /// Warning surfaced under the thumbnail row (TS `LocalImageWarning`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageAssetWarning {
-    /// Literal TS message string.
+    /// Literal TS message string for `Unresolved` / `Missing`; the
+    /// `LinkedLocal` message is a Rust-side addition (no TS
+    /// equivalent — see `ImageAssetStatus::LinkedLocal`'s doc).
     pub message: &'static str,
     pub asset_path: String,
 }
@@ -89,6 +91,14 @@ pub fn image_panel_view(state: &EditorState, node: &PenNode) -> Option<ImagePane
             let message = match state.editor_ui.image_panel.status_for(&node_id, s) {
                 Some(ImageAssetStatus::Unresolved) => "Relative image path cannot be resolved yet",
                 Some(ImageAssetStatus::Missing) => "Image file is missing",
+                // Resolves fine here, but it's a pointer, not embedded
+                // content — sharing this document won't carry the
+                // image with it. A one-time nudge, not an error state:
+                // the button below (Relink) re-runs through the
+                // embed-not-link path and clears this.
+                Some(ImageAssetStatus::LinkedLocal) => {
+                    "Linked to a local file — won't be included when this file is shared"
+                }
                 Some(ImageAssetStatus::Ok) | None => return None,
             };
             Some(ImageAssetWarning {

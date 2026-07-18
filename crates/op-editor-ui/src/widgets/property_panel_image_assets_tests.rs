@@ -57,6 +57,27 @@ fn warning_requires_a_host_asset_check() {
     assert!(selected_image_view(&state).warning.is_none());
 }
 
+/// A local path that DOES resolve on this machine still surfaces a
+/// (softer, informational) warning — resolving here isn't the same as
+/// being portable when the document is shared. `Ok` is the ONLY status
+/// that suppresses the row.
+#[test]
+fn linked_local_status_still_warns_that_sharing_will_lose_the_image() {
+    let mut state = image_state();
+    let id = state.selection.anchor.as_str().to_string();
+    state.editor_ui.image_panel.asset_check = Some(ImageAssetCheck {
+        node_id: id,
+        src: "./assets/hero.png".into(),
+        status: ImageAssetStatus::LinkedLocal,
+    });
+    let warning = selected_image_view(&state).warning.expect("warning");
+    assert_eq!(
+        warning.message,
+        "Linked to a local file — won't be included when this file is shared"
+    );
+    assert_eq!(warning.asset_path, "./assets/hero.png");
+}
+
 #[test]
 fn local_asset_path_matches_ts_predicate() {
     assert!(is_local_asset_path("./a.png"));

@@ -235,6 +235,8 @@ pub(crate) fn active_image_gen_profile(
 }
 
 // --- Asset status (TS resolveRuntimeAssetSource + warning gating) ----
+// Divergence from TS: a local path that resolves on THIS machine is
+// `LinkedLocal`, not folded into `Ok` — see `ImageAssetStatus::LinkedLocal`.
 
 pub(crate) fn asset_status(src: &str, document_path: Option<&Path>) -> ImageAssetStatus {
     let trimmed = src.trim();
@@ -262,7 +264,7 @@ pub(crate) fn asset_status(src: &str, document_path: Option<&Path>) -> ImageAsse
         .unwrap_or(normalized);
     if is_absolute_path(&decoded) {
         return if Path::new(&decoded).exists() {
-            ImageAssetStatus::Ok
+            ImageAssetStatus::LinkedLocal
         } else {
             ImageAssetStatus::Missing
         };
@@ -272,7 +274,7 @@ pub(crate) fn asset_status(src: &str, document_path: Option<&Path>) -> ImageAsse
     };
     let base = doc.parent().unwrap_or_else(|| Path::new("."));
     if base.join(&decoded).exists() {
-        ImageAssetStatus::Ok
+        ImageAssetStatus::LinkedLocal
     } else {
         ImageAssetStatus::Missing
     }
@@ -522,22 +524,25 @@ mod tests {
             asset_status("/definitely/not/here/x.png", None),
             ImageAssetStatus::Missing
         );
-        // Absolute path that exists → ok.
+        // Absolute path that exists → LinkedLocal, not Ok — it resolves
+        // HERE, but it's still a pointer, not portable content (see
+        // `ImageAssetStatus::LinkedLocal`'s doc).
         let dir = std::env::temp_dir();
         let file = dir.join(format!("op-image-panel-test-{}.png", std::process::id()));
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(
             asset_status(&file.display().to_string(), None),
-            ImageAssetStatus::Ok
+            ImageAssetStatus::LinkedLocal
         );
-        // Relative path resolved against the document dir.
+        // Relative path resolved against the document dir — same
+        // LinkedLocal treatment.
         let doc = dir.join("doc.op");
         assert_eq!(
             asset_status(
                 file.file_name().unwrap().to_str().unwrap(),
                 Some(doc.as_path())
             ),
-            ImageAssetStatus::Ok
+            ImageAssetStatus::LinkedLocal
         );
         assert_eq!(
             asset_status("nope-not-here.png", Some(doc.as_path())),
