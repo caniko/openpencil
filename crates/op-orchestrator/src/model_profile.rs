@@ -153,7 +153,12 @@ const MODEL_PROFILES: &[Entry] = &[
     // 全维度非边际胜出 → 升 Full。仅 M3 起算强（老 M 系/abab 落后面的泛 minimax
     // Basic 条目）。thinking 由 ChatProviderLlmClient 的 m3_keeps_thinking 特判
     // 保留（Adaptive），此处 thinking_disabled 对 M3 实际不生效，仅作族内一致。
-    e(Match::Sub("minimax-m3"), ModelTier::Full, true, "MiniMax M3"),
+    e(
+        Match::Sub("minimax-m3"),
+        ModelTier::Full,
+        true,
+        "MiniMax M3",
+    ),
     e(
         Match::Sub("deepseek-v4-flash"),
         ModelTier::Standard,
@@ -255,16 +260,10 @@ mod tests {
         assert!(!fable.thinking_disabled);
         assert_eq!(resolve_model_profile("kimi-k3").tier, ModelTier::Full);
         // K2.x stays below the strong line (falls to the unknown default).
-        assert_eq!(
-            resolve_model_profile("kimi-k2.5").tier,
-            ModelTier::Standard
-        );
+        assert_eq!(resolve_model_profile("kimi-k2.5").tier, ModelTier::Standard);
         // M3 measured full-tier (2026-07-18 A/B); older MiniMax stays Basic.
         assert_eq!(resolve_model_profile("MiniMax-M3").tier, ModelTier::Full);
-        assert_eq!(
-            resolve_model_profile("MiniMax-M2.7").tier,
-            ModelTier::Basic
-        );
+        assert_eq!(resolve_model_profile("MiniMax-M2.7").tier, ModelTier::Basic);
         assert_eq!(
             resolve_model_profile("claude-opus-4-1").tier,
             ModelTier::Full
