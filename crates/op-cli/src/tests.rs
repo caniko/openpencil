@@ -707,6 +707,30 @@ fn parse_args_maps_import_figma_to_direct_converter() {
 }
 
 #[test]
+fn import_html_maps_to_tool_call() {
+    let args = vec![
+        "import:html".to_string(),
+        "page.html".to_string(),
+        "--x".to_string(),
+        "10".to_string(),
+        "--page".to_string(),
+        "p1".to_string(),
+    ];
+    let parsed = parse_args(&args).expect("parse");
+    assert_eq!(
+        parsed.command,
+        Command::ToolCall {
+            tool: "import_html".to_string(),
+            args: vec![
+                ("htmlPath".to_string(), "page.html".to_string()),
+                ("x".to_string(), "10".to_string()),
+                ("pageId".to_string(), "p1".to_string()),
+            ],
+        }
+    );
+}
+
+#[test]
 fn figma_default_out_path_matches_ts_suffix_replacement() {
     assert_eq!(figma_default_out_path("checkout.fig"), "checkout.op");
     assert_eq!(

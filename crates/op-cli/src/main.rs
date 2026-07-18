@@ -360,6 +360,7 @@ fn command_from_positionals(positionals: &[String], flags: &Flags) -> Result<Com
         "layout" => map_layout(flags),
         "find-space" => map_find_space(flags),
         "import:svg" => map_import_svg(positionals, flags),
+        "import:html" => map_import_html(positionals, flags),
         "import:figma" => figma_cli::map_import_figma(positionals, flags),
         "codegen:plan" | "codegen:submit" | "codegen:assemble" | "codegen:clean" => {
             codegen_cli::map_codegen(positionals, flags)
@@ -696,6 +697,27 @@ fn map_import_svg(positionals: &[String], flags: &Flags) -> Result<Command, Stri
     }
     push_file_path(&mut pairs, flags);
     tool_call("import_svg", pairs)
+}
+
+fn map_import_html(positionals: &[String], flags: &Flags) -> Result<Command, String> {
+    let path = required_pos(
+        positionals,
+        1,
+        "Usage: op import:html <file.html> [--x N] [--y N] [--parent P] [--page PAGE]",
+    )?;
+    let mut pairs = vec![pair("htmlPath", path)];
+    for (flag, key) in [
+        ("x", "x"),
+        ("y", "y"),
+        ("parent", "parent"),
+        ("page", "pageId"),
+    ] {
+        if let Some(value) = flag_value(flags, flag) {
+            pairs.push(pair(key, value));
+        }
+    }
+    push_file_path(&mut pairs, flags);
+    tool_call("import_html", pairs)
 }
 
 fn generic_tool_call(tool: &str, rest: &[String], flags: &Flags) -> Result<Command, String> {
