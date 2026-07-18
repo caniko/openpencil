@@ -41,12 +41,15 @@ test("vscode upsert into an empty file produces a servers.openpencil http entry"
   expect(parsed.servers.openpencil.url).toBe(URL);
 });
 
-test("fork adapters use mcpServers with a bare url entry", () => {
+test("fork adapters use mcpServers with a typed http entry", () => {
+  // A bare `url` entry reads as a legacy SSE server in Cursor and never
+  // connects to the streamable-HTTP proxy — the entry must match the
+  // editor MCP card's {"type":"http","url":…} shape.
   for (const kind of ["cursor", "trae", "windsurf"] as IdeKind[]) {
     const out = adapterFor(kind).upsert(null, URL);
     const parsed = parse(out) as { mcpServers: { openpencil: { url: string; type?: string } } };
     expect(parsed.mcpServers.openpencil.url).toBe(URL);
-    expect(parsed.mcpServers.openpencil.type).toBeUndefined();
+    expect(parsed.mcpServers.openpencil.type).toBe("http");
   }
 });
 

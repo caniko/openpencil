@@ -90,9 +90,13 @@ function makeAdapter(
 
 const ADAPTERS: Record<IdeKind, McpAdapter> = {
   vscode: makeAdapter("vscode", ".vscode", "servers", (url) => [["type", "http"], ["url", url]], true),
-  cursor: makeAdapter("cursor", ".cursor", "mcpServers", (url) => [["url", url]], false),
-  trae: makeAdapter("trae", ".trae", "mcpServers", (url) => [["url", url]], false),
-  windsurf: makeAdapter("windsurf", ".windsurf", "mcpServers", (url) => [["url", url]], true),
+  // Forks get the same typed-http entry the editor's MCP settings card
+  // shows ({"type":"http","url":…}): a bare `url` entry is treated as a
+  // legacy SSE server by Cursor and never connects to the streamable-HTTP
+  // proxy endpoint.
+  cursor: makeAdapter("cursor", ".cursor", "mcpServers", (url) => [["type", "http"], ["url", url]], false),
+  trae: makeAdapter("trae", ".trae", "mcpServers", (url) => [["type", "http"], ["url", url]], false),
+  windsurf: makeAdapter("windsurf", ".windsurf", "mcpServers", (url) => [["type", "http"], ["url", url]], true),
 };
 
 export function adapterFor(kind: IdeKind): McpAdapter {

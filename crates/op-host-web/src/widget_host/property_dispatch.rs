@@ -630,7 +630,10 @@ impl WidgetHost {
                 cg.copied_at = Some(self.now_ms);
                 #[cfg(feature = "canvaskit")]
                 {
-                    self.host_copy_text(&cg.code);
+                    // End the `cg` (&mut editor_state) borrow before the
+                    // &self helper call.
+                    let code = cg.code.clone();
+                    self.host_copy_text(&code);
                 }
             }
             CodegenAction::Download => {
