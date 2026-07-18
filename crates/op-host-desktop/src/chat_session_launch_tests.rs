@@ -108,6 +108,20 @@ fn stash_design_request_for_retry_writes_json_onto_the_last_message() {
 /// request away), so it's exactly what this test needs to prove.
 #[test]
 fn launch_if_pending_stashes_the_design_request_on_the_cli_standard_route() {
+    // `launch_cli_standard_turn` (reached below) unconditionally calls
+    // `agent_indicators::begin()` on THIS thread before it ever spawns its
+    // worker (chat_session_launch.rs's indicator_epoch setup) — that's a
+    // write to the same process-global registry every other design-turn
+    // test in this binary guards with this lock. Without it, this test's
+    // `begin()` can land between another (locked) test's own `begin()` and
+    // its first `add_frame`, silently bumping `active_epoch()` out from
+    // under it and starving that test's frame-populated assertion — see
+    // `chat_intent_host_tests::cli_new_design_populates_frame_indicators_the_canvas_scan_gates_on`.
+    let _guard = crate::agent_indicator_test_lock::LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    op_editor_core::agent_indicators::clear();
+
     let mut host = WidgetHostNative::new();
     // No builtin/ACP model selected (the default) — `is_builtin_or_acp` is
     // false, so `launch_if_pending` routes into `launch_cli_standard_turn`
@@ -139,6 +153,8 @@ fn launch_if_pending_stashes_the_design_request_on_the_cli_standard_route() {
     let restored: op_orchestrator::DesignRequest =
         serde_json::from_str(json).expect("must round-trip");
     assert_eq!(restored.prompt, "design a login page");
+
+    op_editor_core::agent_indicators::clear();
 }
 
 #[test]

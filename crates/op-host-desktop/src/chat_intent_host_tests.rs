@@ -81,12 +81,29 @@ impl ChatProvider for ScriptedCalls {
     }
 
     fn send(&self, _request: ChatRequest) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
-        let text = self
-            .calls
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("scripted call exhausted");
+        // The orchestrator's retry ladder (attempt 2/3), geometry-echo
+        // in-loop self-correction, and the end-of-run salvage pass can all
+        // independently re-invoke the design provider for the SAME subtask
+        // when an earlier attempt didn't land — real, by-design resilience
+        // a live LLM always has something to say to (see
+        // `op-orchestrator/src/concurrent.rs::run_subtask_retry_ladder` +
+        // `maybe_geometry_echo`, `run.rs`'s salvage pass). A finite
+        // scripted queue has no such reserve, so once exhausted this keeps
+        // returning the LAST scripted line instead of panicking — this is
+        // called from `ChatProviderLlmClient`'s per-call drain thread (one
+        // new thread per attempt) whose `JoinHandle` is never joined, so a
+        // panic here used to be silently contained EXCEPT for poisoning
+        // `calls` for the rest of the process — starving any later,
+        // legitimately-necessary call on this same instance.
+        let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        if calls.len() > 1 {
+            calls.pop_front();
+        }
+        let text = calls
+            .front()
+            .cloned()
+            .expect("ScriptedCalls constructed with zero responses");
+        drop(calls);
         Box::new(
             vec![
                 ChatDelta::TextDelta(text),
