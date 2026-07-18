@@ -5,8 +5,8 @@ use crate::wire_screen_navigation::node_has_events;
 use jian_ops_schema::PenDocument;
 use op_editor_core::EditorState;
 
-const ACTIVE: &str = "#22C55E";
-const INACTIVE: &str = "#9CA3AF";
+pub(super) const ACTIVE: &str = "#22C55E";
+pub(super) const INACTIVE: &str = "#9CA3AF";
 
 fn tab_json(id_prefix: &str, label: &str, icon: &str, active: bool) -> serde_json::Value {
     let color = if active { ACTIVE } else { INACTIVE };
@@ -35,7 +35,7 @@ fn tab_json(id_prefix: &str, label: &str, icon: &str, active: bool) -> serde_jso
 /// A bottom-nav with 4 tabs (Home/Search/Library/Premium), whichever one's
 /// label equals `active_label` styled active (accent fill + underline
 /// indicator), everyone else the shared muted style.
-fn nav_json(
+pub(super) fn nav_json(
     nav_id: &str,
     id_prefix: &str,
     active_label: &str,
@@ -68,7 +68,7 @@ fn nav_json(
 /// which tab indices carry the active style — for exercising
 /// `find_active_by_fingerprint`'s degrade paths (zero outliers / 2+
 /// outliers), which `nav_json`'s "exactly one active tab" shape can't reach.
-fn nav_with_active_indices(
+pub(super) fn nav_with_active_indices(
     nav_id: &str,
     id_prefix: &str,
     active_indices: &[usize],
@@ -97,7 +97,7 @@ fn nav_with_active_indices(
     })
 }
 
-fn screen_json(id: &str, name: &str, nav: serde_json::Value) -> serde_json::Value {
+pub(super) fn screen_json(id: &str, name: &str, nav: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "type": "frame", "id": id, "name": name, "width": 390, "height": 844,
         "layout": "vertical", "children": [nav]
@@ -108,7 +108,7 @@ fn screen_json(id: &str, name: &str, nav: serde_json::Value) -> serde_json::Valu
 /// "sub-agent's Bottom Navigation Bar subtask failed" shape the injection
 /// upgrade targets. Carries one ordinary content child so it isn't an
 /// empty frame.
-fn screen_json_no_nav(id: &str, name: &str) -> serde_json::Value {
+pub(super) fn screen_json_no_nav(id: &str, name: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "frame", "id": id, "name": name, "width": 390, "height": 844,
         "layout": "vertical", "children": [
@@ -117,7 +117,7 @@ fn screen_json_no_nav(id: &str, name: &str) -> serde_json::Value {
     })
 }
 
-fn two_screen_drifted_doc() -> serde_json::Value {
+pub(super) fn two_screen_drifted_doc() -> serde_json::Value {
     serde_json::json!({
         "version": "1.0",
         "children": [
@@ -129,17 +129,17 @@ fn two_screen_drifted_doc() -> serde_json::Value {
     })
 }
 
-fn state_from(doc: serde_json::Value) -> EditorState {
+pub(super) fn state_from(doc: serde_json::Value) -> EditorState {
     let doc: PenDocument = serde_json::from_value(doc).expect("valid doc");
     EditorState::from_document(doc)
 }
 
-fn run_pass(state: &mut EditorState) {
+pub(super) fn run_pass(state: &mut EditorState) {
     let mut sink = crate::loop_finalize::StateDocSink { state };
     unify_shared_nav(&mut sink);
 }
 
-fn find_by_id<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
+pub(super) fn find_by_id<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
     for node in nodes {
         if node.id_str() == id {
             return Some(node);
@@ -153,7 +153,7 @@ fn find_by_id<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
     None
 }
 
-fn labels_of(nav: &PenNode) -> Vec<String> {
+pub(super) fn labels_of(nav: &PenNode) -> Vec<String> {
     nav.children()
         .into_iter()
         .flatten()
@@ -165,7 +165,7 @@ fn labels_of(nav: &PenNode) -> Vec<String> {
 /// The `fill` color string on the FIRST descendant that carries one — used
 /// to read back whether a tab landed active (`#22C55E`) or inactive
 /// (`#9CA3AF`) after unification.
-fn first_fill(node: &PenNode) -> Option<String> {
+pub(super) fn first_fill(node: &PenNode) -> Option<String> {
     let value = serde_json::to_value(node).ok()?;
     if let Some(fill) = value.get("fill").and_then(|f| f.as_array()) {
         if let Some(color) = fill
@@ -482,7 +482,7 @@ fn ambiguous_active_signal_degrades_to_clone_without_retargeting() {
 /// the injection upgrade targets: a sub-agent's bottom-nav subtask failed
 /// on some screens while the reference screen's nav still declares tabs
 /// for them.
-fn three_screen_missing_nav_doc() -> serde_json::Value {
+pub(super) fn three_screen_missing_nav_doc() -> serde_json::Value {
     serde_json::json!({
         "version": "1.0",
         "children": [

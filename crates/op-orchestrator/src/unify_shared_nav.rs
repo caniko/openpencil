@@ -31,6 +31,38 @@
 //! no tab (e.g. a standalone detail page with no nav on ANY screen) is
 //! still never forced to grow one. See [`resolve_target`].
 //!
+//! ## Active-tab idempotency gap (0718-1-k3-1 postmortem, D)
+//!
+//! [`labels_already_unified`] only compares the tab LABEL set — it says
+//! nothing about which tab is active. A model that draws every screen's nav
+//! byte-for-byte identical (measured: three screens, one nav, one active
+//! tab baked into all three) short-circuits `resolve_target` into `None`
+//! before `retarget_active_tab` ever runs, so the wrong tab reads active on
+//! every non-reference screen. [`active_tab_is_correct`] is the missing
+//! second half of the idempotency check: labels matching is necessary but
+//! not sufficient. When it disagrees, [`SyncTarget::RetargetActiveOnly`]
+//! fixes just the active styling in place — no full nav replacement, so any
+//! other authored drift on that screen's own nav (icons, ids) survives
+//! untouched.
+//!
+//! ## Detail-page Inject exemption (0718-1-k3-1 postmortem, product decision)
+//!
+//! A push-in detail screen (opened by tapping a card/row on another screen,
+//! with a header Back control, and no corresponding bottom-nav tab) should
+//! never get a bottom-nav forced onto it — `decomposition.md` / `design-
+//! agent.md` now teach the model this directly, but the deterministic
+//! backstop lives here: [`resolve_target`]'s `Inject` branch additionally
+//! checks [`wire_screen_navigation::screen_has_back_control_in_header`] so a
+//! screen whose bare name happens to token-match a reference tab (see
+//! `labels_match`'s token fallback) doesn't get chrome it structurally
+//! signals it doesn't want. Deliberately Inject-only — an AUTHORED nav
+//! (`Replace` / `RetargetActiveOnly`) is never removed; this pass does not
+//! delete what the model deliberately drew. Back-header-only (not also
+//! requiring a label mismatch): `resolve_target`'s own `eligible` check
+//! already requires a label match before `Inject` is ever considered, so a
+//! literal "no match AND back header" gate would be unreachable dead code
+//! (reviewed + confirmed).
+//!
 //! ## Roadmap note
 //!
 //! This is the deterministic stand-in for shared chrome being a proper
@@ -46,7 +78,7 @@ use op_editor_core::{EditorCommand, NodeId, PenNodeExt};
 use crate::types::DocSink;
 use crate::wire_screen_navigation::{
     collect_nav_containers, collect_screen_candidates, first_text_content, labels_match,
-    normalize_label, ScreenCandidate,
+    normalize_label, screen_has_back_control_in_header, ScreenCandidate,
 };
 
 /// What a non-reference screen needs, resolved read-only before any
@@ -58,6 +90,12 @@ enum SyncTarget {
     /// This screen has NO nav at all, but the reference nav declares a tab
     /// for it — append a fresh clone as its last child (`InsertSubtree`).
     Inject,
+    /// Labels already match the reference, but the ACTIVE tab doesn't sit
+    /// on this screen's own tab (the D bug — see the module doc). Carries
+    /// the TARGET's own live nav id + an owned clone of it (not the
+    /// reference's), so the in-place fix only ever moves active styling —
+    /// any other authored drift on this screen's own nav survives.
+    RetargetActiveOnly(String, Box<PenNode>),
 }
 
 /// Entry point. No-ops when fewer than 2 screen-shaped top-level frames
@@ -89,11 +127,11 @@ pub fn unify_shared_nav(sink: &mut dyn DocSink) {
             continue; // already unified, or no eligible reason to touch it.
         };
 
-        let mut clone = reference_nav.clone();
-        retarget_active_tab(&mut clone, &screen.name);
-
         match target {
             SyncTarget::Replace(target_nav_id) => {
+                let mut clone = reference_nav.clone();
+                retarget_active_tab(&mut clone, &screen.name);
+                stamp_chrome_role(&mut clone);
                 // `ReplaceSubtree` remaps every id in `clone` (root AND
                 // descendants) to fresh, non-colliding ids on apply
                 // (`op_editor_core::command_node::cmd_replace_subtree` ->
@@ -107,6 +145,9 @@ pub fn unify_shared_nav(sink: &mut dyn DocSink) {
                 });
             }
             SyncTarget::Inject => {
+                let mut clone = reference_nav.clone();
+                retarget_active_tab(&mut clone, &screen.name);
+                stamp_chrome_role(&mut clone);
                 // `InsertSubtree` APPENDS to the target parent's children
                 // (`cmd_insert_subtree`'s `slot.extend(nodes)`), so the
                 // injected nav lands as the screen's LAST child — bottom
@@ -120,6 +161,20 @@ pub fn unify_shared_nav(sink: &mut dyn DocSink) {
                 sink.apply(EditorCommand::InsertSubtree {
                     nodes: vec![clone],
                     parent_id: NodeId::new(screen.id.clone()),
+                    page_id: None,
+                });
+            }
+            SyncTarget::RetargetActiveOnly(target_nav_id, mut own_nav) => {
+                // Mutate the TARGET's own live nav (captured read-only in
+                // `resolve_target`), not a reference clone — labels already
+                // matched, so a full replace would silently overwrite any
+                // authored drift beyond the active indicator this screen's
+                // own nav carries (icon glyphs, ids, extra chrome).
+                retarget_active_tab(&mut own_nav, &screen.name);
+                sink.apply(EditorCommand::ReplaceSubtree {
+                    node_id: NodeId::new(target_nav_id),
+                    node: own_nav,
+                    drop_children: true,
                     page_id: None,
                 });
             }
@@ -145,10 +200,17 @@ fn resolve_target(
     collect_nav_containers(root, &mut navs);
     match navs.into_iter().next() {
         Some(target_nav) => {
-            if labels_already_unified(target_nav, reference_nav) {
-                None // idempotent: same tab-label set, nothing to do.
-            } else {
+            if !labels_already_unified(target_nav, reference_nav) {
                 Some(SyncTarget::Replace(target_nav.id_str().to_string()))
+            } else if active_tab_is_correct(target_nav, &screen.name) {
+                None // truly idempotent: labels match AND active tab is right.
+            } else {
+                // Labels match but the active tab is wrong (the D bug) —
+                // fix in place rather than a full replace.
+                Some(SyncTarget::RetargetActiveOnly(
+                    target_nav.id_str().to_string(),
+                    Box::new(target_nav.clone()),
+                ))
             }
         }
         None => {
@@ -160,7 +222,19 @@ fn resolve_target(
             let eligible = reference_nav
                 .children()
                 .is_some_and(|tabs| find_tab_index_for_screen(tabs, &screen.name).is_some());
-            eligible.then_some(SyncTarget::Inject)
+            if !eligible {
+                return None;
+            }
+            // Detail-page exemption (see the module doc): even when the
+            // screen's bare name happens to token-match a reference tab, a
+            // back-shaped header control marks it as a push-in detail
+            // screen, not a tab destination — don't force chrome onto it.
+            // Inject-only: an authored nav (Replace / RetargetActiveOnly)
+            // is never touched by this check.
+            if screen_has_back_control_in_header(sink, screen) {
+                return None;
+            }
+            Some(SyncTarget::Inject)
         }
     }
 }
@@ -193,6 +267,30 @@ fn find_reference_nav(
 /// run's active-tab detection degraded (see [`retarget_active_tab`]).
 fn labels_already_unified(target: &PenNode, reference: &PenNode) -> bool {
     nav_label_set(target) == nav_label_set(reference)
+}
+
+/// Whether `nav`'s currently-active tab already sits on the tab matching
+/// `screen_name` — the other half of the idempotency check
+/// [`labels_already_unified`] deliberately leaves out (see the module doc's
+/// "Active-tab idempotency gap" section). Mirrors [`retarget_active_tab`]'s
+/// own degrade conditions exactly (same helpers, same order) so a `false`
+/// here reliably means `retarget_active_tab` will find a confident swap to
+/// make, not disagree and no-op again.
+fn active_tab_is_correct(nav: &PenNode, screen_name: &str) -> bool {
+    let Some(children) = nav.children() else {
+        return true; // no children to be wrong about.
+    };
+    if children.len() < 2 {
+        return true;
+    }
+    let fingerprints: Vec<String> = children.iter().map(style_fingerprint).collect();
+    let Some(active_idx) = find_active_by_fingerprint(&fingerprints) else {
+        return true; // no active styling detected — nothing to fix.
+    };
+    let Some(target_idx) = find_tab_index_for_screen(children, screen_name) else {
+        return true; // no tab matches this screen — nothing to fix.
+    };
+    active_idx == target_idx
 }
 
 fn nav_label_set(nav: &PenNode) -> Vec<String> {
@@ -267,6 +365,25 @@ fn find_tab_index_for_screen(children: &[PenNode], screen_name: &str) -> Option<
     children.iter().position(|tab| {
         first_text_content(tab).is_some_and(|label| labels_match(label, screen_name))
     })
+}
+
+/// Force `role: "bottom-tab-bar"` onto `node` if it doesn't already carry a
+/// role (0718-1-k3-1 review fix). [`find_reference_nav`] / [`is_nav_container`]
+/// match a reference nav by role OR name/id substring — a purely
+/// name-matched reference (no role at all) is a real, reachable case, and
+/// `unfilled_screens.rs`'s chrome exclusion (`CHROME_ROLES`) is role-only:
+/// an unstamped clone's own tab-label text would read as "real content" to
+/// the promise-delivery check, silently flipping a genuinely unfilled
+/// screen to "filled" the moment it gets a nav — the same class of bug
+/// `unify_shared_status_bar`'s `stamp_chrome_role` closes for status bars.
+/// Only ever called on an owned CLONE (`Replace` / `Inject`), never on the
+/// authored reference or a `RetargetActiveOnly` target (that branch mutates
+/// the screen's OWN pre-existing nav, whose role — or lack of one — is
+/// already whatever it authentically was).
+fn stamp_chrome_role(node: &mut PenNode) {
+    if node.base().role.is_none() {
+        node.base_mut().role = Some("bottom-tab-bar".to_string());
+    }
 }
 
 /// JSON fingerprint of `node` with every content-identifying field blanked
@@ -410,3 +527,9 @@ fn restore_content_walk<'a>(
 #[cfg(test)]
 #[path = "unify_shared_nav_tests.rs"]
 mod tests;
+
+// Split out from `tests` above to stay under the 800-line cap — see that
+// file's own split-out sibling for details.
+#[cfg(test)]
+#[path = "unify_shared_nav_active_tab_tests.rs"]
+mod active_tab_tests;

@@ -458,6 +458,30 @@ fn wire_back_buttons(sink: &mut dyn DocSink, screens: &[ScreenCandidate]) {
     }
 }
 
+/// Whether `screen` has a back-shaped control (role `back`/`back-button`/
+/// `nav-back`, or a name/icon containing "back" / "arrow-left" /
+/// "chevron-left") within its header region — reuses
+/// [`collect_back_controls`]'s exact detection (same `HEADER_REGION_MAX_Y`
+/// band `wire_back_buttons` binds `pop` against). Shared detail-page signal
+/// for `unify_shared_nav`'s Inject-exemption gate: a screen with a header
+/// back control reads as a push-in detail screen, not a tab destination.
+pub(crate) fn screen_has_back_control_in_header(
+    sink: &dyn DocSink,
+    screen: &ScreenCandidate,
+) -> bool {
+    let Some(root) = op_editor_core::walkers::find_node(
+        sink.state().active_children(),
+        &NodeId::new(screen.id.clone()),
+    ) else {
+        return false;
+    };
+    let y_offsets = resolved_y_offsets(sink.state());
+    let screen_top = y_offsets.get(&screen.id).copied().unwrap_or(0.0);
+    let mut hits = Vec::new();
+    collect_back_controls(root, screen_top, &y_offsets, &mut hits);
+    !hits.is_empty()
+}
+
 fn collect_back_controls(
     node: &PenNode,
     screen_top: f64,

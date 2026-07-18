@@ -221,6 +221,7 @@ When the canvas already holds one or more screens, a new screen (a profile page 
 3. **Same identity everywhere.** Brand name, logo treatment, user avatar/name in the chrome, and data continuity (the same user's data) carry over verbatim.
 4. **Same frame contract.** The new screen root uses the SAME width/height class as its siblings and opens to the RIGHT (`find_empty_space`).
 5. **Different content, same skeleton vocabulary.** Vary the content architecture to the screen's purpose, but compose it from the same component vocabulary (same card style, same list-row anatomy, same button hierarchy) the first screen established.
+6. **Push-in detail screens skip the tab bar.** A screen reached by tapping a card/row on another screen (a destination/product/article detail) is not a top-level tab destination — do not `C()`-copy the bottom tab bar / sidebar onto it. Give its header a Back control instead (`{"events":{"onTap":[{"pop":null}]}}`, no path) and let that be how the user returns. Only screens that ARE one of the shared nav's own tabs get the tab bar, with their own tab active.
 
 ## Multi-Screen Interactivity (App Mode Preview)
 
