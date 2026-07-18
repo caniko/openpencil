@@ -3377,6 +3377,7 @@ dependencies = [
  "op-editor-core",
  "op-editor-host-core",
  "op-editor-ui",
+ "op-figma",
  "op-host-native",
  "op-i18n",
  "op-mcp",

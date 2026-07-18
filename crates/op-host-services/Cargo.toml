@@ -17,8 +17,11 @@ mcp-debug-tools = ["op-mcp/debug-tools"]
 
 [dependencies]
 # --- workspace path deps (the headless daemon's closure; modules land in
-#     Phases 2-5). Conditional deps (op-codegen / op-figma / op-config-store)
-#     are added when a moved module proves it needs them, per the plan. ---
+#     Phases 2-5). Conditional deps (op-codegen / op-config-store) are added
+#     when a moved module proves it needs them, per the plan. op-figma landed
+#     for the VS Code plugin's offline `.fig` -> `.op` convert endpoint
+#     (figma_convert.rs). ---
+op-figma = { path = "../op-figma" }
 op-editor-core = { path = "../op-editor-core" }
 op-editor-ui = { path = "../op-editor-ui" }
 op-editor-host-core = { path = "../op-editor-host-core" }

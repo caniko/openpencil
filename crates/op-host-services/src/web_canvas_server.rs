@@ -1868,6 +1868,28 @@ fn serve_one<S: Read + Write>(
         )
         .map(|()| false);
     }
+    // Offline `.fig` -> `.op` convert for the VS Code plugin: it can't parse
+    // fig-kiwi itself, so it POSTs the raw bytes here and boots the returned
+    // document JSON through its normal open-document push. Conversion is
+    // pure (no network, no state) so — unlike the image routes above — it
+    // runs on this connection's own thread without ever touching the state
+    // lock; only large/slow parsing needs to stay off it.
+    if req.method == "POST" && req.path == "/api/figma/convert" {
+        let (status, body) = match crate::figma_convert::convert_fig_json(&req.body) {
+            Ok(body) => ("200 OK", body),
+            Err(message) => (
+                "400 Bad Request",
+                serde_json::json!({ "ok": false, "error": message }).to_string(),
+            ),
+        };
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            status,
+            &body,
+            cors_origin,
+        )
+        .map(|()| false);
+    }
     // All `/api/mcp/*` REST paths go to the REST handler — including ones this
     // daemon doesn't implement yet, which it answers with 404 rather than
     // mis-routing them into the JSON-RPC dispatch below.
@@ -2010,7 +2032,9 @@ const WEB_ALLOWED_ORIGINS_ENV: &str = "OPENPENCIL_WEB_ALLOWED_ORIGINS";
 
 fn is_sensitive_browser_post(request: &crate::mcp_serve::HttpRequest) -> bool {
     request.method == "POST"
-        && (request.path == "/api/settings/credentials" || request.path.starts_with("/api/ai/"))
+        && (request.path == "/api/settings/credentials"
+            || request.path.starts_with("/api/ai/")
+            || request.path.starts_with("/api/figma/"))
 }
 
 /// `application/json` (optionally with parameters, e.g. `; charset=utf-8`).

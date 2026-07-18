@@ -54,6 +54,7 @@ pub mod design_session;
 pub mod doc_io;
 pub mod export;
 pub mod export_pdf;
+mod figma_convert;
 pub mod mcp_live;
 pub mod mcp_serve;
 pub mod model_discovery;
