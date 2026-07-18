@@ -3447,6 +3447,7 @@ dependencies = [
  "op-ai-skills",
  "op-design-lint",
  "op-editor-core",
+ "op-html",
  "op-pen-loader",
  "regex",
  "rquickjs",
