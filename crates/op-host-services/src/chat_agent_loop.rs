@@ -188,6 +188,33 @@ fn spend_fill_round(attempts: &mut HashMap<String, usize>, names: &[String]) {
     }
 }
 
+/// Post-exhaustion "salvage" budget — a SEPARATE pool from
+/// [`FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`]'s ("两个预算，职责分离": the
+/// ordinary `max_turns` cap guards against the model rambling on forever;
+/// this pool guards "承诺必达" specifically once that ordinary budget is
+/// exhausted — running out of turns must never itself be why a committed
+/// screen ships empty). Every committed-but-unfilled screen still gets AT
+/// MOST one dedicated salvage round each (never retried a second time here —
+/// unlike the richer 2-round budget under ordinary turns), and the whole run
+/// never spends more than [`SALVAGE_MAX_ROUNDS`] dedicated rounds total —
+/// belt-and-suspenders against an avalanche, even though bundling every
+/// still-eligible screen into ONE contract message (see the `turn >=
+/// turn_cap` gates below) means this converges in exactly one round for the
+/// common case of "some screens got missed."
+const SALVAGE_MAX_ROUNDS: usize = 3;
+
+/// Which of `unfilled` has not yet been salvaged this run.
+fn salvage_eligible(
+    unfilled: &[String],
+    salvaged: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    unfilled
+        .iter()
+        .filter(|name| !salvaged.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Tier-2 nudge text — states the FULL commitment, not just what's still
 /// missing, so the model sees an explicit broken promise instead of a
 /// generic "fill it now" ("把承诺变成模型可见的契约" — turn the promise into
@@ -498,23 +525,38 @@ pub async fn run_anthropic_agent_loop(
     }
     messages.push(json!({ "role": "user", "content": cfg.user_prompt }));
 
-    // Per-screen dedicated fill-round budget for this loop run (see
+    // Tier 2 — under-budget per-screen fill-round budget (see
     // `FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`'s doc comment for the "budget
     // never truncates committed work" rationale).
     let mut fill_attempts: HashMap<String, usize> = HashMap::new();
+    // Tier 2b — post-exhaustion salvage budget. A SEPARATE pool from
+    // `fill_attempts` above (see `SALVAGE_MAX_ROUNDS`'s doc comment).
+    let mut salvaged_screens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut salvage_rounds_used = 0usize;
     let turn_cap = cfg.max_turns.max(1);
     let mut turn = 0usize;
     loop {
         // Ordinary turn budget exhausted — the ONLY reason to send another
         // request is a committed screen that's still eligible for its own
-        // dedicated fill round. This request, if sent, does NOT count
-        // against `turn`.
+        // dedicated salvage round. This request, if sent, does NOT count
+        // against `turn`; it draws from `SALVAGE_MAX_ROUNDS` instead.
         if turn >= turn_cap {
+            if salvage_rounds_used >= SALVAGE_MAX_ROUNDS {
+                let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+                report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
+                let _ = tx
+                    .send(ChatDelta::Done {
+                        stop_reason: StopReason::MaxTokens,
+                    })
+                    .await;
+                return Ok(true);
+            }
             let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
-            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            let eligible = salvage_eligible(&report.unfilled, &salvaged_screens);
             if eligible.is_empty() {
                 // Turn cap reached, and nothing committed is left worth
-                // trying for — the TS engine's error_max_turns shape. Still
+                // trying for — either nothing was ever unfilled, or every
+                // unfilled screen already spent its one salvage round. Still
                 // run the Step-4 structural backstop once over whatever the
                 // run assembled, and report unconditionally.
                 let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
@@ -526,11 +568,17 @@ pub async fn run_anthropic_agent_loop(
                     .await;
                 return Ok(true);
             }
-            spend_fill_round(&mut fill_attempts, &eligible);
+            salvage_rounds_used += 1;
+            for name in &eligible {
+                salvaged_screens.insert(name.clone());
+            }
             messages.push(
                 json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
             );
-            // Falls through to send this dedicated fill-round request below.
+            // Falls through to send this dedicated salvage round below —
+            // bundling every eligible screen into one message means this
+            // branch converges (nothing left eligible) after exactly one
+            // round for the common case.
         }
 
         let mut body = json!({
@@ -577,10 +625,11 @@ pub async fn run_anthropic_agent_loop(
                 .map(map_anthropic_stop_reason)
                 .unwrap_or(StopReason::EndTurn);
             if turn >= turn_cap {
-                // Already in dedicated-fill-round territory — the top-of-loop
-                // gate above owns deciding whether ANOTHER round is owed (it
-                // re-checks fresh on the next pass). Record this turn's reply
-                // in history and defer, rather than deciding again here —
+                // Already in salvage territory — the top-of-loop gate above
+                // owns deciding whether another salvage round is owed (it
+                // re-checks fresh on the next pass, against `salvaged_screens`
+                // / `salvage_rounds_used`). Record this turn's reply in
+                // history and defer, rather than deciding again here —
                 // deciding in both places would double-nudge.
                 messages
                     .push(json!({ "role": "assistant", "content": collector.assistant_content() }));
@@ -817,17 +866,30 @@ pub async fn run_openai_agent_loop(
     }
     messages.push(json!({ "role": "user", "content": cfg.user_prompt }));
 
-    // Per-screen dedicated fill-round budget for this loop run — see the
-    // Anthropic loop above (`FILL_BUDGET_MAX_ROUNDS_PER_SCREEN`'s doc
-    // comment) for the full "budget never truncates committed work"
-    // rationale.
+    // Tier 2 — under-budget per-screen fill-round budget, and Tier 2b —
+    // post-exhaustion salvage budget — see the Anthropic loop above
+    // (`FILL_BUDGET_MAX_ROUNDS_PER_SCREEN` / `SALVAGE_MAX_ROUNDS`'s doc
+    // comments) for the full "budget never truncates committed work"
+    // rationale and why these are two separate pools.
     let mut fill_attempts: HashMap<String, usize> = HashMap::new();
+    let mut salvaged_screens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut salvage_rounds_used = 0usize;
     let turn_cap = cfg.max_turns.max(1);
     let mut turn = 0usize;
     loop {
         if turn >= turn_cap {
+            if salvage_rounds_used >= SALVAGE_MAX_ROUNDS {
+                let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
+                report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
+                let _ = tx
+                    .send(ChatDelta::Done {
+                        stop_reason: StopReason::MaxTokens,
+                    })
+                    .await;
+                return Ok(true);
+            }
             let report = check_unfilled(&cfg.executor, cfg.finalize_on_exit).await;
-            let eligible = eligible_for_fill_round(&report.unfilled, &fill_attempts);
+            let eligible = salvage_eligible(&report.unfilled, &salvaged_screens);
             if eligible.is_empty() {
                 let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
                 report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
@@ -838,11 +900,14 @@ pub async fn run_openai_agent_loop(
                     .await;
                 return Ok(true);
             }
-            spend_fill_round(&mut fill_attempts, &eligible);
+            salvage_rounds_used += 1;
+            for name in &eligible {
+                salvaged_screens.insert(name.clone());
+            }
             messages.push(
                 json!({ "role": "user", "content": contract_nudge_text(&report.committed, &eligible) }),
             );
-            // Falls through to send this dedicated fill-round request below.
+            // Falls through to send this dedicated salvage round below.
         }
 
         let mut body = json!({
@@ -902,9 +967,9 @@ pub async fn run_openai_agent_loop(
                 }
             };
             if turn >= turn_cap {
-                // Already in dedicated-fill-round territory — the
-                // top-of-loop gate above owns deciding whether ANOTHER
-                // round is owed. Record this turn's reply and defer.
+                // Already in salvage territory — the top-of-loop gate above
+                // owns deciding whether another salvage round is owed.
+                // Record this turn's reply and defer.
                 messages.push(json!({ "role": "assistant", "content": stop_content() }));
                 continue;
             }

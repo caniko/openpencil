@@ -968,21 +968,22 @@ fn model_stop_repeatedly_failing_the_same_screen_is_capped_then_honestly_reporte
 }
 
 #[test]
-fn turn_cap_exhausted_still_gets_dedicated_fill_rounds_before_reporting() {
+fn turn_cap_exhausted_with_unfilled_committed_screen_gets_exactly_one_salvage_round() {
     // The model calls a tool on every turn until the ordinary budget
     // (max_turns: 2) is exhausted — the 0718-1-glm-1 incident's shape. Per
-    // the "budget only guards runaway" policy, running out of ordinary
-    // budget must NOT itself be the reason "Saved" ships empty: the loop
-    // still owes it up to 2 dedicated fill rounds (uncounted against
-    // max_turns) before accepting the failure and reporting honestly.
+    // the "budget only guards runaway, never truncates committed work"
+    // policy (2026-07-18 upgrade): running out of ordinary budget must NOT
+    // itself be the reason "Saved" ships empty. The salvage pool is
+    // SEPARATE from the under-budget fill pool and grants each unfilled
+    // committed screen exactly ONE dedicated round (not the richer 2-round
+    // budget) — bundling every eligible screen into one contract message
+    // means this converges after exactly one salvage request here.
     let (base, req_rx) = serve_sse_script(vec![
         anthropic_tool_use_turn(), // turn 1/2 — normal budget
         anthropic_tool_use_turn(), // turn 2/2 — normal budget exhausted
-        anthropic_text_turn(),     // dedicated fill round 1 (uncounted)
-        anthropic_text_turn(),     // dedicated fill round 2 (uncounted)
+        anthropic_text_turn(),     // the ONE dedicated salvage round
     ]);
     let executor = ScriptedExecutor::ok(r#"{"success":true,"data":{}}"#)
-        .with_unfilled_check(&["Saved"], &["Saved"])
         .with_unfilled_check(&["Saved"], &["Saved"])
         .with_unfilled_check(&["Saved"], &["Saved"])
         .with_unfilled_finalize(&["Saved"], &["Saved"]);
@@ -1004,26 +1005,82 @@ fn turn_cap_exhausted_still_gets_dedicated_fill_rounds_before_reporting() {
     let (outcome, deltas) = run_loop_collect(cfg, true);
     assert_eq!(outcome, Ok(true));
 
-    // 2 real tool-call turns consumed the ordinary budget, THEN 2 more
-    // requests went out as dedicated fill rounds (uncounted) before the
-    // per-screen cap finally stopped the retrying.
+    // 2 real tool-call turns consumed the ordinary budget, THEN exactly one
+    // more request went out as the dedicated salvage round (uncounted
+    // against max_turns) before the screen's own 1-round salvage cap
+    // finally stopped the retrying.
     assert_eq!(executor.calls().len(), 2, "the 2 ordinary tool-call turns");
-    for _ in 0..4 {
+    for _ in 0..3 {
         req_rx
             .recv()
-            .expect("all 4 requests, including the 2 dedicated fill rounds, went out");
+            .expect("all 3 requests, including the ONE dedicated salvage round, went out");
     }
     assert_eq!(
         executor.unfilled_checks(),
-        3,
-        "a turn-cap exit must still spend its dedicated fill-round budget, not skip straight to reporting"
+        2,
+        "one check discovers the salvage-eligible screen; one more (next pass) confirms it's already been salvaged"
     );
     assert_eq!(executor.finalizes(), 1);
     assert!(
         deltas
             .iter()
             .any(|d| matches!(d, ChatDelta::TextDelta(s) if s.contains("left unfilled") && s.contains("Saved"))),
-        "a run that exhausts its dedicated fill rounds without success must still get the honest report"
+        "a screen still unfilled after its ONE salvage round must still get the honest report"
+    );
+    assert!(matches!(
+        deltas.last(),
+        Some(ChatDelta::Done {
+            stop_reason: StopReason::MaxTokens
+        })
+    ));
+}
+
+#[test]
+fn turn_cap_exhausted_without_unfilled_committed_screens_spends_zero_salvage_rounds() {
+    // Nothing committed was ever left unfilled at exhaustion — the salvage
+    // pool must never fire speculatively ("无未填屏 → 零专款"). Only the 2
+    // ordinary tool-call turns' worth of requests may go out; a 3rd request
+    // would mean a wasted salvage round nobody asked for.
+    let (base, req_rx) =
+        serve_sse_script(vec![anthropic_tool_use_turn(), anthropic_tool_use_turn()]);
+    let executor =
+        ScriptedExecutor::ok(r#"{"success":true,"data":{}}"#).with_unfilled_check(&[], &[]);
+    let cfg = AgentLoopConfig {
+        url: format!("{base}/v1/messages"),
+        api_key: "sk-test".into(),
+        model: "claude-test".into(),
+        system_prompt: String::new(),
+        history: Vec::new(),
+        user_prompt: "build the 3-screen app".into(),
+        max_output_tokens: 128,
+        tools: vec![update_node_tool_def()],
+        executor: executor.clone(),
+        max_turns: 2,
+        finalize_on_exit: true,
+        disable_thinking: false,
+        dial_policy: crate::provider_dial::EndpointDialPolicy::Trusted,
+    };
+    let (outcome, deltas) = run_loop_collect(cfg, true);
+    assert_eq!(outcome, Ok(true));
+
+    assert_eq!(executor.calls().len(), 2);
+    let _first = req_rx.recv().expect("turn 1");
+    let _second = req_rx.recv().expect("turn 2");
+    assert!(
+        req_rx.recv().is_err(),
+        "no 3rd (salvage) request when nothing committed was ever left unfilled"
+    );
+    assert_eq!(
+        executor.unfilled_checks(),
+        1,
+        "exactly one check, which found nothing worth salvaging"
+    );
+    assert_eq!(executor.finalizes(), 1);
+    assert!(
+        !deltas
+            .iter()
+            .any(|d| matches!(d, ChatDelta::TextDelta(s) if s.contains("left unfilled"))),
+        "nothing to report when nothing was ever unfilled"
     );
     assert!(matches!(
         deltas.last(),
