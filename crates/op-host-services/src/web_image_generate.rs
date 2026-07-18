@@ -25,6 +25,25 @@ use crate::web_image_search::fetch_image_data_url;
 /// Truncation cap for surfaced provider errors (TS parity).
 const ERROR_MESSAGE_CAP: usize = 200;
 
+/// Cap for a provider RESPONSE body. Gemini legitimately inlines the image
+/// as base64 (a 4 MiB image is ~5.5 MiB of JSON), so this sits well above
+/// that — but it still bounds what a (browser-configured) custom endpoint
+/// can stream into daemon memory.
+const MAX_PROVIDER_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read a provider response's status + body under
+/// [`MAX_PROVIDER_BODY_BYTES`] (streaming abort, not read-then-check).
+async fn read_provider_body(
+    provider: &str,
+    resp: reqwest::Response,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let status = resp.status();
+    let bytes = crate::web_image_search::read_capped(resp, MAX_PROVIDER_BODY_BYTES)
+        .await
+        .ok_or_else(|| format!("{provider} response exceeded the size limit"))?;
+    Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 pub(crate) struct WebImageGenerateRequest {
     pub(crate) prompt: String,
     pub(crate) width: Option<f64>,
@@ -309,8 +328,7 @@ async fn generate_openai(
         .send()
         .await
         .map_err(|e| format!("OpenAI request failed: {e}"))?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let (status, body) = read_provider_body("OpenAI", resp).await?;
     if !status.is_success() {
         return Err(provider_error("OpenAI", status, &body));
     }
@@ -369,8 +387,7 @@ async fn generate_gemini(
         // reqwest error Display would echo that URL — API key included —
         // back to the browser.
         .map_err(|e| format!("Gemini request failed: {}", e.without_url()))?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let (status, body) = read_provider_body("Gemini", resp).await?;
     if !status.is_success() {
         return Err(provider_error("Gemini", status, &body));
     }
@@ -431,8 +448,7 @@ async fn generate_replicate(
         .send()
         .await
         .map_err(|e| format!("Replicate request failed: {e}"))?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let (status, body) = read_provider_body("Replicate", resp).await?;
     if !status.is_success() {
         return Err(provider_error("Replicate", status, &body));
     }
@@ -464,8 +480,7 @@ async fn generate_replicate(
             .send()
             .await
             .map_err(|e| format!("Replicate poll request failed: {e}"))?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let (status, body) = read_provider_body("Replicate", resp).await?;
         if !status.is_success() {
             return Err(format!(
                 "Replicate poll returned {}: {}",

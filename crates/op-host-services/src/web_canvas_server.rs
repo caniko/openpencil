@@ -1799,12 +1799,25 @@ fn serve_one<S: Read + Write>(
         };
         let (status, body) = match parsed {
             Ok((query, credentials)) => {
-                let outcome =
-                    crate::web_image_search::run_search_blocking(&query, credentials.as_ref());
-                (
-                    "200 OK",
-                    crate::web_image_search::search_outcome_to_json(&outcome),
-                )
+                // One slot per running job — each holds this connection
+                // thread for minutes of provider network, so unbounded
+                // concurrency would exhaust the daemon's threads.
+                match crate::web_image_search::ImageJobSlot::acquire() {
+                    Some(_slot) => {
+                        let outcome = crate::web_image_search::run_search_blocking(
+                            &query,
+                            credentials.as_ref(),
+                        );
+                        (
+                            "200 OK",
+                            crate::web_image_search::search_outcome_to_json(&outcome),
+                        )
+                    }
+                    None => (
+                        "429 Too Many Requests",
+                        r#"{"ok":false,"error":"too many concurrent image requests"}"#.to_string(),
+                    ),
+                }
             }
             Err(message) => (
                 "400 Bad Request",
@@ -1828,11 +1841,18 @@ fn serve_one<S: Read + Write>(
             crate::web_image_generate::parse_generate_request(&req.body, &guard.editor)
         };
         let (status, body) = match parsed {
-            Ok(request) => match crate::web_image_generate::run_generate_blocking(&request) {
-                Ok(url) => ("200 OK", crate::web_image_generate::generate_ok_json(&url)),
-                Err(message) => (
-                    "502 Bad Gateway",
-                    crate::web_image_generate::generate_error_json(&message),
+            // Shares the search route's in-flight ceiling (see above).
+            Ok(request) => match crate::web_image_search::ImageJobSlot::acquire() {
+                Some(_slot) => match crate::web_image_generate::run_generate_blocking(&request) {
+                    Ok(url) => ("200 OK", crate::web_image_generate::generate_ok_json(&url)),
+                    Err(message) => (
+                        "502 Bad Gateway",
+                        crate::web_image_generate::generate_error_json(&message),
+                    ),
+                },
+                None => (
+                    "429 Too Many Requests",
+                    r#"{"ok":false,"error":"too many concurrent image requests"}"#.to_string(),
                 ),
             },
             Err(message) => (

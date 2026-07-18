@@ -15,9 +15,38 @@
 //! `op-host-web-server`. The 4 MiB per-image cap still bounds what can be
 //! embedded.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::header::CONTENT_TYPE;
+
+/// Cap on concurrently running image jobs (search + generate combined).
+/// Each job blocks one connection thread for up to minutes of provider
+/// network; without a ceiling a page could exhaust the daemon's threads.
+const MAX_IN_FLIGHT_IMAGE_JOBS: usize = 4;
+
+static IN_FLIGHT_IMAGE_JOBS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII slot for one running image job. `acquire` fails once
+/// [`MAX_IN_FLIGHT_IMAGE_JOBS`] jobs are running (route answers 429).
+pub(crate) struct ImageJobSlot(());
+
+impl ImageJobSlot {
+    pub(crate) fn acquire() -> Option<Self> {
+        IN_FLIGHT_IMAGE_JOBS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_IN_FLIGHT_IMAGE_JOBS).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Self(()))
+    }
+}
+
+impl Drop for ImageJobSlot {
+    fn drop(&mut self) {
+        IN_FLIGHT_IMAGE_JOBS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// TS popover requests `count: 5` (desktop parity).
 const SEARCH_RESULT_COUNT: usize = 5;
@@ -334,8 +363,14 @@ async fn fetch_openverse_list(
     if !resp.status().is_success() {
         return None;
     }
-    let json: serde_json::Value = resp.json().await.ok()?;
+    let json = read_json_capped(resp).await?;
     Some(parse_openverse_results(&json))
+}
+
+/// Catalogue-list bodies are small JSON; 4 MiB bounds a misbehaving reply.
+async fn read_json_capped(resp: reqwest::Response) -> Option<serde_json::Value> {
+    let bytes = read_capped(resp, MAX_EMBEDDED_IMAGE_BYTES).await?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 pub(crate) fn parse_openverse_results(json: &serde_json::Value) -> Vec<RawHit> {
@@ -400,7 +435,7 @@ async fn fetch_wikimedia_list(client: &reqwest::Client, query: &str) -> Vec<RawH
     if !resp.status().is_success() {
         return Vec::new();
     }
-    let Ok(json) = resp.json::<serde_json::Value>().await else {
+    let Some(json) = read_json_capped(resp).await else {
         return Vec::new();
     };
     parse_wikimedia_results(&json)
@@ -511,7 +546,7 @@ pub(crate) async fn fetch_openverse_token(
     if !resp.status().is_success() {
         return None;
     }
-    let json: serde_json::Value = resp.json().await.ok()?;
+    let json = read_json_capped(resp).await?;
     json.get("access_token")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -525,25 +560,37 @@ pub(crate) async fn fetch_image_data_url(client: &reqwest::Client, url: &str) ->
     if !resp.status().is_success() {
         return None;
     }
-    if resp
-        .content_length()
-        .is_some_and(|len| len > MAX_EMBEDDED_IMAGE_BYTES as u64)
-    {
-        return None;
-    }
     let header_mime = resp
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(normalize_image_mime_header);
-    let bytes = resp.bytes().await.ok()?;
-    if bytes.is_empty() || bytes.len() > MAX_EMBEDDED_IMAGE_BYTES {
+    let bytes = read_capped(resp, MAX_EMBEDDED_IMAGE_BYTES).await?;
+    if bytes.is_empty() {
         return None;
     }
     let mime = header_mime.or_else(|| sniff_image_mime(&bytes).map(str::to_string))?;
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine as _;
     Some(format!("data:{mime};base64,{}", B64.encode(&bytes)))
+}
+
+/// Read a response body, aborting as soon as it exceeds `cap` — the cap must
+/// hold with or without a Content-Length header, and an over-cap body must
+/// never be fully buffered first (a chunked response could otherwise stream
+/// gigabytes into memory before a post-hoc length check).
+pub(crate) async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Option<Vec<u8>> {
+    if resp.content_length().is_some_and(|len| len > cap as u64) {
+        return None;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > cap {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
 }
 
 fn normalize_image_mime_header(value: &str) -> Option<String> {
@@ -690,6 +737,22 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&search_outcome_to_json(&empty)).expect("valid json");
         assert!(json["source"].is_null());
+    }
+
+    #[test]
+    fn image_job_slot_caps_concurrency_and_releases_on_drop() {
+        let held: Vec<_> = (0..MAX_IN_FLIGHT_IMAGE_JOBS)
+            .map(|_| ImageJobSlot::acquire().expect("slot under the cap"))
+            .collect();
+        assert!(
+            ImageJobSlot::acquire().is_none(),
+            "cap reached — acquire must fail"
+        );
+        drop(held);
+        assert!(
+            ImageJobSlot::acquire().is_some(),
+            "drop must release the slots"
+        );
     }
 
     #[test]
