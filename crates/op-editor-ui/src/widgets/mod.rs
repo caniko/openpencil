@@ -244,6 +244,7 @@ pub mod file_drop_overlay;
 pub mod file_menu;
 pub mod git_panel;
 mod git_panel_clone;
+mod git_panel_commit_card;
 mod git_panel_diff;
 mod git_panel_empty;
 mod git_panel_hit;
