@@ -206,3 +206,97 @@ fn cli_new_design_clears_agent_frame_indicators_after_done() {
     );
     op_editor_core::agent_indicators::clear();
 }
+
+/// Reproduces the real `app_handler.rs` per-frame sequence — `pump_commands`
+/// → `pump_progress` → `design_loop_indicator::pump_design_session_indicator`
+/// — for a CLI-launched new-design turn, and asserts the canvas radar-scan's
+/// OWN activation gate (`AgentIndicators::frames` non-empty — see
+/// `op_editor_ui::widgets::canvas_generation_scan::generating_paint_sets`,
+/// which requires `!indicators.frames.is_empty()` before it paints anything
+/// at all) actually fires while the turn is running.
+///
+/// The sibling test above only asserts the POST-drain "no leak" invariant —
+/// it would pass unchanged even if `frames` were NEVER populated (empty
+/// stays empty). This test is the missing "the scan gate actually opened"
+/// assertion the bug report needed: it drives `pump_design_session_indicator`
+/// (the ONLY caller of `agent_indicators::add_frame_if_absent`/`add_frame`
+/// for the classic single-screen `Orchestrator::run` path — `run.rs` itself
+/// never tags a root frame; only the multi-screen `run_screen_groups.rs`
+/// scaffold does that directly) exactly like the real event loop does.
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "WINDOWS_WIDGET_HOST_NATIVE_TEST_ABORT: WidgetHostNative/Skia host tests abort in Windows CI; macOS and Linux keep coverage"
+)]
+#[test]
+fn cli_new_design_populates_frame_indicators_the_canvas_scan_gates_on() {
+    let _guard = crate::agent_indicator_test_lock::LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    op_editor_core::agent_indicators::clear();
+    let indicator_epoch = op_editor_core::agent_indicators::begin();
+    let plan = CliTurnPlan {
+        user_text: "design a login page".into(),
+        page_children_empty: true,
+        classify_provider: Box::new(Scripted::text("DESIGN_NEW")),
+        chat_provider: Box::new(Scripted::text("unused")),
+        design_provider: Box::new(ScriptedCalls::new(vec![
+            ONE_SUBTASK_PLAN_JSON.into(),
+            one_node_json(),
+        ])),
+        chat_request: ChatRequest::default(),
+        modify_request: None,
+        design_request: test_design_request(),
+        initial_state: EditorState::new(),
+        indicator_epoch,
+        model: None,
+    };
+    let (chat_tx, _chat_rx) = mpsc::channel();
+    let (executor, _tool_rx) = chat_tool_channel();
+    let (delta_tx, delta_rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let mut current = Some(DesignSession::from_channels_with_epoch(
+        delta_rx,
+        cmd_rx,
+        indicator_epoch,
+    ));
+    let mut host = WidgetHostNative::new();
+    host.editor_state_mut()
+        .chat
+        .messages
+        .push(op_editor_core::ChatMessage::assistant_streaming());
+    let mut design_indicator = None;
+
+    let worker = thread::spawn(move || run_cli_turn(plan, chat_tx, executor, delta_tx, cmd_tx));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_scan_gate_open = false;
+    while current.is_some() && Instant::now() < deadline {
+        let _ = pump_commands(&mut host, &mut current, 1440.0, 900.0);
+        let _ = pump_progress(&mut host, &mut current, None);
+        crate::design_loop_indicator::pump_design_session_indicator(
+            &mut design_indicator,
+            &current,
+            host.editor_state_mut(),
+            None,
+        );
+        if !op_editor_core::agent_indicators::snapshot()
+            .frames
+            .is_empty()
+        {
+            saw_scan_gate_open = true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    worker.join().expect("worker exits");
+
+    assert!(current.is_none(), "design session should finish");
+    assert!(
+        saw_scan_gate_open,
+        "a CLI-launched new-design turn must tag its root frame via \
+         agent_indicators::add_frame[_if_absent] at some point during the \
+         run — the canvas radar-scan effect \
+         (canvas_generation_scan::generating_paint_sets) never paints \
+         anything for a run whose `frames` map stayed empty the whole time"
+    );
+
+    op_editor_core::agent_indicators::clear();
+}

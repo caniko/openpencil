@@ -5,6 +5,7 @@
 //! requests a fresh snapshot from the UI thread for each HTTP request,
 //! then sends write commands back for the UI thread to apply.
 
+use std::collections::HashSet;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
@@ -12,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use jian_ops_schema::node::PenNode;
+use op_editor_core::pen_node_ext::PenNodeExt;
 use op_editor_core::{EditorCommand, EditorState};
 
 #[cfg(feature = "mcp-debug-tools")]
@@ -35,6 +38,16 @@ const LIVE_CONN_STACK_SIZE: usize = 16 * 1024 * 1024;
 const _: () = assert!(LIVE_CONN_STACK_SIZE <= 16 * 1024 * 1024);
 type UiWake = Arc<dyn Fn() + Send + Sync + 'static>;
 
+/// Fallback client-facing label when `initialize` carried no
+/// `clientInfo.name` (some minimal/older MCP clients omit it) — honest
+/// about what it is ("some external MCP tool"), not a fabricated persona.
+const MCP_CLIENT_FALLBACK_NAME: &str = "MCP Client";
+/// Fixed neutral badge colour for every MCP-driven generation — a
+/// deliberate contrast with the in-app agent persona pool
+/// (`assign_agent_identities_seeded`'s vivid per-agent colours): an
+/// external MCP client isn't one of the app's own named agents.
+const MCP_CLIENT_COLOR: &str = "#8A8F98";
+
 pub struct McpLiveServer {
     port: u16,
     /// Per-instance identity token, reported in the live `ping` reply and
@@ -48,6 +61,22 @@ pub struct McpLiveServer {
     quit_flag: Arc<AtomicBool>,
     req_rx: Receiver<UiRequest>,
     stop_tx: Sender<()>,
+    /// The connected MCP client's declared identity — `(name, color)`,
+    /// captured from `initialize`'s `params.clientInfo.name` the first
+    /// time a connection thread sees it (`Arc<Mutex<_>>`: written from
+    /// whichever connection thread handles that request, read from the
+    /// UI thread in `pump` when tagging a `batch_design` root). A fixed
+    /// neutral colour, not the in-app persona pool — an external MCP
+    /// client is not one of the app's own named agents.
+    client_identity: Arc<Mutex<Option<(String, String)>>>,
+    /// The last epoch this server minted for a `batch_design` write, or
+    /// `0` before the first one. `pump`'s indicator hook reuses it
+    /// (rather than starting a fresh epoch) while its reveal queue is
+    /// still draining, so a burst of back-to-back `batch_design` calls
+    /// reads as one continuous generation instead of each call clipping
+    /// the previous one's tail animation. UI-thread-only (`pump` takes
+    /// `&mut self`), so a plain field — no interior mutability needed.
+    last_mcp_epoch: u64,
 }
 
 struct ApplyAck {
@@ -73,6 +102,12 @@ enum UiRequest {
         ack: SyncSender<EditorState>,
     },
     Apply {
+        /// The MCP tool that produced `cmd` — `McpLiveServer::pump` reads
+        /// this to gate canvas-generation indicators (frame glow + reveal
+        /// sweep) on `"batch_design"` specifically, mirroring how the
+        /// in-app design-agent loop only animates that one tool
+        /// (`design_agent_tools.rs::should_register_batch_reveals`).
+        tool_name: String,
         cmd: EditorCommand,
         ack: SyncSender<ApplyAck>,
     },
@@ -123,6 +158,8 @@ impl McpLiveServer {
         let quit_flag = Arc::new(AtomicBool::new(false));
         let server_quit = Arc::clone(&quit_flag);
         let wake_ui: UiWake = Arc::new(wake_ui);
+        let client_identity = Arc::new(Mutex::new(None));
+        let server_identity = Arc::clone(&client_identity);
         thread::Builder::new()
             .name("op-mcp-live-http".into())
             .spawn(move || {
@@ -133,6 +170,7 @@ impl McpLiveServer {
                     server_token,
                     server_quit,
                     wake_ui,
+                    server_identity,
                 )
             })
             .map_err(|e| format!("spawn MCP live server: {e}"))?;
@@ -143,6 +181,8 @@ impl McpLiveServer {
             quit_flag,
             req_rx,
             stop_tx,
+            client_identity,
+            last_mcp_epoch: 0,
         })
     }
 
@@ -168,9 +208,26 @@ impl McpLiveServer {
                 Ok(UiRequest::Snapshot { ack }) => {
                     let _ = ack.send(state.clone());
                 }
-                Ok(UiRequest::Apply { cmd, ack }) => {
+                Ok(UiRequest::Apply {
+                    tool_name,
+                    cmd,
+                    ack,
+                }) => {
                     let layout_dirty = command_invalidates_layout(&cmd);
+                    // Snapshot BEFORE apply, only for the one tool the canvas
+                    // radar-scan cares about — `design_agent_tools.rs`'s
+                    // `should_register_batch_reveals` gates the in-app
+                    // design-agent loop's reveal registration the exact same
+                    // way, for the exact same reason (every other write tool
+                    // is a targeted property tweak, not a "generation").
+                    let ids_before = (tool_name == "batch_design")
+                        .then(|| crate::design_agent_tools::collect_active_node_ids(state));
                     let applied = state.apply(cmd);
+                    if applied {
+                        if let Some(ids_before) = ids_before {
+                            self.register_mcp_generation(&ids_before, state);
+                        }
+                    }
                     let _ = ack.send(ApplyAck { applied });
                     if applied {
                         outcome.repaint = true;
@@ -203,6 +260,113 @@ impl McpLiveServer {
     pub fn stop(&mut self) {
         let _ = self.stop_tx.send(());
     }
+
+    /// Tag a JUST-APPLIED `batch_design` write's genuinely new content
+    /// with canvas-generation indicators, so the radar-scan (root frame
+    /// glow — `op_editor_ui`'s `canvas_generation_scan` gates purely on
+    /// `AgentIndicators.frames` being non-empty) and the per-node reveal
+    /// entrance animation activate for MCP-driven generation the same
+    /// way they already do for the in-app design-agent loop. A no-op
+    /// when nothing new landed (a `batch_design` Direct-op call that
+    /// only tweaked an existing node's properties, say).
+    fn register_mcp_generation(&mut self, ids_before: &HashSet<String>, state: &EditorState) {
+        let now_ms = crate::design_agent_tools::reveal_now_millis();
+        let mut saw_new_content = false;
+        for node in state.active_children() {
+            if !ids_before.contains(node.id_str()) {
+                saw_new_content = true;
+                break;
+            }
+        }
+        if !saw_new_content {
+            // Reveals can still land nested under an EXISTING root (an
+            // "add a section to this screen" follow-up) even when no
+            // top-level id is new — `register_new_node_reveals` below
+            // walks the whole tree, so check that shape too before
+            // giving up entirely.
+            saw_new_content = state
+                .active_children()
+                .iter()
+                .any(|node| subtree_has_new_id(node, ids_before));
+        }
+        if !saw_new_content {
+            return;
+        }
+        let epoch = self.resolve_mcp_epoch(now_ms);
+        let (name, color) = self
+            .client_identity
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(|| {
+                (
+                    MCP_CLIENT_FALLBACK_NAME.to_string(),
+                    MCP_CLIENT_COLOR.to_string(),
+                )
+            });
+        // Only a genuinely NEW top-level Frame is a fresh generation
+        // root — mirrors `design_loop_indicator.rs::register_new_frames`
+        // (Frame-only) and `run_screen_groups.rs::insert_screen_group_roots`
+        // (new-vs-existing top-level diff), the two established places
+        // this codebase already tags a root frame.
+        for node in state.active_children() {
+            if matches!(node, PenNode::Frame(_)) && !ids_before.contains(node.id_str()) {
+                op_editor_core::agent_indicators::add_frame(epoch, node.id_str(), &color, &name);
+            }
+        }
+        crate::design_agent_tools::register_new_node_reveals(
+            ids_before,
+            state,
+            Some(epoch),
+            now_ms,
+        );
+        self.last_mcp_epoch = epoch;
+        // Each `batch_design` call is its own self-contained turn — no
+        // idle-timeout bookkeeping needed. `finish_if_epoch` is the
+        // established graceful-drain: `run_active` drops immediately but
+        // the already-queued reveals keep animating at their own pace
+        // (`agent_indicators.rs`'s paint-side maintenance retires the
+        // epoch once the queue empties), so this is safe to call even
+        // though the call that just landed is still visually settling.
+        op_editor_core::agent_indicators::finish_if_epoch(epoch);
+    }
+
+    /// Reuse the last MCP epoch while its reveal queue is still
+    /// draining (`latest_reveal_end_ms` is the same "is anything still
+    /// animating" check the orchestrator's own tree-restructure gate
+    /// polls), so a burst of back-to-back `batch_design` calls (a
+    /// multi-screen design, one call per screen) reads as one
+    /// continuous generation instead of each call clipping the
+    /// previous one's tail animation via `begin()`'s "bump epoch +
+    /// clear every map" semantics. Starts fresh once the queue empties.
+    fn resolve_mcp_epoch(&self, now_ms: u64) -> u64 {
+        if self.last_mcp_epoch != 0 {
+            if let Some(end_ms) =
+                op_editor_core::agent_indicators::latest_reveal_end_ms(self.last_mcp_epoch)
+            {
+                if now_ms < end_ms {
+                    return self.last_mcp_epoch;
+                }
+            }
+        }
+        op_editor_core::agent_indicators::begin()
+    }
+}
+
+/// Whether `node` or any descendant carries an id not in `ids_before` —
+/// the "did ANY new content land, even nested under an existing root"
+/// check `register_mcp_generation` needs before deciding whether a
+/// `batch_design` call is worth animating at all.
+fn subtree_has_new_id(node: &PenNode, ids_before: &HashSet<String>) -> bool {
+    if !ids_before.contains(node.id_str()) {
+        return true;
+    }
+    if let Some(children) = node.children() {
+        return children
+            .iter()
+            .any(|child| subtree_has_new_id(child, ids_before));
+    }
+    false
 }
 
 impl Drop for McpLiveServer {
@@ -245,6 +409,7 @@ fn server_loop(
     token: String,
     quit_flag: Arc<AtomicBool>,
     wake_ui: UiWake,
+    client_identity: Arc<Mutex<Option<(String, String)>>>,
 ) {
     // Serializes only *stateful* requests so a concurrent multi-apply batch
     // can't interleave. Stateless probes (`ping`/`initialize`) bypass it, so
@@ -283,6 +448,7 @@ fn server_loop(
                 let quit = Arc::clone(&quit_flag);
                 let conns = Arc::clone(&conn_count);
                 let wake = Arc::clone(&wake_ui);
+                let identity = Arc::clone(&client_identity);
                 let spawned = thread::Builder::new()
                     .name("op-mcp-live-conn".into())
                     .stack_size(LIVE_CONN_STACK_SIZE)
@@ -295,9 +461,15 @@ fn server_loop(
                         let mut stream = stream;
                         let _ = stream.set_read_timeout(Some(UI_ACK_TIMEOUT));
                         let _ = stream.set_write_timeout(Some(UI_ACK_TIMEOUT));
-                        if let Err(e) =
-                            serve_connection(&mut stream, &req_tx, &token, &lock, &quit, &wake)
-                        {
+                        if let Err(e) = serve_connection(
+                            &mut stream,
+                            &req_tx,
+                            &token,
+                            &lock,
+                            &quit,
+                            &wake,
+                            &identity,
+                        ) {
                             eprintln!("openpencil-desktop mcp: {e}");
                             let _ = crate::mcp_serve::write_mcp_http_response(
                                 &mut stream,
@@ -323,6 +495,7 @@ fn server_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_connection<S: std::io::Read + std::io::Write>(
     stream: &mut S,
     req_tx: &Sender<UiRequest>,
@@ -330,6 +503,7 @@ fn serve_connection<S: std::io::Read + std::io::Write>(
     stateful_lock: &Mutex<()>,
     quit_flag: &AtomicBool,
     wake_ui: &UiWake,
+    client_identity: &Mutex<Option<(String, String)>>,
 ) -> Result<(), String> {
     let req = crate::mcp_serve::read_http_request(stream)?;
     if req.method == "OPTIONS" {
@@ -370,6 +544,17 @@ fn serve_connection<S: std::io::Read + std::io::Write>(
     // identity token so the CLI can confirm THIS server published the file.
     match crate::mcp_serve::classify_stateless(&req.body) {
         crate::mcp_serve::Stateless::Respond(resp) => {
+            // Capture the client's declared identity off the SAME
+            // `initialize` request `classify_stateless` just answered —
+            // the ONLY message this wire protocol carries a name in.
+            // Always overwrite (not "first wins"): a later `initialize`
+            // means a different tool connected, and the badge should
+            // say who is ACTUALLY driving now.
+            if let Some(name) = crate::mcp_serve::parse_client_info_name(&req.body) {
+                if let Ok(mut identity) = client_identity.lock() {
+                    *identity = Some((name, MCP_CLIENT_COLOR.to_string()));
+                }
+            }
             return write_json_rpc_response(stream, &resp);
         }
         crate::mcp_serve::Stateless::Swallow => {
@@ -413,7 +598,12 @@ fn serve_connection<S: std::io::Read + std::io::Write>(
     let response = crate::mcp_serve::process_message_with_applier(
         &mut state,
         &req.body,
-        |local_state, cmd| match request_apply(req_tx, wake_ui, cmd.clone()) {
+        |tool_name, local_state, cmd| match request_apply(
+            req_tx,
+            wake_ui,
+            tool_name.to_string(),
+            cmd.clone(),
+        ) {
             Ok(ack) => {
                 if ack.applied {
                     let _ = local_state.apply(cmd.clone());
@@ -522,11 +712,16 @@ fn request_snapshot(req_tx: &Sender<UiRequest>, wake_ui: &UiWake) -> Result<Edit
 fn request_apply(
     req_tx: &Sender<UiRequest>,
     wake_ui: &UiWake,
+    tool_name: String,
     cmd: EditorCommand,
 ) -> Result<ApplyAck, String> {
     let (ack_tx, ack_rx) = mpsc::sync_channel(1);
     req_tx
-        .send(UiRequest::Apply { cmd, ack: ack_tx })
+        .send(UiRequest::Apply {
+            tool_name,
+            cmd,
+            ack: ack_tx,
+        })
         .map_err(|_| "UI thread is not accepting MCP apply requests".to_string())?;
     wake_ui();
     recv_with_timeout(ack_rx.recv_timeout(UI_ACK_TIMEOUT), "apply")
@@ -676,6 +871,8 @@ mod tests {
             quit_flag: Arc::new(AtomicBool::new(false)),
             req_rx,
             stop_tx,
+            client_identity: Arc::new(Mutex::new(None)),
+            last_mcp_epoch: 0,
         };
         let mut state = EditorState::new();
         let mut acks = Vec::new();
@@ -684,6 +881,7 @@ mod tests {
             let (ack_tx, ack_rx) = mpsc::sync_channel(1);
             req_tx
                 .send(UiRequest::Apply {
+                    tool_name: "set_viewport".to_string(),
                     cmd: EditorCommand::SetViewport {
                         pan_x: Some(index as i32),
                         pan_y: None,
@@ -716,6 +914,8 @@ mod tests {
             quit_flag: Arc::new(AtomicBool::new(false)),
             req_rx,
             stop_tx,
+            client_identity: Arc::new(Mutex::new(None)),
+            last_mcp_epoch: 0,
         };
         let mut state = EditorState::new();
         assert!(state.apply(EditorCommand::InsertNode {
@@ -760,6 +960,8 @@ mod tests {
             quit_flag: Arc::new(AtomicBool::new(false)),
             req_rx,
             stop_tx,
+            client_identity: Arc::new(Mutex::new(None)),
+            last_mcp_epoch: 0,
         };
         let mut state = EditorState::new();
         state.selection.anchor = op_editor_core::NodeId::new("n1");
@@ -768,6 +970,7 @@ mod tests {
         let (selection_ack_tx, _selection_ack_rx) = mpsc::sync_channel(1);
         req_tx
             .send(UiRequest::Apply {
+                tool_name: "clear_selection".to_string(),
                 cmd: EditorCommand::ClearSelection,
                 ack: selection_ack_tx,
             })
@@ -782,6 +985,7 @@ mod tests {
         let (insert_ack_tx, _insert_ack_rx) = mpsc::sync_channel(1);
         req_tx
             .send(UiRequest::Apply {
+                tool_name: "insert_node".to_string(),
                 cmd: EditorCommand::InsertNode {
                     kind: "rect".to_string(),
                     name: "Box".to_string(),
@@ -824,6 +1028,8 @@ mod tests {
             quit_flag: Arc::new(AtomicBool::new(false)),
             req_rx,
             stop_tx,
+            client_identity: Arc::new(Mutex::new(None)),
+            last_mcp_epoch: 0,
         };
         let mut state = EditorState::new();
 
@@ -842,5 +1048,196 @@ mod tests {
             outcome.document_replaced,
             "ReplaceDocument must flag document_replaced"
         );
+    }
+
+    // ── MCP-driven canvas generation indicators ─────────────────────────
+    //
+    // No dedicated lock around the shared `agent_indicators` registry —
+    // matches the existing convention in this crate
+    // (`design_agent_tools.rs`'s
+    // `execute_design_batch_design_registers_reveals_when_epoch_is_set`
+    // also touches it lock-free). Each test clears on entry AND exit so
+    // it starts and leaves the registry empty regardless of ordering.
+
+    fn fresh_mcp_server(req_rx: Receiver<UiRequest>, stop_tx: Sender<()>) -> McpLiveServer {
+        McpLiveServer {
+            port: 0,
+            token: "test-token".to_string(),
+            quit_flag: Arc::new(AtomicBool::new(false)),
+            req_rx,
+            stop_tx,
+            client_identity: Arc::new(Mutex::new(None)),
+            last_mcp_epoch: 0,
+        }
+    }
+
+    /// A one-frame-one-child subtree, JSON-built (same shape as
+    /// `design_agent_tools.rs`'s own `batch_design` reveal test) so the
+    /// insert produces both a fresh top-level root AND a fresh
+    /// descendant — the frame tag and the reveal path are two distinct
+    /// code branches in `register_mcp_generation` and this exercises both.
+    fn root_frame_with_child(root_id: &str, child_id: &str) -> PenNode {
+        serde_json::from_str(&format!(
+            r#"{{"type":"frame","id":"{root_id}","name":"Root","width":200,"height":200,
+                "children":[{{"type":"rectangle","id":"{child_id}","name":"Box","width":50,"height":50}}]}}"#
+        ))
+        .expect("valid frame json")
+    }
+
+    fn send_batch_design_insert(
+        req_tx: &Sender<UiRequest>,
+        node: PenNode,
+    ) -> mpsc::Receiver<ApplyAck> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        req_tx
+            .send(UiRequest::Apply {
+                tool_name: "batch_design".to_string(),
+                // `InsertAuthoredSubtree`, not `InsertSubtree` — the
+                // latter remaps every incoming id to a fresh editor id
+                // (`command.rs`'s own doc: "the caller's ids are
+                // structural placeholders only"), which would make this
+                // test's assertions target whatever id landed rather
+                // than the one it authored. Doesn't change what's under
+                // test: `register_mcp_generation` diffs ids generically
+                // and doesn't care which `EditorCommand` variant ran.
+                cmd: EditorCommand::InsertAuthoredSubtree {
+                    nodes: vec![node],
+                    parent_id: op_editor_core::NodeId::NONE,
+                    page_id: None,
+                },
+                ack: ack_tx,
+            })
+            .expect("queue batch_design apply");
+        ack_rx
+    }
+
+    #[test]
+    fn batch_design_apply_populates_the_scan_gate_frames_and_reveals() {
+        op_editor_core::agent_indicators::clear();
+        let (req_tx, req_rx) = mpsc::channel();
+        let (stop_tx, _stop_rx) = mpsc::channel();
+        let mut server = fresh_mcp_server(req_rx, stop_tx);
+        let mut state = EditorState::new();
+
+        let ack_rx = send_batch_design_insert(&req_tx, root_frame_with_child("root-a", "box-a"));
+        let outcome = server.pump(&mut state);
+        assert!(ack_rx.try_recv().is_ok_and(|ack| ack.applied));
+        assert!(outcome.repaint);
+
+        // The canvas radar-scan (`canvas_generation_scan::generating_paint_sets`)
+        // gates purely on `AgentIndicators.frames` being non-empty — this is
+        // the exact fact the bug report needed and the CLI-provider path
+        // already has covered (`chat_intent_host_tests.rs`'s
+        // `cli_new_design_populates_frame_indicators_the_canvas_scan_gates_on`);
+        // this is the MCP-tool-driven counterpart.
+        let snapshot = op_editor_core::agent_indicators::snapshot();
+        assert!(
+            snapshot.frames.contains_key("root-a"),
+            "the new top-level root must be tagged: {:?}",
+            snapshot.frames
+        );
+        assert!(
+            snapshot.reveals.contains_key("root-a") && snapshot.reveals.contains_key("box-a"),
+            "both the new root and its new child must have entrance reveals: {:?}",
+            snapshot.reveals
+        );
+
+        op_editor_core::agent_indicators::clear();
+    }
+
+    #[test]
+    fn batch_design_apply_is_a_noop_when_nothing_new_landed() {
+        op_editor_core::agent_indicators::clear();
+        let (req_tx, req_rx) = mpsc::channel();
+        let (stop_tx, _stop_rx) = mpsc::channel();
+        let mut server = fresh_mcp_server(req_rx, stop_tx);
+        let mut state = EditorState::new();
+
+        // A `batch_design` call whose command carries an EMPTY subtree —
+        // shaped like a Direct-op property tweak that inserts nothing new.
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        req_tx
+            .send(UiRequest::Apply {
+                tool_name: "batch_design".to_string(),
+                cmd: EditorCommand::InsertSubtree {
+                    nodes: vec![],
+                    parent_id: op_editor_core::NodeId::NONE,
+                    page_id: None,
+                },
+                ack: ack_tx,
+            })
+            .expect("queue batch_design apply");
+        let _ = server.pump(&mut state);
+        let _ = ack_rx.try_recv();
+
+        assert_eq!(
+            op_editor_core::agent_indicators::snapshot().frames.len(),
+            0,
+            "an apply that produced no new content must not begin an epoch at all"
+        );
+        assert_eq!(server.last_mcp_epoch, 0, "no epoch was ever minted");
+
+        op_editor_core::agent_indicators::clear();
+    }
+
+    /// Locks in Track "batch_design 单批自成一轮 + 漂移窗口合并" — the whole
+    /// value of that design over the simpler "every call gets its own
+    /// fresh epoch" alternative: a second `batch_design` apply that lands
+    /// while the FIRST one's reveal queue is still draining must extend
+    /// the same epoch, not `begin()` a fresh one — `begin()` unconditionally
+    /// clears every map (`AgentIndicators::clear_maps`), so if this
+    /// coalescing didn't happen the first root's frame tag would be wiped
+    /// the instant the second call landed.
+    #[test]
+    fn back_to_back_batch_design_calls_coalesce_into_one_epoch_while_reveals_drain() {
+        op_editor_core::agent_indicators::clear();
+        let (req_tx, req_rx) = mpsc::channel();
+        let (stop_tx, _stop_rx) = mpsc::channel();
+        let mut server = fresh_mcp_server(req_rx, stop_tx);
+        let mut state = EditorState::new();
+
+        let first_ack = send_batch_design_insert(&req_tx, root_frame_with_child("root-a", "box-a"));
+        server.pump(&mut state);
+        assert!(first_ack.try_recv().is_ok_and(|ack| ack.applied));
+        let epoch_after_first = server.last_mcp_epoch;
+        assert_ne!(epoch_after_first, 0, "first call must have minted an epoch");
+        // The first call's own reveal queue must still be mid-flight for
+        // this test to prove anything — it always is here (`REVEAL_DURATION_MS`
+        // is a full second; this whole test runs in microseconds).
+        assert!(
+            op_editor_core::agent_indicators::latest_reveal_end_ms(epoch_after_first)
+                .is_some_and(|end_ms| reveal_now_millis_for_test() < end_ms),
+            "test precondition: the first batch's reveal queue must still be draining"
+        );
+
+        // Second call, different root, arriving inside that drain window.
+        let second_ack =
+            send_batch_design_insert(&req_tx, root_frame_with_child("root-b", "box-b"));
+        server.pump(&mut state);
+        assert!(second_ack.try_recv().is_ok_and(|ack| ack.applied));
+
+        assert_eq!(
+            server.last_mcp_epoch, epoch_after_first,
+            "the second call must REUSE the first call's still-draining epoch, not begin() a fresh one"
+        );
+        let snapshot = op_editor_core::agent_indicators::snapshot();
+        assert!(
+            snapshot.frames.contains_key("root-a") && snapshot.frames.contains_key("root-b"),
+            "both roots must coexist in the SAME registry snapshot — if the second \
+             call had begun a fresh epoch instead, begin()'s clear_maps() would have \
+             wiped root-a's tag the instant root-b's call landed: {:?}",
+            snapshot.frames
+        );
+        assert!(
+            snapshot.reveals.contains_key("box-a") && snapshot.reveals.contains_key("box-b"),
+            "both batches' reveals must coexist too: {:?}",
+            snapshot.reveals
+        );
+
+        op_editor_core::agent_indicators::clear();
+    }
+
+    fn reveal_now_millis_for_test() -> u64 {
+        crate::design_agent_tools::reveal_now_millis()
     }
 }

@@ -343,7 +343,7 @@ fn find_empty_space_returns_padded_position_from_active_page_bounds() {
         page_id: None,
     }));
     let line = r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"find_empty_space","arguments":{"direction":"right","width":"320","height":"240"}}}"#;
-    let response = process_message_with_applier(&mut state, line, |_, _| false)
+    let response = process_message_with_applier(&mut state, line, |_, _, _| false)
         .expect("dispatch")
         .expect("response");
     assert!(response.contains(r#""id":9"#), "{response}");
@@ -370,7 +370,7 @@ fn read_nodes_accepts_structured_ids_over_mcp() {
     let line = format!(
         r#"{{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{{"name":"read_nodes","arguments":{{"nodeIds":["{node_id}"],"depth":0}}}}}}"#
     );
-    let response = process_message_with_applier(&mut state, &line, |_, _| false)
+    let response = process_message_with_applier(&mut state, &line, |_, _, _| false)
         .expect("dispatch")
         .expect("response");
     assert!(response.contains(r#""id":11"#), "{response}");
@@ -410,7 +410,7 @@ fn load_theme_preset_merges_live_doc_over_mcp() {
         r#"{{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{{"name":"load_theme_preset","arguments":{{"presetPath":{preset_path_json}}}}}}}"#
     );
     let response =
-        process_message_with_applier(&mut state, &line, |state, cmd| state.apply(cmd.clone()))
+        process_message_with_applier(&mut state, &line, |_, state, cmd| state.apply(cmd.clone()))
             .expect("dispatch")
             .expect("response");
     assert!(response.contains(r#""id":12"#), "{response}");
@@ -446,7 +446,7 @@ fn set_design_md_mutates_live_doc_over_mcp() {
         r#"{{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{{"name":"set_design_md","arguments":{{"markdown":{markdown}}}}}}}"#
     );
     let response =
-        process_message_with_applier(&mut state, &line, |state, cmd| state.apply(cmd.clone()))
+        process_message_with_applier(&mut state, &line, |_, state, cmd| state.apply(cmd.clone()))
             .expect("dispatch")
             .expect("response");
     assert!(response.contains(r#""id":13"#), "{response}");
@@ -469,7 +469,7 @@ fn set_themes_accepts_structured_mcp_arguments_and_mutates_state() {
     let mut state = op_editor_core::EditorState::new();
     let line = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"set_themes","arguments":{"themes":{"Mode":["Light","Dark"]},"replace":true}}}"#;
     let response =
-        process_message_with_applier(&mut state, line, |state, cmd| state.apply(cmd.clone()))
+        process_message_with_applier(&mut state, line, |_, state, cmd| state.apply(cmd.clone()))
             .expect("dispatch")
             .expect("response");
     assert!(response.contains(r#""id":10"#), "{response}");

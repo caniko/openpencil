@@ -314,11 +314,14 @@ fn run_stdio_with_applier_applies_write_command_then_writes_success() {
     let mut reader = BufReader::new(Cursor::new(input.as_ref()));
     let mut writer: Vec<u8> = Vec::new();
     let mut applied: Vec<EditorCommand> = Vec::new();
-    run_stdio_with_applier(&r, &mut reader, &mut writer, |cmd| {
+    let mut applied_tool_names: Vec<String> = Vec::new();
+    run_stdio_with_applier(&r, &mut reader, &mut writer, |tool_name, cmd| {
+        applied_tool_names.push(tool_name.to_string());
         applied.push(cmd.clone());
         true
     })
     .unwrap();
+    assert_eq!(applied_tool_names, vec!["set_variable_color"]);
     assert_eq!(applied.len(), 1);
     assert!(matches!(
         applied[0],
@@ -346,7 +349,7 @@ fn run_stdio_with_applier_demotes_when_applier_rejects() {
     let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"set_variable_color\",\"params\":{\"name\":\"brand\",\"hex\":\"#00ff00\"}}\n";
     let mut reader = BufReader::new(Cursor::new(input.as_ref()));
     let mut writer: Vec<u8> = Vec::new();
-    run_stdio_with_applier(&r, &mut reader, &mut writer, |_| false).unwrap();
+    run_stdio_with_applier(&r, &mut reader, &mut writer, |_, _| false).unwrap();
     let out = String::from_utf8(writer).unwrap();
     assert!(out.contains(r#""isError":true"#), "{out}");
     assert!(out.contains("host rejected"));

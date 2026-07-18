@@ -5,6 +5,26 @@
 
 use super::{sniff_id_raw, sniff_method};
 
+/// Extract `params.clientInfo.name` from an `initialize` request body —
+/// the ONE message in this wire protocol that carries a client-declared
+/// name. `None` for any shape mismatch (not an `initialize`, missing
+/// `clientInfo`, empty/whitespace-only name) — a client that omits it
+/// (some minimal/older MCP clients do) falls back to a generic label at
+/// the call site rather than failing the handshake.
+pub fn parse_client_info_name(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    if value.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
+        return None;
+    }
+    let name = value
+        .get("params")?
+        .get("clientInfo")?
+        .get("name")?
+        .as_str()?
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 pub fn initialize_response(id_raw: &str) -> String {
     // Spec: `initialize` returns protocolVersion + capabilities +
     // serverInfo. We declare only `tools` capabilities — no

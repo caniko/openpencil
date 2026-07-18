@@ -116,7 +116,10 @@ fn process_message(
         return Ok(Some(response));
     }
     let mut applier_failed: Option<String> = None;
-    let response = process_message_with_applier(state, line, |state, cmd| {
+    // File-backed mode has no live canvas for any tool call to animate —
+    // the tool name is accepted (shared signature with the live-MCP path)
+    // and deliberately ignored here.
+    let response = process_message_with_applier(state, line, |_tool_name, state, cmd| {
         // `EditorState::apply` runs the pre-validate-then-mutate
         // discipline; `false` means the command rejected and the
         // document was NOT changed.
@@ -141,7 +144,7 @@ pub fn process_message_with_applier<F>(
     mut apply: F,
 ) -> Result<Option<String>, String>
 where
-    F: FnMut(&mut EditorState, &EditorCommand) -> bool,
+    F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
 {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -173,8 +176,10 @@ where
     let mut out: Vec<u8> = Vec::new();
     {
         let mut input = std::io::Cursor::new(line.as_bytes());
-        run_stdio_with_applier(&registry, &mut input, &mut out, |cmd| apply(state, cmd))
-            .map_err(|e| format!("dispatch: {e}"))?;
+        run_stdio_with_applier(&registry, &mut input, &mut out, |tool_name, cmd| {
+            apply(tool_name, state, cmd)
+        })
+        .map_err(|e| format!("dispatch: {e}"))?;
     }
     let resp = String::from_utf8_lossy(&out).trim().to_string();
     Ok((!resp.is_empty()).then_some(resp))

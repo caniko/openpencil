@@ -1999,10 +1999,17 @@ fn serve_one<S: Read + Write>(
         let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
         let before = guard.version;
         let mut applied_any = false;
+        // Mechanical passthrough only — this daemon (`--serve-web`/`op
+        // start`) is a SEPARATE request loop from `mcp_live.rs`'s
+        // `McpLiveServer` (desktop `--live-mcp`), not the same struct;
+        // wiring canvas-generation indicators here (so a `batch_design`
+        // call against a headless `op start` daemon also relays the
+        // radar-scan to the browser shell) is tracked as follow-up
+        // scope, not part of this pass.
         let response = crate::mcp_serve::process_message_with_applier(
             &mut guard.editor,
             &req.body,
-            |editor, cmd| {
+            |_tool_name, editor, cmd| {
                 let ok = editor.apply(cmd.clone());
                 applied_any |= ok;
                 ok

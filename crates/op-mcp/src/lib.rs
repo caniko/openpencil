@@ -444,7 +444,7 @@ pub fn run_stdio<R: std::io::BufRead, W: std::io::Write>(
     reader: &mut R,
     writer: &mut W,
 ) -> std::io::Result<()> {
-    run_stdio_with_applier(registry, reader, writer, |_| {
+    run_stdio_with_applier(registry, reader, writer, |_, _| {
         // No applier → write tools are unsupported on this path.
         false
     })
@@ -453,6 +453,11 @@ pub fn run_stdio<R: std::io::BufRead, W: std::io::Write>(
 /// Variant of [`run_stdio`] that accepts an applier closure for MCP
 /// write commands. The applier returns `true` when the command
 /// actually mutated the editor state and `false` when it rejected.
+/// The tool's own name rides alongside the command so a host can
+/// gate side effects (e.g. canvas generation indicators) on WHICH
+/// tool produced it — `EditorCommand` alone doesn't carry that
+/// (`batch_design` and `insert_node` can both emit the same
+/// `InsertSubtree` shape).
 ///
 /// Wire behaviour:
 /// - read tools (no command) → response written verbatim.
@@ -470,7 +475,7 @@ pub fn run_stdio_with_applier<R, W, F>(
 where
     R: std::io::BufRead,
     W: std::io::Write,
-    F: FnMut(&EditorCommand) -> bool,
+    F: FnMut(&str, &EditorCommand) -> bool,
 {
     let mut line = String::new();
     loop {
@@ -498,6 +503,9 @@ where
             }
             continue;
         };
+        // Captured BEFORE `dispatch(call)` moves `call` — the only way to
+        // still name the tool once the command is ready to apply.
+        let tool_name = call.tool.clone();
         let mut response = registry.dispatch(call);
         // Apply any queued command before reporting success. If
         // application fails (applier returns false), demote the
@@ -509,7 +517,7 @@ where
             ..
         } = &response
         {
-            if !apply(cmd) {
+            if !apply(&tool_name, cmd) {
                 let id = id.clone();
                 response = ToolResponse::Err {
                     id,

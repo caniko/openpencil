@@ -766,7 +766,10 @@ fn should_register_batch_reveals(name: &str, indicator_epoch: Option<u64>) -> bo
     indicator_epoch.is_some() && name == "batch_design"
 }
 
-fn collect_active_node_ids(state: &EditorState) -> HashSet<String> {
+/// `pub(crate)` — the live-MCP indicator hook (`mcp_live.rs`) reuses this
+/// exact before/after diff rather than duplicating it; same crate, same
+/// "which node ids are genuinely new" question.
+pub(crate) fn collect_active_node_ids(state: &EditorState) -> HashSet<String> {
     let mut out = HashSet::new();
     for node in state.active_children() {
         collect_node_ids(node, &mut out);
@@ -783,7 +786,10 @@ fn collect_node_ids(node: &PenNode, out: &mut HashSet<String>) {
     }
 }
 
-fn register_new_node_reveals(
+/// `pub(crate)` — reused by the live-MCP indicator hook (`mcp_live.rs`)
+/// for `batch_design`-originated writes, same reasoning as
+/// `collect_active_node_ids`.
+pub(crate) fn register_new_node_reveals(
     ids_before: &HashSet<String>,
     state: &EditorState,
     indicator_epoch: Option<u64>,
@@ -1311,7 +1317,9 @@ fn contrast_hint(issues: &[ContrastIssue]) -> String {
     )
 }
 
-fn reveal_now_millis() -> u64 {
+/// `pub(crate)` — reused by the live-MCP indicator hook (`mcp_live.rs`)
+/// for the same "reveal_started_ms" clock read.
+pub(crate) fn reveal_now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)

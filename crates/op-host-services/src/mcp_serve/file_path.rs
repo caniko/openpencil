@@ -26,16 +26,17 @@ pub fn process_message_for_file_path_arg(
     }
     let mut target_state = super::load_editor_state(&target.path)?;
     let mut applier_failed: Option<String> = None;
-    let response = super::process_message_with_applier(&mut target_state, line, |state, cmd| {
-        if !state.apply(cmd.clone()) {
-            return false;
-        }
-        if let Err(e) = super::save_editor_state(state, &target.path) {
-            applier_failed = Some(format!("save {} failed: {e}", target.path.display()));
-            return false;
-        }
-        true
-    })?;
+    let response =
+        super::process_message_with_applier(&mut target_state, line, |_tool_name, state, cmd| {
+            if !state.apply(cmd.clone()) {
+                return false;
+            }
+            if let Err(e) = super::save_editor_state(state, &target.path) {
+                applier_failed = Some(format!("save {} failed: {e}", target.path.display()));
+                return false;
+            }
+            true
+        })?;
     if let Some(msg) = applier_failed {
         eprintln!("openpencil-desktop mcp: {msg}");
     }

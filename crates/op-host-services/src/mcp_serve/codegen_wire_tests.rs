@@ -59,7 +59,7 @@ fn codegen_state() -> EditorState {
 /// Dispatch one `tools/call` line; codegen tools are read-only so the
 /// applier must never fire.
 fn dispatch(state: &mut EditorState, line: &str) -> String {
-    process_message_with_applier(state, line, |_, _| {
+    process_message_with_applier(state, line, |_, _, _| {
         panic!("codegen tools must not emit editor commands")
     })
     .expect("dispatch")
