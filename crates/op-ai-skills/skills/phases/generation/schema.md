@@ -25,5 +25,6 @@ Fill = [{ type: "solid", color: "#hex" }] or [{ type: "linear_gradient", angle, 
 - shader fill (advanced, generative noise/aurora/glow): `fill: [{ type: "shader", sksl: "half4 main(float2 p){ ... }", uniforms: {...} }]` — native SkSL, render-only. See the `shader-fill` knowledge skill (triggers on shader/glsl/sksl/generative/noise/aurora). PREFER mesh_gradient/linear_gradient unless the intent is explicitly generative; a failed shader degrades to a flat solid.
 Stroke = { thickness, fill: [...] } — thickness accepts number (uniform) | [T, R, B, L] | { top, right, bottom, left } (per-side, e.g. { bottom: 1 } for an underline). Effects = [{ type: "shadow", offsetX, offsetY, blur, spread, color }]
 SIZING: width/height accept number (px), "fill_container", or "fit_content".
+RAIL CARDS: cards in a horizontal scroll row must ALL share the same fixed pixel width — never "fill_container" (it crushes them to a sliver beside a fixed sibling).
 PADDING: number (uniform), [v, h], or [top, right, bottom, left].
 cornerRadius is a number. fill is ALWAYS an array. Do NOT set x/y on children inside layout frames.

@@ -192,6 +192,7 @@ pub fn geometry_validate_and_fix(sink: &mut dyn DocSink, root_id: &str) -> usize
             collect_row_gap_fixes(&v, &rects, &mut cmds);
             collect_card_row_height_fixes(&v, &rects, &mut cmds, false);
             collect_row_overfull_fixes(&v, &rects, &mut cmds, false);
+            collect_rail_width_collapse_fixes(&v, &rects, &mut cmds);
             collect_card_overflow_clips(&v, &rects, &mut cmds);
             cmds
         };
@@ -1666,6 +1667,112 @@ fn collect_card_overflow_clips(
     }
 }
 
+/// A horizontal "rail" of card siblings where one card declares a FIXED
+/// pixel width sized for a much wider row while its siblings use
+/// `fill_container` to "share the rest" — on a narrow row the fixed card
+/// alone eats most of the width, squeezing the `fill_container` siblings
+/// to a sliver. Measured on a real user design (finance dashboard "Savings
+/// Goals" rail, 375px mobile page): a 200px fixed first card left only
+/// ~103px for its two `fill_container` siblings on a 327px inner rail,
+/// squeezing them to ~51px each — their own content (icon tile, title,
+/// amount) then overshoots that sliver, which `collect_card_overflow_clips`
+/// reacts to by clipping (cropping the title text, "New Car" → "Nev Car")
+/// instead of fixing the real cause. `overflow.md`'s HORIZONTAL SCROLL ROWS
+/// contract already bans this exact mix ("`fill_container` on cards in a
+/// horizontal row — they squish down to invisibility"), but the
+/// `minimal_skills` last-ditch retry rung strips every skill down to
+/// `schema`, so a subtask that falls that far has no way to know the rule.
+/// This detector is the geometry-driven safety net: it doesn't care which
+/// generation path produced the mismatch, only that the RESOLVED widths
+/// prove it broke. Repair: normalize every collapsed `fill_container`
+/// sibling onto the reference card's declared fixed width — "make the rest
+/// match card 1", the same fix a human designer would reach for.
+const RAIL_COLLAPSE_RATIO: f64 = 2.5;
+const RAIL_COLLAPSE_FLOOR: f64 = 80.0;
+
+fn collect_rail_width_collapse_fixes(
+    v: &Value,
+    rects: &HashMap<String, Rect>,
+    cmds: &mut Vec<EditorCommand>,
+) {
+    if layout_str(v) == Some("horizontal") {
+        let cards = children(v);
+        // The reference: the WIDEST sibling with a declared FIXED width — the
+        // pattern the other siblings should have matched. Widest, not first,
+        // so a small fixed icon leading the row (e.g. a 36px IconTile before
+        // a fill_container title) never gets mistaken for the reference card.
+        if let Some(ref_w) = cards
+            .iter()
+            .filter_map(fixed_width)
+            .fold(None, |acc: Option<f64>, w| {
+                Some(acc.map_or(w, |a| a.max(w)))
+            })
+        {
+            for c in cards {
+                // Only `fill_container` siblings are candidates — a sibling
+                // with its own (smaller-by-design) fixed width is left alone.
+                if c.get("width").and_then(Value::as_str) != Some("fill_container") {
+                    continue;
+                }
+                let Some(cid) = c.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(cr) = rects.get(cid) else {
+                    continue;
+                };
+                if cr.w <= 0.0 {
+                    continue;
+                }
+                let collapsed = cr.w < RAIL_COLLAPSE_FLOOR && ref_w / cr.w > RAIL_COLLAPSE_RATIO;
+                if collapsed {
+                    cmds.push(EditorCommand::UpdateNode {
+                        node_id: NodeId::new(cid.to_string()),
+                        x: None,
+                        y: None,
+                        width: Some(ref_w.round() as i32),
+                        height: None,
+                        name: None,
+                        fill_hex: None,
+                        page_id: None,
+                    });
+                }
+            }
+        }
+    }
+    for c in children(v) {
+        collect_rail_width_collapse_fixes(c, rects, cmds);
+    }
+}
+
+/// Detect + fix a card rail whose `fill_container` siblings collapsed
+/// beside a fixed-width reference card. See
+/// [`collect_rail_width_collapse_fixes`] for the failure mode. Returns
+/// `true` iff any sibling was widened.
+pub fn fix_rail_width_collapse(sink: &mut dyn DocSink, root_id: &str) -> bool {
+    let rects = resolved_rects(sink.state());
+    let ops: Vec<EditorCommand> = {
+        let Some(root) = op_editor_core::walkers::find_node(
+            sink.state().active_children(),
+            &NodeId::new(root_id.to_string()),
+        ) else {
+            return false;
+        };
+        let Ok(v) = serde_json::to_value(root) else {
+            return false;
+        };
+        let mut ops = Vec::new();
+        collect_rail_width_collapse_fixes(&v, &rects, &mut ops);
+        ops
+    };
+    if ops.is_empty() {
+        return false;
+    }
+    for cmd in ops {
+        sink.apply(cmd);
+    }
+    true
+}
+
 /// Table-shaped container whose TEXT-BEARING flex columns alone (at their
 /// readable floors) exceed the row's inner width — unsalvageable by any
 /// rescale; the design needs fewer columns. Returns `(columns, inner_px)`
@@ -1712,3 +1819,7 @@ fn table_columns_exceed_width(v: &Value, rects: &HashMap<String, Rect>) -> Optio
 #[cfg(test)]
 #[path = "geometry_validation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "geometry_rail_collapse_tests.rs"]
+mod rail_collapse_tests;
