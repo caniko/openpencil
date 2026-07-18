@@ -1018,6 +1018,11 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
 
     let backend = init_backend(&canvas_id, dpr, logical_w, logical_h).await?;
     let mut host = crate::widget_host::WidgetHost::new();
+    // Embed-host flag from the page URL (`?embed=vscode` in the VS Code
+    // plugin iframe): parsed before the first paint so embedded chrome
+    // never flashes in.
+    let search = window.location().search().unwrap_or_default();
+    host.editor_state_mut().editor_ui.embed = op_editor_core::EmbedHost::from_query(&search);
     let credential_load = crate::web_settings::load_into(host.editor_state_mut());
     host.mark_editor_state_dirty();
     let settings_fingerprint = credential_load.initial_settings_fingerprint(host.editor_state());
