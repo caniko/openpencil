@@ -1786,6 +1786,68 @@ fn serve_one<S: Read + Write>(
         .map_err(|e| format!("ai standard: {e}"))
         .map(|()| false);
     }
+    // Image panel Search popover (desktop `image_panel_host` parity). Long
+    // blocking network (8 s timeout × ladder), so it runs on this
+    // connection's own thread AFTER the brief parse-under-lock — the REST
+    // handler below holds the state lock for its whole body and must not
+    // host provider dials. Living under `/api/ai/` keeps it inside the
+    // sensitive-POST origin gate and the managed-mode token gate.
+    if req.method == "POST" && req.path == "/api/ai/image/search" {
+        let parsed = {
+            let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            crate::web_image_search::parse_search_request(&req.body, &guard.editor)
+        };
+        let (status, body) = match parsed {
+            Ok((query, credentials)) => {
+                let outcome =
+                    crate::web_image_search::run_search_blocking(&query, credentials.as_ref());
+                (
+                    "200 OK",
+                    crate::web_image_search::search_outcome_to_json(&outcome),
+                )
+            }
+            Err(message) => (
+                "400 Bad Request",
+                serde_json::json!({ "ok": false, "error": message }).to_string(),
+            ),
+        };
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            status,
+            &body,
+            cors_origin,
+        )
+        .map(|()| false);
+    }
+    // Image panel Generate popover (desktop `image_generate_host` parity).
+    // Same threading rules as the search route; Replicate polling can run
+    // for minutes.
+    if req.method == "POST" && req.path == "/api/ai/image/generate" {
+        let parsed = {
+            let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            crate::web_image_generate::parse_generate_request(&req.body, &guard.editor)
+        };
+        let (status, body) = match parsed {
+            Ok(request) => match crate::web_image_generate::run_generate_blocking(&request) {
+                Ok(url) => ("200 OK", crate::web_image_generate::generate_ok_json(&url)),
+                Err(message) => (
+                    "502 Bad Gateway",
+                    crate::web_image_generate::generate_error_json(&message),
+                ),
+            },
+            Err(message) => (
+                "400 Bad Request",
+                crate::web_image_generate::generate_error_json(&message),
+            ),
+        };
+        return crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            status,
+            &body,
+            cors_origin,
+        )
+        .map(|()| false);
+    }
     // All `/api/mcp/*` REST paths go to the REST handler — including ones this
     // daemon doesn't implement yet, which it answers with 404 rather than
     // mis-routing them into the JSON-RPC dispatch below.
