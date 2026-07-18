@@ -265,6 +265,7 @@ mod property_panel_color_variables;
 pub mod shape_picker;
 pub mod status_bar;
 pub mod top_bar;
+mod top_bar_geometry;
 mod top_bar_paint;
 #[cfg(test)]
 mod top_bar_tests;

@@ -320,6 +320,50 @@ fn account_button_hit_tests_and_sits_left_of_globe() {
 }
 
 #[test]
+fn vscode_embed_hides_file_figma_title_and_fullscreen() {
+    let mut bar = TopBar::untitled().with_traffic_controls(false);
+    bar.embed = op_editor_core::EmbedHost::VsCode;
+    // No hit anywhere may resolve to the hidden controls.
+    let rect = Rect {
+        origin: Point2D::new(0.0, 0.0),
+        size: Point2D::new(1200.0, TOP_BAR_HEIGHT),
+    };
+    for x in 0..1200 {
+        let hit = bar.hit_test(rect, Point2D::new(x as f32, TOP_BAR_HEIGHT / 2.0));
+        assert!(
+            !matches!(
+                hit,
+                Some(TopBarHit::ToggleFileMenu)
+                    | Some(TopBarHit::OpenFigmaImport)
+                    | Some(TopBarHit::ToggleFullscreen)
+            ),
+            "hidden control hit at x={x}: {hit:?}"
+        );
+    }
+}
+
+#[test]
+fn vscode_embed_keeps_sidebar_locale_theme_and_chip() {
+    let mut bar = TopBar::untitled().with_traffic_controls(false);
+    bar.embed = op_editor_core::EmbedHost::VsCode;
+    let rect = Rect {
+        origin: Point2D::new(0.0, 0.0),
+        size: Point2D::new(1200.0, TOP_BAR_HEIGHT),
+    };
+    let hits: Vec<_> = (0..1200)
+        .filter_map(|x| bar.hit_test(rect, Point2D::new(x as f32, TOP_BAR_HEIGHT / 2.0)))
+        .collect();
+    for expect in [
+        TopBarHit::ToggleSidebar,
+        TopBarHit::ToggleLocale,
+        TopBarHit::ToggleTheme,
+        TopBarHit::OpenAgentSettings,
+    ] {
+        assert!(hits.contains(&expect), "missing {expect:?}");
+    }
+}
+
+#[test]
 fn for_editor_ui_carries_signed_in_account() {
     let ui = EditorUiState {
         account: op_editor_core::AccountState::SignedIn {

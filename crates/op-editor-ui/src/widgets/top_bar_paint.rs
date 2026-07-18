@@ -130,122 +130,135 @@ impl TopBar {
             self.is_hovered(TopBarButton::ToggleSidebar),
             self.is_pressed(TopBarButton::ToggleSidebar),
         );
-        // Divider between the sidebar toggle and the file-menu.
-        let divider1_x = panel_left_x + ICON_BUTTON + DIVIDER_GAP;
-        paint_divider(cx, &self.theme, divider1_x, center_y);
-        // File-menu compound: folder + tight chevron in one button.
-        let file_menu_x = divider1_x + DIVIDER_W + DIVIDER_GAP;
-        paint_file_menu_button(
-            cx,
-            &self.theme,
-            file_menu_x,
-            center_y,
-            self.is_hovered(TopBarButton::ToggleFileMenu),
-            self.is_pressed(TopBarButton::ToggleFileMenu),
-        );
-        // Divider before the Figma import affordance.
-        let divider2_x = file_menu_x + FILE_MENU_BUTTON_WIDTH + DIVIDER_GAP;
-        paint_divider(cx, &self.theme, divider2_x, center_y);
-        // Figma import button.
-        let figma_x = divider2_x + DIVIDER_W + DIVIDER_GAP;
-        paint_figma_button(
-            cx,
-            &self.theme,
-            figma_x,
-            center_y,
-            self.is_hovered(TopBarButton::OpenFigmaImport),
-            self.is_pressed(TopBarButton::OpenFigmaImport),
-        );
-
-        // ── Centered file name ─────────────────────────────────
-        let name = TextLayout::single_run(
-            &self.file_name,
-            "system-ui",
-            13.0,
-            (self.theme.foreground).to_jian(),
-            Point2D::new(0.0, 0.0),
-        );
-        let file_x = rect.origin.x + (rect.size.x - self.title_approx_width()) / 2.0;
-        cx.backend
-            .draw_text(&name, Point2D::new(file_x, center_y + 5.0));
-        if self.edited {
-            // Anchor on the MEASURED name width, not the 9px/char estimate:
-            // narrow Latin glyphs paint well under the estimate, which left
-            // a visible dead gap before the marker (measured: ~20px on
-            // "test0703.op"; the reference chrome shows a single space).
-            let name_w = cx.backend.measure_text(&self.file_name, 13.0);
-            let edited = TextLayout::single_run(
-                self.label_edited,
-                "system-ui",
-                11.0,
-                (self.theme.muted_foreground).to_jian(),
-                Point2D::new(0.0, 0.0),
-            );
-            cx.backend
-                .draw_text(&edited, Point2D::new(file_x + name_w + 6.0, center_y + 4.0));
-        }
-
-        // Git-panel button just right of the file name (TS GitButton):
-        // a branch glyph + optional branch name. Always shown on
-        // desktop — a click toggles the git panel (which offers `init`
-        // when the doc isn't yet in a repo). Compiled out on web,
-        // which has no git backend to paint a panel.
-        if GIT_BUTTON_AVAILABLE {
-            let git_rect = self.git_button_rect(rect);
-            let git_color = paint_hover_bg(
+        // File-scoped chrome (file-menu compound, Figma import, centered
+        // file name + edited label + git-branch button) — hidden inside a
+        // VS Code embed, where the workbench owns file identity. Includes
+        // the two dividers that frame this group so hiding the buttons
+        // doesn't leave orphan divider lines.
+        if self.file_controls_visible() {
+            // Divider between the sidebar toggle and the file-menu.
+            let divider1_x = panel_left_x + ICON_BUTTON + DIVIDER_GAP;
+            paint_divider(cx, &self.theme, divider1_x, center_y);
+            // File-menu compound: folder + tight chevron in one button.
+            let file_menu_x = divider1_x + DIVIDER_W + DIVIDER_GAP;
+            paint_file_menu_button(
                 cx,
                 &self.theme,
-                git_rect,
-                self.is_hovered(TopBarButton::ToggleGitPanel),
-                self.is_pressed(TopBarButton::ToggleGitPanel),
+                file_menu_x,
+                center_y,
+                self.is_hovered(TopBarButton::ToggleFileMenu),
+                self.is_pressed(TopBarButton::ToggleFileMenu),
             );
-            draw_icon(
-                cx.backend,
-                Icon::GitBranch,
-                Point2D::new(
-                    Self::git_icon_left(git_rect),
-                    glyph_top(center_y, ICON_SIZE),
-                ),
-                ICON_SIZE,
-                git_color,
-                1.4,
+            // Divider before the Figma import affordance.
+            let divider2_x = file_menu_x + FILE_MENU_BUTTON_WIDTH + DIVIDER_GAP;
+            paint_divider(cx, &self.theme, divider2_x, center_y);
+            // Figma import button.
+            let figma_x = divider2_x + DIVIDER_W + DIVIDER_GAP;
+            paint_figma_button(
+                cx,
+                &self.theme,
+                figma_x,
+                center_y,
+                self.is_hovered(TopBarButton::OpenFigmaImport),
+                self.is_pressed(TopBarButton::OpenFigmaImport),
             );
-            if let Some(branch) = self.git_branch.as_deref() {
-                let label = TextLayout::single_run(
-                    branch,
+
+            // ── Centered file name ─────────────────────────────
+            let name = TextLayout::single_run(
+                &self.file_name,
+                "system-ui",
+                13.0,
+                (self.theme.foreground).to_jian(),
+                Point2D::new(0.0, 0.0),
+            );
+            let file_x = rect.origin.x + (rect.size.x - self.title_approx_width()) / 2.0;
+            cx.backend
+                .draw_text(&name, Point2D::new(file_x, center_y + 5.0));
+            if self.edited {
+                // Anchor on the MEASURED name width, not the 9px/char estimate:
+                // narrow Latin glyphs paint well under the estimate, which left
+                // a visible dead gap before the marker (measured: ~20px on
+                // "test0703.op"; the reference chrome shows a single space).
+                let name_w = cx.backend.measure_text(&self.file_name, 13.0);
+                let edited = TextLayout::single_run(
+                    self.label_edited,
                     "system-ui",
                     11.0,
-                    (git_color).to_jian(),
+                    (self.theme.muted_foreground).to_jian(),
                     Point2D::new(0.0, 0.0),
                 );
-                cx.backend.draw_text(
-                    &label,
-                    Point2D::new(
-                        Self::git_icon_left(git_rect) + ICON_SIZE + 6.0,
-                        center_y + 4.0,
-                    ),
+                cx.backend
+                    .draw_text(&edited, Point2D::new(file_x + name_w + 6.0, center_y + 4.0));
+            }
+
+            // Git-panel button just right of the file name (TS GitButton):
+            // a branch glyph + optional branch name. Always shown on
+            // desktop — a click toggles the git panel (which offers `init`
+            // when the doc isn't yet in a repo). Compiled out on web,
+            // which has no git backend to paint a panel.
+            if GIT_BUTTON_AVAILABLE {
+                let git_rect = self.git_button_rect(rect);
+                let git_color = paint_hover_bg(
+                    cx,
+                    &self.theme,
+                    git_rect,
+                    self.is_hovered(TopBarButton::ToggleGitPanel),
+                    self.is_pressed(TopBarButton::ToggleGitPanel),
                 );
+                draw_icon(
+                    cx.backend,
+                    Icon::GitBranch,
+                    Point2D::new(
+                        Self::git_icon_left(git_rect),
+                        glyph_top(center_y, ICON_SIZE),
+                    ),
+                    ICON_SIZE,
+                    git_color,
+                    1.4,
+                );
+                if let Some(branch) = self.git_branch.as_deref() {
+                    let label = TextLayout::single_run(
+                        branch,
+                        "system-ui",
+                        11.0,
+                        (git_color).to_jian(),
+                        Point2D::new(0.0, 0.0),
+                    );
+                    cx.backend.draw_text(
+                        &label,
+                        Point2D::new(
+                            Self::git_icon_left(git_rect) + ICON_SIZE + 6.0,
+                            center_y + 4.0,
+                        ),
+                    );
+                }
             }
         }
 
         // ── Right cluster ──────────────────────────────────────
-        // Right → left: Maximize | Play (native only) | Sun | Globe+Chevron.
-        // Globe is a wider compound button (signals the dropdown affordance).
-        let mut rx = rect.origin.x + rect.size.x - PAD - ICON_BUTTON;
+        // Right → left: Maximize (hidden in a VS Code embed) | Play
+        // (native only) | Sun | Globe+Chevron. Globe is a wider compound
+        // button (signals the dropdown affordance).
+        let mut rx = rect.origin.x + rect.size.x - PAD;
 
-        // Fullscreen.
-        paint_icon_button(
-            cx,
-            &self.theme,
-            rx,
-            center_y,
-            Icon::Maximize,
-            self.is_hovered(TopBarButton::ToggleFullscreen),
-            self.is_pressed(TopBarButton::ToggleFullscreen),
-        );
-        rx -= ICON_BUTTON;
+        // Fullscreen — hidden inside a VS Code embed (the container's own
+        // window chrome owns fullscreen). When hidden, Play/Sun/Globe
+        // shift right to fill the vacated slot instead of leaving a gap.
+        if self.fullscreen_button_visible() {
+            rx -= ICON_BUTTON;
+            paint_icon_button(
+                cx,
+                &self.theme,
+                rx,
+                center_y,
+                Icon::Maximize,
+                self.is_hovered(TopBarButton::ToggleFullscreen),
+                self.is_pressed(TopBarButton::ToggleFullscreen),
+            );
+        }
 
         if self.preview_button_visible() {
+            rx -= ICON_BUTTON;
             // Preview (Play) toggle — Square glyph while active (click →
             // stop), Play glyph while idle (click → enter preview).
             let preview_icon = if self.preview_active {
@@ -262,11 +275,11 @@ impl TopBar {
                 self.is_hovered(TopBarButton::TogglePreview),
                 self.is_pressed(TopBarButton::TogglePreview),
             );
-            rx -= ICON_BUTTON;
         }
 
         // Theme toggle — Sun in dark mode (click → light); Moon in
         // light mode (click → dark).
+        rx -= ICON_BUTTON;
         let theme_icon = match self.theme_mode {
             op_editor_core::ThemeMode::Dark => Icon::Sun,
             op_editor_core::ThemeMode::Light => Icon::Moon,
