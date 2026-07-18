@@ -98,6 +98,7 @@ pub fn launch_if_pending(
         // design provider is available. The append context the TS tool path
         // detects (agent-tool-executor.ts:234) rides the request here.
         if let Some(provider) = provider_for_selected_model(host) {
+            super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
             *current_chat = None;
             // Share one provider Arc between the design LLM and the
             // (flag-gated) Class-C vision validator so the real loop reuses
@@ -175,6 +176,7 @@ pub fn launch_if_pending(
             // own config — see `selected_cli_model_id`.
             model: None,
         };
+        super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
         *current_chat = Some(ChatSession::start_with_tools(provider, req, Some(tool_rx)));
         return true;
     }
@@ -190,6 +192,7 @@ pub fn launch_if_pending(
         // `pump` keeps streaming the previous agent's deltas into
         // this fresh error bubble (codex stop-gate: stale session
         // overwrote the unwired-agent error text).
+        super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
         *current_chat = None;
         let name = selected_provider_label(host);
         let chat = &mut host.editor_state_mut().chat;
@@ -234,6 +237,7 @@ pub fn launch_if_pending(
         attachments,
         model,
     };
+    super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     *current_chat = Some(ChatSession::start(provider, req));
     true
 }
@@ -325,6 +329,7 @@ fn launch_direct_modify_turn(
     let (chat_tx, chat_rx) = mpsc::channel::<ChatDelta>();
     let (executor, tool_rx) = chat_tool_channel();
     *current_design = None;
+    super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     *current_chat = Some(ChatSession::from_channels(chat_rx, Some(tool_rx)));
     thread::Builder::new()
         .name("op-chat-modify".into())
@@ -432,6 +437,7 @@ fn launch_cli_standard_turn(
     let (delta_tx, delta_rx) = mpsc::channel();
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let indicator_epoch = op_editor_core::agent_indicators::begin();
+    super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     *current_chat = Some(ChatSession::from_channels(chat_rx, Some(tool_rx)));
     *current_design = Some(DesignSession::from_channels_with_epoch(
         delta_rx,
@@ -481,6 +487,11 @@ pub fn drain_new_chat_request(
     if !std::mem::take(&mut host.editor_state_mut().chat.pending_new_chat) {
         return false;
     }
+    // Finalize-lifecycle invariant (0718-1-k3-1 postmortem): New Chat can
+    // discard an in-flight, still-unfinalized design loop before `pump`'s
+    // own poll-backstop ever gets a chance to see it (`app_handler.rs`
+    // drains this BEFORE `chat_session::pump` each frame).
+    super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     // The fresh tab was already opened by the widget handler — do NOT push a
     // second one here (one "+" click == one new tab).
     *current_chat = None;
@@ -508,6 +519,9 @@ pub fn drain_stop_request(
     if !std::mem::take(&mut host.editor_state_mut().chat.pending_stop_chat) {
         return false;
     }
+    // Finalize-lifecycle invariant (0718-1-k3-1 postmortem) — see
+    // `drain_new_chat_request`'s matching comment above.
+    super::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     *current_chat = None;
     *current_design = None;
     if let Some(epoch) = op_editor_core::agent_indicators::active_epoch() {

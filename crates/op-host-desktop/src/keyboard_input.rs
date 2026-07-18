@@ -633,6 +633,16 @@ impl DesktopApp {
             // this tab (ending their canvas-indicator epoch so no badge glow
             // gets stuck). The top-level design indicator self-heals next frame
             // (its teardown is gated on `current_chat.is_none()`).
+            //
+            // Finalize-lifecycle invariant (0718-1-k3-1 postmortem): closing
+            // the tab a design loop is bound to must not discard an
+            // unfinalized run — see
+            // `chat_session::finalize_design_session_if_needed`'s doc comment.
+            crate::chat_session::finalize_design_session_if_needed(
+                &mut self.host,
+                &self.current_chat,
+                "teardown-backstop",
+            );
             self.current_chat = None;
             self.current_design = None;
             crate::sub_agent_session::abort_all(&mut self.sub_agents, &mut self.active_sub_agent);

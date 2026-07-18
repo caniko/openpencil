@@ -195,6 +195,56 @@ fn all_fixed_width_row_is_left_untouched() {
     );
 }
 
+/// 0718-1-k3-1 postmortem (Bug A) — exact-number regression. Measured on
+/// the real file: a 342px-inner rail, one 232px fixed-width reference card,
+/// two `fill_container` siblings squeezed to 41px each (232 + 2×14 gap +
+/// 2×41 = 342). Confirmed via a fresh `apply_loop_finalize` run against the
+/// raw file that the fix's logic correctly widens both squeezed cards to
+/// 232 when it runs — the postmortem's actual root cause (see
+/// `unify_shared_nav`'s D-bug sibling postmortem) was that finalize never
+/// ran at all during the real generation, not a defect in this pass. This
+/// locks the exact measured numbers down so a future regression in the
+/// detection thresholds (ratio / floor) doesn't silently stop catching
+/// this exact shape.
+#[test]
+fn k3_exact_numbers_232_41_41_rail_is_widened_to_match_reference() {
+    let row = rail(vec![
+        card("c1", json!(232)),
+        card("c2", json!("fill_container")),
+        card("c3", json!("fill_container")),
+    ]);
+    let rects = rects(&[
+        ("c1", 0.0, 0.0, 232.0, 140.0),
+        ("c2", 246.0, 0.0, 41.0, 140.0),
+        ("c3", 301.0, 0.0, 41.0, 140.0),
+    ]);
+    let mut cmds = Vec::new();
+
+    collect_rail_width_collapse_fixes(&row, &rects, &mut cmds);
+
+    assert_eq!(
+        cmds.len(),
+        2,
+        "both 41px-squeezed siblings must be widened: {cmds:?}"
+    );
+    for cmd in &cmds {
+        match cmd {
+            EditorCommand::UpdateNode { node_id, width, .. } => {
+                assert!(
+                    node_id.as_str() == "c2" || node_id.as_str() == "c3",
+                    "only the collapsed siblings are touched, not the 232px reference: {node_id:?}"
+                );
+                assert_eq!(
+                    *width,
+                    Some(232),
+                    "widened to the reference card's exact measured width (232px)"
+                );
+            }
+            other => panic!("expected UpdateNode (numeric width), got {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn real_layout_widens_collapsed_savings_goals_rail_end_to_end() {
     use crate::test_support::VecDocSink;

@@ -28,6 +28,15 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
             self.request_redraw(true);
         }
         if self.mcp_shutdown_requested() {
+            // Finalize-lifecycle invariant (0718-1-k3-1 postmortem) — see
+            // `chat_session::finalize_design_session_if_needed`'s doc
+            // comment. MCP-driven shutdown can fire while a chat-launched
+            // design loop is still in flight in the same process.
+            chat_session::finalize_design_session_if_needed(
+                &mut self.host,
+                &self.current_chat,
+                "teardown-backstop",
+            );
             event_loop.exit();
             return;
         }
@@ -348,6 +357,14 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     self.request_redraw(true);
                 }
                 if self.mcp_shutdown_requested() {
+                    // Finalize-lifecycle invariant (0718-1-k3-1 postmortem)
+                    // — see `chat_session::finalize_design_session_if_needed`'s
+                    // doc comment.
+                    chat_session::finalize_design_session_if_needed(
+                        &mut self.host,
+                        &self.current_chat,
+                        "teardown-backstop",
+                    );
                     event_loop.exit();
                 }
             }
@@ -400,6 +417,21 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
         };
         match event {
             WindowEvent::CloseRequested => {
+                // Finalize-lifecycle invariant (0718-1-k3-1 postmortem): the
+                // process exiting must not silently drop an in-flight,
+                // unfinalized design loop — see `chat_session::
+                // finalize_design_session_if_needed`'s doc comment.
+                // Best-effort (the worker thread itself is abandoned either
+                // way — no graceful async shutdown here), but it must run
+                // BEFORE `confirm_close` below, not after: the unsaved-
+                // changes prompt's `document_is_dirty` check + its own Save
+                // decide what gets persisted, so a finalize mutation applied
+                // afterward would never make it to disk.
+                chat_session::finalize_design_session_if_needed(
+                    &mut self.host,
+                    &self.current_chat,
+                    "teardown-backstop",
+                );
                 // The unsaved-changes prompt can abort the close.
                 if self.confirm_close() {
                     self.host.flush_settings_input();
@@ -798,6 +830,14 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 // — exit the event loop cleanly (runs `exiting()`, saving
                 // window state + settings and removing the discovery file).
                 if self.mcp_shutdown_requested() {
+                    // Finalize-lifecycle invariant (0718-1-k3-1 postmortem)
+                    // — see `chat_session::finalize_design_session_if_needed`'s
+                    // doc comment.
+                    chat_session::finalize_design_session_if_needed(
+                        &mut self.host,
+                        &self.current_chat,
+                        "teardown-backstop",
+                    );
                     event_loop.exit();
                 }
                 // Keep an open Git panel fresh against external repo
@@ -1051,9 +1091,16 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                         match ctl {
                             WindowControl::Close => {
                                 // Mirror `WindowEvent::CloseRequested`:
-                                // the unsaved-changes prompt can abort,
-                                // and settings flush + save before exit
-                                // — a bare `exit()` would drop work.
+                                // finalize-lifecycle invariant BEFORE the
+                                // unsaved-changes prompt (same ordering
+                                // rationale as that handler), the prompt can
+                                // abort, and settings flush + save before
+                                // exit — a bare `exit()` would drop work.
+                                chat_session::finalize_design_session_if_needed(
+                                    &mut self.host,
+                                    &self.current_chat,
+                                    "teardown-backstop",
+                                );
                                 if self.confirm_close() {
                                     self.host.flush_settings_input();
                                     op_host_services::settings_io::save(self.host.editor_state());

@@ -238,6 +238,9 @@ pub(super) fn launch_design_loop_turn(
     let Some((provider, tool_rx)) = builtin_provider_with_design_tools(host) else {
         return false;
     };
+    // Finalize-lifecycle invariant (0718-1-k3-1 postmortem) — see
+    // `chat_session::finalize_design_session_if_needed`'s doc comment.
+    crate::chat_session::finalize_design_session_if_needed(host, current_chat, "teardown-backstop");
     *current_chat = None;
     *current_design = None;
     if clear_fresh_starter_frame_for_design(host.editor_state_mut()) {

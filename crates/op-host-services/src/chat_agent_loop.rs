@@ -262,6 +262,28 @@ async fn report_unfilled_if_any(tx: &mpsc::Sender<ChatDelta>, names: &[String]) 
     let _ = tx.send(ChatDelta::TextDelta(text)).await;
 }
 
+/// Self-diagnostic signal for the finalize-lifecycle invariant (0718-1-k3-1
+/// postmortem) — a `run_anthropic_agent_loop` / `run_openai_agent_loop`
+/// outer wrapper's backstop just ran [`run_loop_finalize`] on an `Err` exit
+/// the inner loop's own paths never reached. Embedded directly in the
+/// transcript (not a `tracing`/log call) on purpose: the ONLY forensic
+/// trace available for the 0718-1-k3-1 incident afterward was the chat
+/// transcript itself — no session log survived — so this is the greppable
+/// answer to "did finalize actually run, and from where" the next time a
+/// file turns up unfinalized. `enabled` mirrors [`run_loop_finalize`]'s own
+/// gate — a plain (non-design) chat turn never touches the document, so it
+/// never emits this either.
+async fn emit_finalize_diagnostic(tx: &mpsc::Sender<ChatDelta>, enabled: bool, source: &str) {
+    if !enabled {
+        return;
+    }
+    let _ = tx
+        .send(ChatDelta::TextDelta(format!(
+            "\n\n• finalize ran (source={source})"
+        )))
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Shared SSE pump
 // ---------------------------------------------------------------------------
@@ -500,10 +522,54 @@ impl SseCollector for AnthropicCollector {
     }
 }
 
+/// Finalize-lifecycle invariant outer wrapper (0718-1-k3-1 postmortem — see
+/// [`run_loop_finalize`]'s doc + `op-host-desktop::chat_session::
+/// finalize_design_session_if_needed`'s doc for the desktop-side half of
+/// this same invariant).
+///
+/// ## The actual break, confirmed by reading this file
+///
+/// [`run_anthropic_agent_loop_inner`] / [`run_openai_agent_loop_inner`] each
+/// call [`run_loop_finalize`] on every NORMAL exit (turn-cap exhausted,
+/// salvage exhausted, model voluntarily stopped) — but FOUR early-return
+/// sites per loop bypass it entirely: `client_for(...).await?`,
+/// `send_with_backoff(...).await?`, `pump_sse(...).await?` (each via `?`
+/// propagation), and the explicit `if let Some(err) = collector.error {
+/// return Err(err); }` right after — the last one is what the 0718-1-k3-1
+/// transcript's mid-stream `openai-compatible http 400` line hit: `pump_sse`
+/// itself returns `Ok(())` (it drained the stream fine), but the collected
+/// SSE-level error makes the caller return `Err` one line later, never
+/// reaching the loop's own finalize call below it. `chat_builtin_http.rs`'s
+/// `Err(e) => { tx.send(Error); tx.send(Done{Aborted}); }` catch-all never
+/// finalizes either — it only forwards the error.
+///
+/// This wrapper is the single place ALL of a loop run's exits funnel
+/// through, so it is where the invariant is actually enforced: on `Err`,
+/// run the SAME best-effort finalize the inner loop's own normal-exit paths
+/// already do, tagged `loop-exit` so a future occurrence is locatable by
+/// grepping for that tag. Idempotent — [`run_loop_finalize`] no-ops when
+/// `!cfg.finalize_on_exit`, and `apply_loop_finalize`'s own passes are each
+/// individually idempotent, so this never double-mutates a document that an
+/// inner normal-exit path already finalized (those paths return `Ok`, so
+/// this wrapper's backstop only fires on the exact paths that skipped it).
+pub async fn run_anthropic_agent_loop(
+    cfg: AgentLoopConfig,
+    tx: &mpsc::Sender<ChatDelta>,
+) -> Result<bool, String> {
+    let executor = cfg.executor.clone();
+    let enabled = cfg.finalize_on_exit;
+    let result = run_anthropic_agent_loop_inner(cfg, tx).await;
+    if result.is_err() {
+        run_loop_finalize(&executor, enabled).await;
+        emit_finalize_diagnostic(tx, enabled, "loop-exit").await;
+    }
+    result
+}
+
 /// Run the Anthropic agent loop to completion. Returns `Ok(true)` when
 /// a terminal `Done` was emitted; `Err` for transport / in-stream
 /// errors (caller surfaces them as `Error + Done{Aborted}`).
-pub async fn run_anthropic_agent_loop(
+async fn run_anthropic_agent_loop_inner(
     cfg: AgentLoopConfig,
     tx: &mpsc::Sender<ChatDelta>,
 ) -> Result<bool, String> {
@@ -836,9 +902,26 @@ impl OpenAiCollector {
     }
 }
 
-/// Run the OpenAI-compatible agent loop to completion. Same contract
-/// as [`run_anthropic_agent_loop`].
+/// Finalize-lifecycle invariant outer wrapper — same contract, same
+/// rationale, as [`run_anthropic_agent_loop`]'s own wrapper above (this
+/// loop's early-return sites mirror the Anthropic loop's exactly).
 pub async fn run_openai_agent_loop(
+    cfg: AgentLoopConfig,
+    tx: &mpsc::Sender<ChatDelta>,
+) -> Result<bool, String> {
+    let executor = cfg.executor.clone();
+    let enabled = cfg.finalize_on_exit;
+    let result = run_openai_agent_loop_inner(cfg, tx).await;
+    if result.is_err() {
+        run_loop_finalize(&executor, enabled).await;
+        emit_finalize_diagnostic(tx, enabled, "loop-exit").await;
+    }
+    result
+}
+
+/// Run the OpenAI-compatible agent loop to completion. Same contract
+/// as [`run_anthropic_agent_loop_inner`].
+async fn run_openai_agent_loop_inner(
     cfg: AgentLoopConfig,
     tx: &mpsc::Sender<ChatDelta>,
 ) -> Result<bool, String> {
@@ -1085,3 +1168,11 @@ pub async fn run_openai_agent_loop(
 #[cfg(test)]
 #[path = "chat_agent_loop_tests.rs"]
 mod tests;
+
+// Finalize-lifecycle invariant regression tests (0718-1-k3-1) — split out
+// as a sibling rather than growing `chat_agent_loop_tests.rs` past its
+// existing 800-line-cap debt further; reuses that file's scripted-executor
+// + loopback-SSE test infra via `pub(super)`.
+#[cfg(test)]
+#[path = "chat_agent_loop_finalize_tests.rs"]
+mod finalize_tests;

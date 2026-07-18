@@ -18,7 +18,7 @@ use op_ai::chat_provider::{ChatToolDef, ChatToolExecutor, ChatToolResult, Unfill
 
 /// Executor double — records calls + loop-finalize invocations, replays a
 /// fixed result.
-struct ScriptedExecutor {
+pub(super) struct ScriptedExecutor {
     calls: Mutex<Vec<(String, String)>>,
     finalize_calls: std::sync::atomic::AtomicUsize,
     unfilled_check_calls: std::sync::atomic::AtomicUsize,
@@ -32,7 +32,7 @@ struct ScriptedExecutor {
 }
 
 impl ScriptedExecutor {
-    fn ok(content: &str) -> Arc<Self> {
+    pub(super) fn ok(content: &str) -> Arc<Self> {
         Self::sequence(&[content])
     }
 
@@ -60,7 +60,7 @@ impl ScriptedExecutor {
     }
 
     /// How many times the loop ran the Step-4 structural backstop.
-    fn finalizes(&self) -> usize {
+    pub(super) fn finalizes(&self) -> usize {
         self.finalize_calls
             .load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -164,7 +164,7 @@ fn read_http_request(stream: &mut TcpStream) -> String {
 
 /// Serve `bodies.len()` sequential connections, each answered with the
 /// corresponding SSE body. Captured request payloads ride `req_rx`.
-fn serve_sse_script(bodies: Vec<String>) -> (String, std_mpsc::Receiver<String>) {
+pub(super) fn serve_sse_script(bodies: Vec<String>) -> (String, std_mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock SSE server");
     let addr = listener.local_addr().expect("local addr");
     let (req_tx, req_rx) = std_mpsc::channel::<String>();
@@ -191,7 +191,7 @@ fn serve_sse_script(bodies: Vec<String>) -> (String, std_mpsc::Receiver<String>)
     (format!("http://{addr}"), req_rx)
 }
 
-fn update_node_tool_def() -> ChatToolDef {
+pub(super) fn update_node_tool_def() -> ChatToolDef {
     ChatToolDef {
         name: "update_node".into(),
         description: "Update properties of an existing node by ID".into(),
@@ -279,7 +279,7 @@ fn anthropic_text_turn() -> String {
     .join("\n")
 }
 
-fn run_loop_collect(
+pub(super) fn run_loop_collect(
     cfg: AgentLoopConfig,
     anthropic: bool,
 ) -> (Result<bool, String>, Vec<ChatDelta>) {

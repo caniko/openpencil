@@ -29,6 +29,56 @@ pub(crate) use launch::launch_design::{
     builtin_provider_with_design_tools, design_turn_thinking_mode,
 };
 
+/// Finalize-lifecycle invariant (0718-1-k3-1 postmortem): a design-loop
+/// session must never be dropped/replaced without at least one best-effort
+/// structural finalize pass over the live document. `run_loop_finalize`
+/// inside `chat_agent_loop.rs` covers the loop's own normal exit paths, but
+/// an early `Err` return there (a network/SSE failure — the exact shape
+/// measured on 0718-1-k3-1: an `openai-compatible http 400` mid-stream)
+/// skips it entirely, AND every desktop-side place that discards or
+/// replaces `current_chat` (New Chat / Stop / close tab / a fresh send
+/// overwriting an in-flight one / app close) was ALSO capable of dropping
+/// an unfinalized session before `pump`'s own backstop (below) ever got a
+/// chance to observe it — `app_handler.rs` drains New/Stop/CloseTab
+/// BEFORE `chat_session::pump` each frame, so a same-frame teardown beats
+/// the poll that would otherwise have caught it.
+///
+/// Call this on EVERY path that discards or replaces a `ChatSession`
+/// (`session` is the OLD value about to be dropped/overwritten), not just
+/// the poll-driven one. Idempotent and cheap: gated on `is_design_loop() &&
+/// !loop_finalized()`, and `apply_loop_finalize`'s own passes are each
+/// individually idempotent, so calling this redundantly (e.g. once from the
+/// poll backstop AND once more from a teardown path that races it) is
+/// harmless — the second call simply finds `loop_finalized()` already true
+/// and no-ops.
+pub(crate) fn finalize_design_session_if_needed(
+    host: &mut WidgetHostNative,
+    session: &Option<ChatSession>,
+    source: &'static str,
+) {
+    let Some(session) = session.as_ref() else {
+        return;
+    };
+    if !session.is_design_loop() || session.loop_finalized() {
+        return;
+    }
+    let state = host.editor_state_mut();
+    op_orchestrator::apply_loop_finalize(state);
+    // Same promise-delivery marking the normal finalize op gets (see
+    // `execute_tool_requests` below) — an early-death run (429 / quota /
+    // abort / a session torn down mid-flight) is exactly the case that
+    // must not ship a silently blank scaffolded screen either.
+    op_orchestrator::unfilled_screens::finalize_and_mark_unfilled_screens(state);
+    host.mark_editor_state_dirty();
+    // Self-diagnostic (0718-1-k3-1 postmortem): the ONLY forensic trace
+    // available after that incident was the chat transcript itself (no
+    // session log survived) — this line is the greppable answer to "did
+    // finalize actually run, and from where" for the next one. There is no
+    // live transcript to append to at teardown time (the session is
+    // already being discarded), so stderr is this path's signal.
+    eprintln!("openpencil-desktop: design-loop finalize ran (source={source})");
+}
+
 /// Pump the in-flight turn's deltas into the trailing assistant message, then
 /// execute any pending canvas tool calls against the live editor state.
 ///
@@ -136,21 +186,7 @@ fn pump_with_channel_interleave(
         // the canvas isn't left with the mid-run debris a clean finish
         // would have repaired (measured: empty 68px TabBar shell + empty
         // MiniPlayer survived an aborted run, test0711-22).
-        if let Some(session) = current.as_ref() {
-            if session.is_design_loop() && !session.loop_finalized() {
-                let state = host.editor_state_mut();
-                op_orchestrator::apply_loop_finalize(state);
-                // Same promise-delivery marking the normal finalize op gets
-                // (see `execute_tool_requests` below) — an early-death run
-                // (429 / quota / abort) is exactly the case that must not
-                // ship a silently blank scaffolded screen either. There is
-                // no live transcript to append the tier-3 report line to at
-                // this point (the session is already tearing down), so the
-                // canvas name suffix is this path's honest-delivery signal.
-                op_orchestrator::unfilled_screens::finalize_and_mark_unfilled_screens(state);
-                host.mark_editor_state_dirty();
-            }
-        }
+        finalize_design_session_if_needed(host, current, "poll-backstop");
         *current = None;
     }
     changed
@@ -481,3 +517,7 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "chat_session_reveal_tests.rs"]
 mod reveal_tests;
+
+#[cfg(test)]
+#[path = "chat_session_finalize_teardown_tests.rs"]
+mod finalize_teardown_tests;
