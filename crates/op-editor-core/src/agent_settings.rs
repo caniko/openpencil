@@ -414,6 +414,13 @@ pub struct ImageGenProfile {
 pub struct AgentSettings {
     pub tab: AgentSettingsTab,
     pub connected: [bool; 7],
+    /// The embedding host's real MCP endpoint (e.g. the VS Code
+    /// extension's McpProxy URL), delivered via the bridge `init`
+    /// message. When set, the MCP tab's client-config card displays
+    /// and copies THIS url — the daemon-internal `mcp_server` port
+    /// would point clients at a dead endpoint in the plugin. Runtime
+    /// only — never persisted.
+    pub embed_mcp_url: Option<String>,
     /// Probe-derived per-provider connect status, indexed like
     /// `connected`. Runtime-only — not persisted.
     pub provider_connection: [ProviderConnection; 7],
@@ -493,6 +500,7 @@ impl Default for AgentSettings {
         Self {
             tab: AgentSettingsTab::Agents,
             connected: [false; 7],
+            embed_mcp_url: None,
             provider_connection: Default::default(),
             pending_provider_connect: None,
             builtin_agents: Vec::new(),

@@ -5,6 +5,18 @@
 use super::WidgetHost;
 
 impl WidgetHost {
+    /// Copy `text` for the current surface. The VS Code embed relays the
+    /// payload to the extension host (`op-shell/copy` → `vscode.env.
+    /// clipboard`) because the nested-iframe permissions chain rejects
+    /// `navigator.clipboard` writes there; the direct browser write stays
+    /// as a best-effort in every mode.
+    pub(in crate::widget_host) fn host_copy_text(&self, text: &str) {
+        if self.editor_state.editor_ui.embed == op_editor_core::EmbedHost::VsCode {
+            crate::web_clipboard::post_copy_to_parent(text);
+        }
+        crate::web_clipboard::copy_text(text);
+    }
+
     /// Single-key tool switch (V / R / O / L / T / F / P / Y / H). Mirrors the
     /// native host's `shortcuts.rs::apply_set_tool`: drops any in-flight pen
     /// path (TS `onToolChange`, `skia-pen-tool.ts:38-50`), clears the canvas
@@ -377,7 +389,7 @@ impl WidgetHost {
                 .map(str::to_string)
             {
                 #[cfg(feature = "canvaskit")]
-                crate::web_clipboard::copy_text(&text);
+                self.host_copy_text(&text);
                 #[cfg(not(feature = "canvaskit"))]
                 self.editor_state.chat.queue_copy_text(text);
                 return true;
@@ -390,7 +402,7 @@ impl WidgetHost {
         if self.input_active() {
             if let Some(text) = self.focused_input_selected_text() {
                 #[cfg(feature = "canvaskit")]
-                crate::web_clipboard::copy_text(&text);
+                self.host_copy_text(&text);
                 #[cfg(not(feature = "canvaskit"))]
                 let _ = text;
             }
@@ -398,7 +410,7 @@ impl WidgetHost {
         }
         if let Some(text) = self.editor_state.codegen.selected_code_text() {
             #[cfg(feature = "canvaskit")]
-            crate::web_clipboard::copy_text(text);
+            self.host_copy_text(text);
             #[cfg(not(feature = "canvaskit"))]
             let _ = text;
             return true;
@@ -410,7 +422,7 @@ impl WidgetHost {
             .map(str::to_string)
         {
             #[cfg(feature = "canvaskit")]
-            crate::web_clipboard::copy_text(&text);
+            self.host_copy_text(&text);
             #[cfg(not(feature = "canvaskit"))]
             self.editor_state.chat.queue_copy_text(text);
             return true;
@@ -435,7 +447,7 @@ impl WidgetHost {
                 .map(str::to_string)
             {
                 #[cfg(feature = "canvaskit")]
-                crate::web_clipboard::copy_text(&text);
+                self.host_copy_text(&text);
                 #[cfg(not(feature = "canvaskit"))]
                 self.editor_state.chat.queue_copy_text(text);
                 self.editor_state.chat.delete_input_selection(self.now_ms);
@@ -451,7 +463,7 @@ impl WidgetHost {
         if self.input_active() {
             if let Some(text) = self.focused_input_selected_text() {
                 #[cfg(feature = "canvaskit")]
-                crate::web_clipboard::copy_text(&text);
+                self.host_copy_text(&text);
                 #[cfg(not(feature = "canvaskit"))]
                 let _ = &text;
                 self.apply_backspace();

@@ -198,6 +198,7 @@ class UnifiedPenProvider implements vscode.CustomEditorProvider<vscode.CustomDoc
         this.state.assembled.pool,
         this.state.assembled.registry,
         this.logger,
+        `http://127.0.0.1:${this.state.assembled.proxyPort}/mcp`,
       );
       this.real.onDidChangeCustomDocument((e) =>
         this.emitter.fire({ document: e.document as vscode.CustomDocument }),

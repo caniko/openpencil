@@ -17,7 +17,7 @@
 // `serverVersion`, `docJson`).
 
 export type BridgeOutboundToPage =
-  | { type: "op-bridge/init"; token: string }
+  | { type: "op-bridge/init"; token: string; mcpUrl?: string }
   | { type: "op-bridge/open-document"; json: string }
   | { type: "op-bridge/snapshot"; purpose: "save" | "backup" | "conflict-backup"; requestId: string }
   | { type: "op-bridge/save-committed"; generation: number; revision: number }

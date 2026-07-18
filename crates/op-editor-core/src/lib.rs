@@ -68,6 +68,7 @@ pub mod image_panel_state;
 pub mod ime_state;
 mod instance_child_override;
 pub mod instance_override;
+pub mod missing_fonts;
 pub mod mutators;
 pub mod node_defaults;
 pub mod node_id;

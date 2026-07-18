@@ -18,6 +18,11 @@ use serde_json::Value;
 pub enum BridgeInbound {
     Init {
         token: String,
+        /// The embedding host's stable MCP endpoint (the VS Code
+        /// extension's McpProxy URL) — shown by the MCP settings card
+        /// instead of the daemon-internal port. Optional: older hosts
+        /// don't send it.
+        mcp_url: Option<String>,
     },
     OpenDocument {
         json: String,
@@ -51,7 +56,11 @@ impl BridgeInbound {
         match ty {
             "op-bridge/init" => {
                 let token = value.get("token")?.as_str()?.to_string();
-                Some(BridgeInbound::Init { token })
+                let mcp_url = value
+                    .get("mcpUrl")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Some(BridgeInbound::Init { token, mcp_url })
             }
             "op-bridge/open-document" => {
                 let json = value.get("json")?.as_str()?.to_string();
@@ -166,7 +175,17 @@ mod tests {
         assert_eq!(
             BridgeInbound::parse(r#"{"type":"op-bridge/init","token":"t0k"}"#),
             Some(BridgeInbound::Init {
-                token: "t0k".into()
+                token: "t0k".into(),
+                mcp_url: None
+            })
+        );
+        assert_eq!(
+            BridgeInbound::parse(
+                r#"{"type":"op-bridge/init","token":"t0k","mcpUrl":"http://127.0.0.1:9/mcp"}"#
+            ),
+            Some(BridgeInbound::Init {
+                token: "t0k".into(),
+                mcp_url: Some("http://127.0.0.1:9/mcp".into())
             })
         );
         assert_eq!(

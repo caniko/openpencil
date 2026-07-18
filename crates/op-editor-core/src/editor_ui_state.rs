@@ -1256,6 +1256,16 @@ pub struct EditorUiState {
     /// Whether a host already ran font enumeration (so an empty list
     /// is "machine has none" rather than "not loaded yet").
     pub system_fonts_loaded: bool,
+    /// Missing-font data shared by the one-shot prompt and Settings Fonts tab.
+    /// `None` means no missing families have been detected.
+    pub missing_fonts_prompt: Option<crate::missing_fonts::MissingFontsPrompt>,
+    /// Whether the one-shot modal is visible. Dismissal keeps prompt data so
+    /// the Settings Fonts tab can continue to expose unresolved rows.
+    pub missing_fonts_modal_open: bool,
+    /// Detection was requested before system-font enumeration completed.
+    pub missing_fonts_pending_detect: bool,
+    /// Row whose choose-file action is waiting for a platform import drain.
+    pub missing_fonts_import_row: Option<usize>,
     /// Raised by `PropertyPanelAction::ImportFont` — the desktop host
     /// drains it to open a native font-file dialog + `FontStore::import`.
     pub pending_font_import: bool,
@@ -1579,6 +1589,10 @@ impl Default for EditorUiState {
             imported_font_families: std::sync::Arc::new(Vec::new()),
             font_import_supported: false,
             system_fonts_loaded: false,
+            missing_fonts_prompt: None,
+            missing_fonts_modal_open: false,
+            missing_fonts_pending_detect: false,
+            missing_fonts_import_row: None,
             pending_font_import: false,
             pending_font_remove: None,
             image_panel: crate::image_panel_state::ImagePanelState::default(),

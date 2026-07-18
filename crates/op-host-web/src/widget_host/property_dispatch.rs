@@ -630,7 +630,7 @@ impl WidgetHost {
                 cg.copied_at = Some(self.now_ms);
                 #[cfg(feature = "canvaskit")]
                 {
-                    crate::web_clipboard::copy_text(&cg.code);
+                    self.host_copy_text(&cg.code);
                 }
             }
             CodegenAction::Download => {

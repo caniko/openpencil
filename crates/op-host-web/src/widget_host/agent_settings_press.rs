@@ -76,13 +76,16 @@ impl WidgetHost {
                     .editor_ui
                     .agent_settings
                     .mcp_client_config_copied_at_ms = Some(self.now_ms);
+                // Write directly (web has no pending_copy_text drain — that
+                // queue is the DESKTOP host's seam); host_copy_text also
+                // relays through the extension in the VS Code embed, where
+                // the webview permissions chain rejects navigator.clipboard.
                 let config = self
                     .editor_state
                     .editor_ui
                     .agent_settings
-                    .mcp_server
-                    .client_config_clipboard_text();
-                self.editor_state.chat.queue_copy_text(config);
+                    .mcp_client_config_clipboard_text();
+                self.host_copy_text(&config);
             }
             AgentSettingsHit::ToggleImagesAdvanced => {
                 self.editor_state

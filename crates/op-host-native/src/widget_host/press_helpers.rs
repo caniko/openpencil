@@ -136,8 +136,7 @@ impl WidgetHostNative {
                     .editor_state
                     .editor_ui
                     .agent_settings
-                    .mcp_server
-                    .client_config_clipboard_text();
+                    .mcp_client_config_clipboard_text();
                 self.editor_state.chat.queue_copy_text(config);
             }
             AgentSettingsHit::ToggleImagesAdvanced => {

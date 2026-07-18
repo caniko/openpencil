@@ -197,7 +197,7 @@ fn handle_message<C: RepaintContext + 'static>(
     }
 
     match msg {
-        BridgeInbound::Init { token } => handle_init(token),
+        BridgeInbound::Init { token, mcp_url } => handle_init(inner, token, mcp_url),
         BridgeInbound::OpenDocument { json } => handle_open_document(inner, sync, json),
         BridgeInbound::Snapshot { request_id, .. } => handle_snapshot(inner, sync, request_id),
         BridgeInbound::SaveCommitted {
@@ -219,8 +219,24 @@ fn handle_message<C: RepaintContext + 'static>(
 /// its `--file` content and the next pull tick pulls that over the just-opened
 /// canvas. The reset-completion callback in `canvaskit`'s managed path calls
 /// [`emit_ready`] once the reset has landed.
-fn handle_init(token: String) {
+fn handle_init<C: RepaintContext + 'static>(
+    inner: &Rc<RefCell<C>>,
+    token: String,
+    mcp_url: Option<String>,
+) {
     live_sync::set_bridge_token(token);
+    if let Some(url) = mcp_url {
+        // Surface the host's real MCP endpoint on the settings card (the
+        // daemon-internal port would point clients at a dead endpoint).
+        if let Ok(mut b) = inner.try_borrow_mut() {
+            b.host_mut()
+                .editor_state_mut()
+                .editor_ui
+                .agent_settings
+                .embed_mcp_url = Some(url);
+            b.host_mut().mark_editor_state_dirty();
+        }
+    }
     INIT_RESOLVER.with(|r| {
         if let Some(resolve) = r.borrow_mut().take() {
             let _ = resolve.call0(&JsValue::NULL);

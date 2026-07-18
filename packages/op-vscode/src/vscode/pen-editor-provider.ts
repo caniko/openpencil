@@ -15,7 +15,7 @@ import type { BridgeOutboundToPage } from "../protocol/bridge";
 import { encodeOutbound } from "../protocol/bridge";
 import { appendEmbedQuery, buildBootHtml, buildWebviewHtml } from "./webview-shell";
 import { pickRestartSource, resolveDaemonBinary, type LatestDurable } from "./restart-source";
-import { isShellControl, parseShellReadyOrigin } from "./shell-messages";
+import { isShellControl, parseShellCopyText, parseShellReadyOrigin } from "./shell-messages";
 import { encodeFigBytes, figSaveTargetPath, isFigPath } from "./fig-source";
 
 const SHELL_READY_TIMEOUT_MS = 5_000;
@@ -76,6 +76,9 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     private readonly pool: DaemonPool,
     private readonly registry: SessionRegistry,
     private readonly logger: DaemonLogger,
+    /** The extension's stable MCP endpoint (McpProxy URL), forwarded to the
+     *  page via bridge init so the MCP settings card shows a live address. */
+    private readonly mcpUrl?: string,
   ) {
     this.pool.onRestart((filePath, client) => void this.handleRestart(filePath, client));
   }
@@ -258,7 +261,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     panel.webview.html = buildWebviewHtml({ iframeSrc, nonce });
 
     const host = this.makeHost(document, panel, watcherState);
-    const session = new PenSession(host, client.handshake.token, document.bootJson);
+    const session = new PenSession(host, client.handshake.token, document.bootJson, this.mcpUrl);
     document.session = session;
     this.registry.register(key, session);
 
@@ -272,6 +275,14 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     const disposables: vscode.Disposable[] = [];
     disposables.push(
       panel.webview.onDidReceiveMessage((raw: unknown) => {
+        // Clipboard relay: the embedded editor can't write the clipboard
+        // itself (webview nested-iframe permissions), so it posts the text
+        // up for a host-side write. Handled before the control swallow.
+        const copyText = parseShellCopyText(raw);
+        if (copyText !== undefined) {
+          void vscode.env.clipboard.writeText(copyText);
+          return;
+        }
         if (isShellControl(raw)) return;
         session.onPageMessage(raw);
       }),

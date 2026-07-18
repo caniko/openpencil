@@ -446,7 +446,7 @@ fn paint_client_config(
         icon_color,
         1.5,
     );
-    let config = settings.mcp_server.client_config_display_text();
+    let config = settings.mcp_client_config_display_text();
     let config = ellipsize(
         cx,
         &config,

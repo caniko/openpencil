@@ -26,6 +26,23 @@ pub fn copy_text(text: &str) {
     }
 }
 
+/// Relay `text` to the embedding shell for a host-side clipboard write.
+///
+/// Inside the VS Code webview the nested-iframe permissions chain rejects
+/// `navigator.clipboard` writes, so the embed posts an `op-shell/copy`
+/// control message to the parent (the extension's relay shell), which
+/// forwards it to the extension host for `vscode.env.clipboard.writeText`.
+/// Target origin is `"*"`: the parent is the relay shell by construction,
+/// and the payload is content the user explicitly asked to copy.
+pub fn post_copy_to_parent(text: &str) {
+    let Some(win) = web_sys::window() else { return };
+    let Ok(Some(parent)) = win.parent() else {
+        return;
+    };
+    let msg = serde_json::json!({ "type": "op-shell/copy", "text": text }).to_string();
+    let _ = parent.post_message(&wasm_bindgen::JsValue::from_str(&msg), "*");
+}
+
 /// Trigger a browser download of `data` as `filename` with MIME type `mime`.
 ///
 /// Builds a `Blob` from the bytes, creates an object URL, clicks a synthetic

@@ -17,6 +17,21 @@ export function isShellControl(raw: unknown): boolean {
   }
 }
 
+/** The text payload of an op-shell/copy control message, else undefined.
+ *  The embedded editor relays clipboard writes through the extension host
+ *  because the webview's nested-iframe permissions chain rejects
+ *  `navigator.clipboard` writes inside the editor iframe. */
+export function parseShellCopyText(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  try {
+    const v = JSON.parse(raw) as { type?: unknown; text?: unknown };
+    if (v.type === "op-shell/copy" && typeof v.text === "string") return v.text;
+  } catch {
+    /* not a control message */
+  }
+  return undefined;
+}
+
 /** The origin reported by an op-shell/ready control message, else undefined. */
 export function parseShellReadyOrigin(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;

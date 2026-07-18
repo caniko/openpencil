@@ -111,6 +111,25 @@ impl McpServer {
 }
 
 impl AgentSettings {
+    /// The client-config card's one-line display text. Prefers the
+    /// embedding host's real endpoint (`embed_mcp_url`, set via the
+    /// bridge init) over the daemon-internal `mcp_server` port.
+    pub fn mcp_client_config_display_text(&self) -> String {
+        match &self.embed_mcp_url {
+            Some(url) => format!(r#"{{ "type": "http", "url": "{url}" }}"#),
+            None => self.mcp_server.client_config_display_text(),
+        }
+    }
+
+    /// The client-config card's copied (pretty-printed) text — same
+    /// endpoint preference as `mcp_client_config_display_text`.
+    pub fn mcp_client_config_clipboard_text(&self) -> String {
+        match &self.embed_mcp_url {
+            Some(url) => format!("{{\n  \"type\": \"http\",\n  \"url\": \"{url}\"\n}}"),
+            None => self.mcp_server.client_config_clipboard_text(),
+        }
+    }
+
     /// Index into the `connected` / `provider_connection` arrays —
     /// both are ordered by `AgentProvider::ALL`.
     pub fn provider_index(provider: AgentProvider) -> usize {
@@ -304,5 +323,26 @@ mod tests {
             s.verified_connected_mask(),
             [true, false, false, false, false, false, false]
         );
+    }
+}
+
+#[cfg(test)]
+mod embed_mcp_url_tests {
+    use super::*;
+
+    #[test]
+    fn client_config_prefers_the_embed_url_over_the_daemon_port() {
+        let mut settings = AgentSettings::default();
+        assert!(settings
+            .mcp_client_config_display_text()
+            .contains("http://127.0.0.1:3100/mcp"));
+        settings.embed_mcp_url = Some("http://127.0.0.1:63655/mcp".into());
+        assert_eq!(
+            settings.mcp_client_config_display_text(),
+            r#"{ "type": "http", "url": "http://127.0.0.1:63655/mcp" }"#
+        );
+        assert!(settings
+            .mcp_client_config_clipboard_text()
+            .contains("\"url\": \"http://127.0.0.1:63655/mcp\""));
     }
 }

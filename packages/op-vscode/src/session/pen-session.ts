@@ -104,7 +104,14 @@ export class PenSession {
   // Every live deferred is tracked so dispose() can reject them all.
   private readonly liveWaiters = new Set<Deferred<unknown>>();
 
-  constructor(host: SessionHost, token: string, initialDocJson: string) {
+  constructor(
+    host: SessionHost,
+    token: string,
+    initialDocJson: string,
+    /** The extension's stable MCP endpoint (McpProxy URL) — surfaced by the
+     *  editor's MCP settings card instead of the daemon-internal port. */
+    private readonly mcpUrl?: string,
+  ) {
     this.host = host;
     this.token = token;
     this.initialDocJson = initialDocJson;
@@ -223,7 +230,7 @@ export class PenSession {
   // ---- init ----
 
   private postInit(): void {
-    this.post({ type: "op-bridge/init", token: this.token });
+    this.post({ type: "op-bridge/init", token: this.token, mcpUrl: this.mcpUrl });
   }
   private scheduleInitRetry(): void {
     this.initCancel = this.host.schedule(() => {
