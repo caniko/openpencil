@@ -1473,14 +1473,14 @@ fn components_manifest_instruction_matches_active_protocol() {
 /// `ALLOWED` allow-set (DropReason::TierFiltered) even with budget room
 /// (`budget_used < budget_max`) — so a weak model saw the component list with
 /// no instruction on how to emit a `ref` node and built everything from
-/// scratch (0 component instances). Reproduces the real smoke path: a MiniMax
-/// (Basic-tier) mobile screen, whose 9200-token budget has room to spare.
+/// scratch (0 component instances). Reproduces the real smoke path: a Basic-tier
+/// MiniMax (M2.x; M3 is Full since 2026-07-18) mobile screen, whose 9200-token budget has room to spare.
 #[test]
 fn basic_tier_components_prompt_keeps_both_manifest_and_teaching() {
     // Sanity: the model classifies as Basic, the path that drops non-allowed
     // skills via the allow-set (the bug surface).
     assert_eq!(
-        resolve_model_profile("minimax-m3").tier,
+        resolve_model_profile("minimax-m2.7").tier,
         ModelTier::Basic,
         "test fixture must exercise the Basic tier"
     );
@@ -1492,7 +1492,7 @@ fn basic_tier_components_prompt_keeps_both_manifest_and_teaching() {
         prompt: "Design a 402x874 mobile shop home screen with product cards, \
                  search, and bottom navigation using the available components"
             .into(),
-        model: Some("minimax-m3".into()),
+        model: Some("minimax-m2.7".into()),
         ..req()
     };
     let mut mobile_plan = plan();
@@ -1597,7 +1597,7 @@ fn tight_budget_dashboard_keeps_component_composition() {
     // Basic tier is the path that overrides the budget down to 5200 when the
     // plan is NOT a mobile full screen (the bug surface).
     assert_eq!(
-        resolve_model_profile("minimax-m3").tier,
+        resolve_model_profile("minimax-m2.7").tier,
         ModelTier::Basic,
         "fixture must exercise the Basic tier (5200 budget on non-mobile)"
     );
@@ -1608,7 +1608,7 @@ fn tight_budget_dashboard_keeps_component_composition() {
         prompt: "Design a 1280x800 analytics dashboard with metric cards, \
                  a chart panel, and a data table using the available components"
             .into(),
-        model: Some("minimax-m3".into()),
+        model: Some("minimax-m2.7".into()),
         ..req()
     };
     let mut dash_plan = plan();
@@ -1709,7 +1709,7 @@ fn tight_budget_dashboard_without_library_does_not_pin_component_composition() {
         prompt: "Design a 1280x800 analytics dashboard with metric cards, \
                  a chart panel, and a data table"
             .into(),
-        model: Some("minimax-m3".into()),
+        model: Some("minimax-m2.7".into()),
         ..req()
     };
     let mut dash_plan = plan();

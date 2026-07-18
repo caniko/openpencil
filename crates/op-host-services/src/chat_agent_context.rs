@@ -292,7 +292,7 @@ mod tests {
     fn screenshot_budget_uses_model_tier_and_never_returns_invalid_truncation() {
         assert!(
             inline_screenshot_char_budget("claude-opus-4.8", 6_144)
-                > inline_screenshot_char_budget("minimax-m3", 6_144)
+                > inline_screenshot_char_budget("minimax-m2.7", 6_144)
         );
         let tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
         assert_eq!(

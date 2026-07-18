@@ -148,6 +148,12 @@ const MODEL_PROFILES: &[Entry] = &[
     // Standard。与 GLM 同理是推理模型,关思考防烧 content;时长无实测数据,先 ×1,
     // 慢再调。未来 K4 等更高代际届时各加一条 matcher。
     e(Match::Sub("kimi-k3"), ModelTier::Full, true, "Kimi K3"),
+    // MiniMax M3（及以后）—— 2026-07-18 3×2 A/B 实测（mobile 多屏/dashboard/
+    // landing）：Full 档几何 issue 5→1、总耗时快 30%、调用数更少、完整性更优，
+    // 全维度非边际胜出 → 升 Full。仅 M3 起算强（老 M 系/abab 落后面的泛 minimax
+    // Basic 条目）。thinking 由 ChatProviderLlmClient 的 m3_keeps_thinking 特判
+    // 保留（Adaptive），此处 thinking_disabled 对 M3 实际不生效，仅作族内一致。
+    e(Match::Sub("minimax-m3"), ModelTier::Full, true, "MiniMax M3"),
     e(
         Match::Sub("deepseek-v4-flash"),
         ModelTier::Standard,
@@ -252,6 +258,12 @@ mod tests {
         assert_eq!(
             resolve_model_profile("kimi-k2.5").tier,
             ModelTier::Standard
+        );
+        // M3 measured full-tier (2026-07-18 A/B); older MiniMax stays Basic.
+        assert_eq!(resolve_model_profile("MiniMax-M3").tier, ModelTier::Full);
+        assert_eq!(
+            resolve_model_profile("MiniMax-M2.7").tier,
+            ModelTier::Basic
         );
         assert_eq!(
             resolve_model_profile("claude-opus-4-1").tier,
