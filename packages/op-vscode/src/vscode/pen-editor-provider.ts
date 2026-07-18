@@ -214,7 +214,7 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
   ): Promise<void> {
     const key = document.uri.fsPath;
     const nonce = makeNonce();
-    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`${client.baseUrl}/`));
+    const external = await vscode.env.asExternalUri(vscode.Uri.parse(`${client.baseUrl}/?embed=vscode`));
     panel.webview.html = buildWebviewHtml({ iframeSrc: external.toString(), nonce });
 
     const host = this.makeHost(document, panel, watcherState);
