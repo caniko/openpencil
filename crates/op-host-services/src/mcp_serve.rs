@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use op_editor_core::{EditorCommand, EditorState};
+use op_mcp::import_html_tool::import_html_snapshot;
 use op_mcp::{
     add_node_effect_snapshot, add_page_snapshot, align_selected_snapshot,
     apply_design_system_snapshot, batch_design_snapshot, batch_get_snapshot,
@@ -587,6 +588,7 @@ fn rebuild_registry(doc: &EditorState, requested_tool: Option<&str>) -> ToolRegi
     register_tool!("set_active_axis_value", set_active_axis_value_snapshot(doc));
     register_tool!("insert_node", insert_node_snapshot());
     register_tool!("import_svg", import_svg_snapshot());
+    register_tool!("import_html", import_html_snapshot());
     register_tool!("update_node", update_node_snapshot());
     register_tool!("delete_node", delete_node_snapshot());
     register_tool!("move_node", move_node_snapshot());

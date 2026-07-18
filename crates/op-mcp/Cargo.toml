@@ -23,6 +23,7 @@ jian-scene = { path = "../../vendor/jian/crates/jian-scene" }
 op-ai-skills = { path = "../op-ai-skills" }
 op-design-lint = { path = "../op-design-lint" }
 op-editor-core = { path = "../op-editor-core" }
+op-html = { path = "../op-html" }
 op-pen-loader = { path = "../op-pen-loader" }
 regex = "1"
 rquickjs = { version = "0.12", optional = true }

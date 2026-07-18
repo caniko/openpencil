@@ -498,7 +498,10 @@ fn json_scalar_to_string(value: Option<&Value>) -> Option<String> {
 
 /// Parse an optional i32 arg. `Ok(None)` when absent, `Ok(Some)` on a
 /// successful parse, `Err` on present-but-malformed input.
-fn parse_opt_i32(args: &BTreeMap<String, String>, key: &str) -> Result<Option<i32>, String> {
+pub(crate) fn parse_opt_i32(
+    args: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<i32>, String> {
     match args.get(key) {
         None => Ok(None),
         Some(s) => s
