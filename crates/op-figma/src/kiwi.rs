@@ -525,4 +525,5 @@ pub fn decode_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiErro
 }
 
 #[cfg(test)]
+#[path = "kiwi/tests.rs"]
 mod tests;

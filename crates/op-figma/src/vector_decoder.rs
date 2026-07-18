@@ -262,39 +262,43 @@ pub fn decode_vector_network_blob(node: &FigValue, blobs: &[BlobOrString]) -> Op
     let BlobOrString::Bytes(blob) = blobs.get(blob_idx)? else {
         return None;
     };
-    if blob.len() < 8 {
+    if blob.len() < 12 {
         return None;
     }
 
-    let mut off = 0usize;
-    let vertex_count = u32_le(blob, off)? as usize;
-    off += 4;
-    if vertex_count > 100_000 || off + vertex_count * 8 > blob.len() {
+    let vertex_count = u32_le(blob, 0)? as usize;
+    let segment_count = u32_le(blob, 4)? as usize;
+    let _region_count = u32_le(blob, 8)? as usize;
+    if vertex_count > 100_000 || segment_count > 100_000 {
         return None;
     }
+
+    let vertex_bytes = vertex_count.checked_mul(12)?;
+    let segment_bytes = segment_count.checked_mul(28)?;
+    let vertices_end = 12usize.checked_add(vertex_bytes)?;
+    let segments_end = vertices_end.checked_add(segment_bytes)?;
+    if segments_end > blob.len() {
+        return None;
+    }
+
+    let mut off = 12usize;
     let mut vertices: Vec<(f64, f64)> = Vec::with_capacity(vertex_count);
     for _ in 0..vertex_count {
-        let x = f32_le(blob, off)?;
-        let y = f32_le(blob, off + 4)?;
-        off += 8;
+        let _style_id = u32_le(blob, off)?;
+        let x = f32_le(blob, off + 4)?;
+        let y = f32_le(blob, off + 8)?;
+        off += 12;
         vertices.push((x, y));
     }
 
-    let segment_count = u32_le(blob, off)? as usize;
-    off += 4;
-    if segment_count > 100_000 {
-        return None;
-    }
-    let mut segments: Vec<VnSegment> = Vec::new();
+    let mut segments: Vec<VnSegment> = Vec::with_capacity(segment_count);
     for _ in 0..segment_count {
-        if off + 24 > blob.len() {
-            break;
-        }
-        let start = u32_le(blob, off)? as usize;
-        let end = u32_le(blob, off + 4)? as usize;
+        let _style_id = u32_le(blob, off)?;
+        let start = u32_le(blob, off + 4)? as usize;
         let ts = (f32_le(blob, off + 8)?, f32_le(blob, off + 12)?);
-        let te = (f32_le(blob, off + 16)?, f32_le(blob, off + 20)?);
-        off += 24;
+        let end = u32_le(blob, off + 16)? as usize;
+        let te = (f32_le(blob, off + 20)?, f32_le(blob, off + 24)?);
+        off += 28;
         if start < vertex_count && end < vertex_count {
             segments.push(VnSegment { start, end, ts, te });
         }
@@ -395,4 +399,5 @@ fn emit_segment(
 }
 
 #[cfg(test)]
+#[path = "vector_decoder/tests.rs"]
 mod tests;

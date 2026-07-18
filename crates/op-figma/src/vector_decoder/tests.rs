@@ -2,6 +2,18 @@
 
 use super::*;
 
+// Captured from two real vector-network nodes in the client fixture.
+const REAL_VN_BLOB_A: &[u8] = &[
+    2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0,
+    65, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0,
+];
+const REAL_VN_BLOB_B: &[u8] = &[
+    2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 143, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0,
+];
+
 fn obj(pairs: Vec<(&str, FigValue)>) -> FigValue {
     FigValue::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
@@ -91,29 +103,49 @@ fn vector_path_from_fill_geometry() {
     );
 }
 
-#[test]
-fn vector_network_straight_segment() {
-    let mut blob = Vec::new();
-    push_u32(&mut blob, 2); // vertexCount
-    push_f32(&mut blob, 0.0);
-    push_f32(&mut blob, 0.0); // v0
-    push_f32(&mut blob, 10.0);
-    push_f32(&mut blob, 0.0); // v1
-    push_u32(&mut blob, 1); // segmentCount
-    push_u32(&mut blob, 0); // start
-    push_u32(&mut blob, 1); // end
-    for _ in 0..4 {
-        push_f32(&mut blob, 0.0); // zero tangents → straight
-    }
+fn vector_network_node(blob: &[u8]) -> (FigValue, Vec<BlobOrString>) {
     let node = obj(vec![(
         "vectorData",
         obj(vec![("vectorNetworkBlob", FigValue::Uint(0))]),
     )]);
-    let blobs = [BlobOrString::Bytes(blob)];
-    assert_eq!(
-        decode_vector_network_blob(&node, &blobs).as_deref(),
-        Some("M0 0 L10 0")
+    (node, vec![BlobOrString::Bytes(blob.to_vec())])
+}
+
+#[test]
+fn vn_layout_header_and_strides_decode() {
+    let mut blob = Vec::new();
+    push_u32(&mut blob, 2); // vertexCount
+    push_u32(&mut blob, 1); // segmentCount
+    push_u32(&mut blob, 0); // regionCount
+    for (x, y) in [(0.0, 0.0), (10.0, 0.0)] {
+        push_u32(&mut blob, 0); // vertex style
+        push_f32(&mut blob, x);
+        push_f32(&mut blob, y);
+    }
+    push_u32(&mut blob, 0); // segment style
+    push_u32(&mut blob, 0); // start
+    push_f32(&mut blob, 0.0);
+    push_f32(&mut blob, 0.0); // start tangent
+    push_u32(&mut blob, 1); // end
+    push_f32(&mut blob, 0.0);
+    push_f32(&mut blob, 0.0); // end tangent
+
+    let (node, blobs) = vector_network_node(&blob);
+    let path = decode_vector_network_blob(&node, &blobs).expect("decodes");
+    assert!(path.starts_with('M'), "emits a moveto: {path}");
+    assert!(
+        path.contains('L') || path.contains('C'),
+        "emits the segment: {path}"
     );
+    assert_eq!(path, "M0 0 L10 0");
+}
+
+#[test]
+fn real_captured_blobs_decode() {
+    for blob in [REAL_VN_BLOB_A, REAL_VN_BLOB_B] {
+        let (node, blobs) = vector_network_node(blob);
+        assert!(decode_vector_network_blob(&node, &blobs).is_some());
+    }
 }
 
 #[test]
