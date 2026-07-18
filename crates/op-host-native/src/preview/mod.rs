@@ -265,10 +265,15 @@ impl PreviewSession {
         // fall through to the classic active-page workbench path.
         let mut projection_warnings: Vec<String> = Vec::new();
         let mut app_projected = false;
-        if let Some((normalized, ws)) =
-            jian_ops_schema::screen_projection::project_screens(&prepared)
-        {
-            projection_warnings.extend(ws.iter().map(|w| format!("preview: {w}")));
+        // `project_screens` now always returns its warnings alongside the
+        // projection outcome (previously nested inside the `Some`, so a
+        // failed projection silently dropped them) — the projected doc
+        // still carries a `ScreenVariantTable` for responsive breakpoint
+        // variants, which this preview path doesn't consume yet (Phase 3
+        // scope: breakpoint-aware preview UI).
+        let (projected, ws) = jian_ops_schema::screen_projection::project_screens(&prepared);
+        projection_warnings.extend(ws.iter().map(|w| format!("preview: {w}")));
+        if let Some((normalized, _variants)) = projected {
             prepared = std::borrow::Cow::Owned(normalized);
             app_projected = true;
         }

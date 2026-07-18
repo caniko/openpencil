@@ -447,6 +447,7 @@ fn empty() -> PenDocument {
         logic_modules: None,
         design_md: None,
         conversion: None,
+        responsive: None,
     }
 }
 

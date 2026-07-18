@@ -116,6 +116,7 @@ pub fn import_html(source: &str, opts: &HtmlImportOptions) -> HtmlImportResult {
         gestures: None,
         route: None,
         screen: None,
+        breakpoint: None,
     });
     warnings.extend(context.warnings);
     HtmlImportResult {

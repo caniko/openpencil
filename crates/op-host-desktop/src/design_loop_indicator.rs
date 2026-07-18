@@ -346,6 +346,7 @@ mod tests {
             semantics: None,
             gestures: None,
             route: None,
+            breakpoint: None,
         })
     }
 

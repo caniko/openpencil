@@ -364,6 +364,8 @@ fn empty_document() -> jian_ops_schema::PenDocument {
         logic_modules: None,
         design_md: None,
         conversion: None,
+        // A fresh empty document never opts into the responsive schema.
+        responsive: None,
     }
 }
 

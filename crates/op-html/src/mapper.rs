@@ -140,6 +140,9 @@ pub fn container_props_from(style: &ComputedStyle, context: &mut MapCtx<'_>) -> 
         fill,
         stroke,
         effects,
+        // No responsive-schema (jian formatVersion 1.2) source in HTML
+        // import — this pipeline only ever emits non-responsive documents.
+        limits: Default::default(),
     }
 }
 
@@ -159,6 +162,8 @@ fn frame(base: PenNodeBase, container: ContainerProps, children: Vec<PenNode>) -
         gestures: None,
         route: None,
         screen: None,
+        // HTML import never authors a responsive breakpoint variant.
+        breakpoint: None,
     })
 }
 

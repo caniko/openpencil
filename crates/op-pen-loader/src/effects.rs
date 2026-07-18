@@ -34,7 +34,10 @@ pub fn effects_to_payload(effects: &[Effect]) -> Vec<ShadowPayload> {
                 color: [s.color.r, s.color.g, s.color.b, s.color.a],
                 inner: s.inner,
             }),
-            Effect::Blur(_) => None,
+            // Layer blur and backdrop blur are both carried separately
+            // (`layer_blur_from_effects` / not yet round-tripped here) —
+            // this payload models drop shadows only.
+            Effect::Blur(_) | Effect::BackgroundBlur { .. } => None,
         })
         .collect()
 }

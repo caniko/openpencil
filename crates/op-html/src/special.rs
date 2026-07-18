@@ -165,6 +165,7 @@ fn map_image(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     });
     finish(context, node)
 }
@@ -198,6 +199,7 @@ fn map_svg(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     });
     finish(context, node)
 }
@@ -398,6 +400,7 @@ fn map_placeholder(
         gestures: None,
         route: None,
         screen: None,
+        breakpoint: None,
     });
     finish(context, node)
 }

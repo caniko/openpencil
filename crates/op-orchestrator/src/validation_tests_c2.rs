@@ -53,6 +53,7 @@ fn make_frame_node(id: &str) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })
 }
 

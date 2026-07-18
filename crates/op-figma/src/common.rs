@@ -255,6 +255,8 @@ pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
         flip_x,
         flip_y,
         theme: None,
+        // Figma import never authors responsive size constraints.
+        constraints: None,
     }
 }
 

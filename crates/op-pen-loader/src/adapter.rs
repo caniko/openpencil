@@ -338,13 +338,22 @@ fn mark_root_frame_clips(children: &mut [NodePayload]) {
 /// Run jian-core's `LayoutEngine` on `root` and harvest absolute
 /// rects per schema id into `out`. Each page root gets its own
 /// `LayoutEngine` instance — OpenPencil's canvas is infinite, so
-/// roots don't share a coordinate frame; we offset every harvested
-/// rect by the root's authored `(base.x, base.y)` so multiple
-/// designs on a page (e.g. pencil-demo.op's 14 side-by-side
-/// mock-ups) don't all collapse to (0, 0).
+/// roots don't share a coordinate frame.
+///
+/// Merge note (responsive-m1a into main): `LayoutEngine::node_rect`
+/// now bakes a root's own authored `(base.x, base.y)` into its
+/// returned absolute rect itself (`root_origins` / `is_origin_normalized`
+/// in jian-core's `layout/mod.rs`, added for the responsive runtime's
+/// multi-root canvas) — this used to be this function's OWN job (see
+/// git history for the prior manual `+ root_ox + root_oy` add here).
+/// Doing both doubled every harvested rect's origin (measured: a root
+/// authored at doc (400, 60) resolved to scene (800, 120) — root_ox/
+/// root_oy added on top of jian-core's own addition). `root_authored_
+/// origin` stays exported for `op-host-native`'s Canvas Preview tap
+/// translation, which still needs the authored origin as a standalone
+/// value (not baked into a rect).
 fn compute_layout(root: &PenNode, out: &mut BTreeMap<String, [f32; 4]>) {
     let (root_w, root_h) = root_available_size(root);
-    let (root_ox, root_oy) = root_authored_origin(root);
     let mut tree = NodeTree::new();
     tree.insert_subtree(root.clone(), None);
     // Real-skia text measurement via jian-skia's `SkiaMeasure`
@@ -366,15 +375,17 @@ fn compute_layout(root: &PenNode, out: &mut BTreeMap<String, [f32; 4]>) {
     }
     // Walk every node by SlotMap iteration, looking up its absolute
     // rect via `node_rect`. Keyed back by the schema id we stashed
-    // in `tree.by_id` during insertion. Adds the root's authored
-    // canvas offset so each design sits where the file placed it.
+    // in `tree.by_id` during insertion. `node_rect` already carries
+    // the root's authored canvas offset (see the merge note above),
+    // so each design sits where the file placed it without any
+    // further adjustment here.
     for (id_str, node_key) in tree.by_id.iter() {
         if let Some(rect) = engine.node_rect(*node_key) {
             out.insert(
                 id_str.clone(),
                 [
-                    rect.origin.x + root_ox,
-                    rect.origin.y + root_oy,
+                    rect.origin.x,
+                    rect.origin.y,
                     rect.size.width,
                     rect.size.height,
                 ],

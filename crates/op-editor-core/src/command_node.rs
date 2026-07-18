@@ -74,6 +74,7 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
+            breakpoint: None,
         }),
         "group" => PenNode::Group(GroupNode {
             base,
@@ -125,6 +126,7 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         }),
         "polygon" => PenNode::Polygon(PolygonNode {
             base,
@@ -142,6 +144,7 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         }),
         "line" => PenNode::Line(LineNode {
             base,
@@ -182,6 +185,7 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         }),
         "path" => PenNode::Path(PathNode {
             base,
@@ -201,6 +205,8 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
+            fill_rule: None,
+            limits: Default::default(),
         }),
         // Form-widget kinds (Phase D2) build their own default props.
         _ => return build_widget_node(kind, base, w, h),

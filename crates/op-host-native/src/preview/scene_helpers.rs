@@ -72,6 +72,12 @@ pub(super) fn format_warning(w: &LoadWarning) -> Option<String> {
         LoadWarning::InvalidExpression { path, reason, .. } => {
             Some(format!("InvalidExpression: '{path}': {reason}"))
         }
+        LoadWarning::ResponsiveBelowMinor { declared } => Some(format!(
+            "ResponsiveBelowMinor: 'responsive:true' declared on formatVersion {declared} (needs ≥1.2)"
+        )),
+        LoadWarning::ViewportWrite { path } => Some(format!(
+            "ViewportWrite: '{path}' authors a reserved $viewport field (engine-computed, not user-writable)"
+        )),
         LoadWarning::UnknownField { .. } => None,
     }
 }

@@ -176,6 +176,7 @@ fn text(id: &str, content: &str, x: i32, y: i32, w: i32, h: i32) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })
 }
 
@@ -211,6 +212,7 @@ fn frame(
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     });
     if let Some(hex) = fill_hex {
         set_primary_fill_hex(&mut node, hex);

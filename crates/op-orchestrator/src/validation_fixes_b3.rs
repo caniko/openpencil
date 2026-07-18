@@ -249,6 +249,9 @@ fn build_container_node(
         fill,
         stroke: None,
         effects: None,
+        // The salvage/fallback fix path never authors responsive size
+        // constraints.
+        limits: Default::default(),
     };
 
     // All four container types share the same ContainerProps —
@@ -297,6 +300,7 @@ fn build_container_node(
             semantics: None,
             gestures: None,
             route: None,
+            breakpoint: None,
         }),
     };
     Some(node)
@@ -360,6 +364,7 @@ fn build_text_node(
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     }))
 }
 
@@ -437,6 +442,8 @@ fn build_path_node(
         semantics: None,
         gestures: None,
         route: None,
+        fill_rule: None,
+        limits: Default::default(),
     }))
 }
 

@@ -167,6 +167,8 @@ pub fn build_kit_document(
         logic_modules: None,
         design_md: None,
         conversion: None,
+        // A component-kit export bundle never opts into the responsive schema.
+        responsive: None,
     };
 
     // Copy referenced variables (TS export-side `collectNodeRefs` —
@@ -478,6 +480,7 @@ mod tests {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            responsive: None,
         }
     }
 

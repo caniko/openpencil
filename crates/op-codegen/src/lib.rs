@@ -427,6 +427,7 @@ mod tests {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            responsive: None,
         }
     }
 
@@ -510,6 +511,7 @@ mod tests {
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         })
     }
 
@@ -544,6 +546,7 @@ mod tests {
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         })
     }
 

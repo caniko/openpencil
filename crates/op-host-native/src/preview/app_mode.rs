@@ -443,6 +443,18 @@ pub(in crate::preview) fn solve_roots(
     // `(base.x, base.y)`; the runtime lays each at its own origin.
     // `runtime.document` + `runtime.layout` are disjoint fields, so the
     // two immutable borrows below co-exist.
+    //
+    // Merge note (responsive-m1a into main): `LayoutEngine::node_rect`
+    // now bakes a non-origin-normalized root's own authored offset into
+    // its returned rect (see `op-pen-loader`'s `compute_layout` for the
+    // full explanation) — `solve_roots` above never calls
+    // `override_root_for_viewport`, so `rrect` here already carries
+    // `offset`. Adding `offset` again doubled `scene_rect`'s origin,
+    // making every scene-space tap fall outside every root's bounds
+    // (matched nothing, fell through to the "outside all roots"
+    // passthrough). `frame.offset` itself (used unchanged by
+    // `input.rs`'s scene→runtime subtraction) is still the standalone
+    // authored origin, independent of this rect-construction bug.
     let root_frames = {
         let mut frames = Vec::new();
         if let Some(rt_doc) = runtime.document.as_ref() {
@@ -457,7 +469,7 @@ pub(in crate::preview) fn solve_roots(
                     .unwrap_or((0.0, 0.0, 0.0, 0.0));
                 frames.push(RootFrame {
                     scene_rect: Rect {
-                        origin: Point2D::new(offset.0 + rx, offset.1 + ry),
+                        origin: Point2D::new(rx, ry),
                         size: Point2D::new(rw, rh),
                     },
                     offset,

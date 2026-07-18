@@ -937,6 +937,8 @@ fn path_node_from_pen_anchors(
         semantics: None,
         gestures: None,
         route: None,
+        fill_rule: None,
+        limits: Default::default(),
     }))
 }
 
@@ -973,6 +975,8 @@ fn path_node_from_svg_d(
         semantics: None,
         gestures: None,
         route: None,
+        fill_rule: None,
+        limits: Default::default(),
     }))
 }
 /// Flat scan of every `<tag …>` / `<tag … />` element in `svg`.

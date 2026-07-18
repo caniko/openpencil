@@ -2226,18 +2226,23 @@ name = "jian-core"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "base64",
  "bitflags 2.11.1",
  "deunicode",
  "euclid",
  "futures",
  "jian-ops-schema",
+ "libc",
  "rstar",
  "serde",
  "serde_json",
+ "sha2",
  "slotmap",
  "smallvec",
  "taffy",
  "thiserror 1.0.69",
+ "unicode-segmentation",
+ "url",
 ]
 
 [[package]]
@@ -2245,6 +2250,7 @@ name = "jian-host-desktop"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "futures",
  "jian-core",
  "jian-ops-schema",
  "jian-skia",
@@ -2284,6 +2290,7 @@ dependencies = [
  "jian-ops-schema",
  "raw-window-handle",
  "skia-safe",
+ "unicode-segmentation",
 ]
 
 [[package]]

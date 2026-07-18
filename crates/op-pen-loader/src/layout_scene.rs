@@ -249,6 +249,13 @@ fn node_payload_to_scene(
         flip_x: node.flip_x,
         flip_y: node.flip_y,
         corner_radius: node.corner_radius,
+        // Per-corner radius overrides + even-odd path fill are new jian
+        // scene fields (responsive-m1a merge); `NodePayload` doesn't carry
+        // authored per-corner radii or a path fill-rule yet, so this stays
+        // on the pre-merge uniform-corner-radius / nonzero-winding
+        // behavior until a follow-up threads them through the loader.
+        corner_radii: None,
+        even_odd_fill: false,
         clip_content: node.clip_content,
         // Paint-time `$ref` resolution: a registered fill ref wins,
         // else the node's own fill. Same precedence as the canvas
@@ -396,8 +403,9 @@ fn scale_effect_opacity(e: Effect, k: f32) -> Effect {
             color: mul_alpha(s.color, k),
             ..s
         }),
-        // Blur has no colour to fold node opacity into.
+        // Blur (layer or backdrop) has no colour to fold node opacity into.
         Effect::Blur(b) => Effect::Blur(b),
+        Effect::BackgroundBlur { radius } => Effect::BackgroundBlur { radius },
     }
 }
 

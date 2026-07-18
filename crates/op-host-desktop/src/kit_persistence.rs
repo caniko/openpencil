@@ -126,6 +126,8 @@ fn kit_to_persisted(kit: &UIKit) -> PersistedKit {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            // A persisted component kit never opts into the responsive schema.
+            responsive: None,
         },
         components: kit
             .components
@@ -288,6 +290,7 @@ mod tests {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            responsive: None,
         };
         import_kit_from_document(&doc, "imp-1".to_string()).expect("kit")
     }

@@ -290,6 +290,7 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         });
         self.insert_node_above_selection(node);
         self.set_single_selection(id.clone());
@@ -343,6 +344,7 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
+            limits: Default::default(),
         });
         self.insert_node_above_selection(node);
         self.set_single_selection(id.clone());
@@ -408,6 +410,8 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
+            fill_rule: None,
+            limits: Default::default(),
         });
         self.insert_node_above_selection(node);
         self.set_single_selection(id.clone());
@@ -597,6 +601,8 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
+            fill_rule: None,
+            limits: Default::default(),
         });
         self.active_children_mut().push(node);
         Some(id)

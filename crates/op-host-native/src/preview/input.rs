@@ -33,9 +33,12 @@ use op_editor_ui::{Point2D, Rect};
 impl PreviewSession {
     /// Route a printable character into the focused widget. Returns
     /// `true` when the runtime consumed it (a focused editable widget
-    /// accepted the text).
+    /// accepted the text). `dispatch_text_input` now returns
+    /// `CoreResult<bool>` — `Err(CoreError::Busy)` means the runtime is
+    /// mid variant-swap and froze input for IME safety, which reads as
+    /// "not consumed" here, same as any other declined dispatch.
     pub fn dispatch_text(&mut self, text: &str) -> bool {
-        self.runtime.dispatch_text_input(text)
+        self.runtime.dispatch_text_input(text).unwrap_or(false)
     }
 
     /// Route a named key (e.g. `"Backspace"`, `"ArrowLeft"`, `"Enter"`,
@@ -229,25 +232,65 @@ impl PreviewSession {
     /// runtime node (e.g. a child a promotion dropped from the tree).
     /// `pub(in crate::preview)` so `mod.rs`'s test-only `node_rect`
     /// accessor can reach it from the parent module.
+    ///
+    /// Merge note (responsive-m1a into main): jian-core's `node_rect`
+    /// now bakes a non-viewport-normalized root's own authored origin
+    /// into every rect under it (see `op-pen-loader`'s `compute_layout`
+    /// for the full mechanism) — jian's own convention calls this
+    /// "absolute scene coordinates" and its own runtimes hit-test
+    /// directly against it. OpenPencil's PreviewSession keeps a SECOND,
+    /// separate coordinate frame ("runtime space", root-relative) for
+    /// `Runtime::dispatch_pointer` and friends, which `scene_to_runtime`
+    /// above maps into via this function. Subtract the root's authored
+    /// origin back out so `runtime_rect` keeps returning root-relative
+    /// space regardless of jian-core's own internal convention.
     pub(in crate::preview) fn runtime_rect(&self, id: &str) -> Option<Rect> {
         let doc = self.runtime.document.as_ref()?;
         let key = doc.tree.by_id.get(id).copied()?;
         let r = self.runtime.layout.node_rect(key)?;
+        let (ox, oy) = self.root_authored_origin_of(doc, key);
         Some(Rect {
-            origin: Point2D::new(r.origin.x, r.origin.y),
+            origin: Point2D::new(r.origin.x - ox, r.origin.y - oy),
             size: Point2D::new(r.size.width, r.size.height),
         })
     }
 
-    /// Advance focus to the next focusable widget (Tab).
+    /// Walk `key` up to its tree root and return that root's authored
+    /// `(x, y)`, or `(0, 0)` when the root is viewport-normalized (its
+    /// origin is already baked out of `node_rect` by jian-core) or has
+    /// no authored position.
+    fn root_authored_origin_of(
+        &self,
+        doc: &jian_core::document::RuntimeDocument,
+        key: jian_core::document::tree::NodeKey,
+    ) -> (f32, f32) {
+        let mut cur = key;
+        while let Some(parent) = doc.tree.nodes.get(cur).and_then(|n| n.parent) {
+            cur = parent;
+        }
+        if self.runtime.layout.is_origin_normalized(cur) {
+            return (0.0, 0.0);
+        }
+        doc.tree
+            .nodes
+            .get(cur)
+            .map(|root| op_pen_loader::root_authored_origin(&root.schema))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Advance focus to the next focusable widget (Tab). `focus_next` now
+    /// returns `CoreResult<()>` (declines during a variant-swap freeze,
+    /// same as `dispatch_text_input`) — fire-and-forget here, same as the
+    /// pre-Result behavior: a declined focus move just doesn't move.
     pub fn focus_next(&mut self) {
-        self.runtime.focus_next();
+        let _ = self.runtime.focus_next();
         self.seed_focused_widget_state();
     }
 
-    /// Advance focus to the previous focusable widget (Shift+Tab).
+    /// Advance focus to the previous focusable widget (Shift+Tab). See
+    /// `focus_next`'s doc for the `CoreResult` note.
     pub fn focus_previous(&mut self) {
-        self.runtime.focus_previous();
+        let _ = self.runtime.focus_previous();
         self.seed_focused_widget_state();
     }
 
@@ -320,7 +363,8 @@ impl PreviewSession {
         else {
             return false;
         };
-        self.runtime.focus_request(key);
+        // See `focus_next`'s doc for the `CoreResult` note.
+        let _ = self.runtime.focus_request(key);
         self.seed_focused_widget_state();
         self.runtime.focus.current() == Some(key)
     }

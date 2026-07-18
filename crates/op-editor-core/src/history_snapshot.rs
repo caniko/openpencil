@@ -215,6 +215,10 @@ fn strip_children(doc: &PenDocument) -> PenDocument {
         logic_modules: doc.logic_modules.clone(),
         design_md: doc.design_md.clone(),
         conversion: doc.conversion.clone(),
+        // The responsive schema opt-in is document-level metadata, not
+        // node content — survives the children-strip like every other
+        // metadata field above.
+        responsive: doc.responsive,
     }
 }
 

@@ -451,6 +451,7 @@ mod tests {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            responsive: None,
         };
         if let PenNode::Frame(f) = &mut doc.children[0] {
             f.reusable = Some(true);

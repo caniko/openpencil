@@ -6,12 +6,14 @@
 //! sign on `delta_y` so widget code reads the Jian-internal
 //! convention regardless of host.
 //!
-//! Pure: no `Instant::now()` (panics on wasm32-unknown-unknown). The
-//! C2 listener reads the host clock via `web_time::Instant` (or any
-//! polyfill that yields a `std::time::Instant`) and passes it in.
-//! This keeps the mapper unit-testable on native and IT does NOT
-//! crash at runtime on wasm32-unknown-unknown — the panic locus
-//! moves up to the listener glue, where the polyfill lives.
+//! Pure: no host-clock reads here (would panic on
+//! wasm32-unknown-unknown). The C2 listener reads the host clock
+//! (`web_time::Instant` or any polyfill) and passes the millisecond
+//! value in as `t_ms` — matching `jian_core::gesture::WheelEvent`'s own
+//! `t_ms: u64` convention (shared with `PointerEvent`). This keeps the
+//! mapper unit-testable on native and IT does NOT crash at runtime on
+//! wasm32-unknown-unknown — the panic locus moves up to the listener
+//! glue, where the polyfill lives.
 //!
 //! `PointerEvent` mapping (mouse position / button / kind / phase)
 //! lives in C2 alongside the listener registration — Phase C1 covers
@@ -19,7 +21,6 @@
 //! piece that benefits from being a pure helper.
 
 use op_editor_ui::{Modifiers, ScrollMode, WheelEvent};
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WheelIntent {
@@ -114,8 +115,8 @@ pub fn classify_wheel_intent(
 /// from `WheelEvent.delta{X,Y}` in W3C sign (positive-down for Y);
 /// we flip Y here. `delta_z` mirrors `WheelEvent.deltaZ` (almost
 /// always 0). `delta_mode` is `WheelEvent.deltaMode` (0=Pixel,
-/// 1=Line, 2=Page). `timestamp` is whatever the C2 listener
-/// captured from its host clock polyfill.
+/// 1=Line, 2=Page). `t_ms` is whatever the C2 listener captured from
+/// its host clock polyfill, in milliseconds.
 pub fn map_wheel(
     position: jian_core::geometry::Point,
     delta_x: f32,
@@ -123,7 +124,7 @@ pub fn map_wheel(
     delta_z: f32,
     delta_mode: u32,
     modifiers: Modifiers,
-    timestamp: Instant,
+    t_ms: u64,
 ) -> WheelEvent {
     WheelEvent {
         position,
@@ -138,6 +139,6 @@ pub fn map_wheel(
             _ => ScrollMode::Pixel,
         },
         modifiers,
-        timestamp,
+        t_ms,
     }
 }

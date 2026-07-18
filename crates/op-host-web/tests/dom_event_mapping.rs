@@ -2,10 +2,9 @@
 //!
 //! Pure-function coverage — runs natively (no wasm-bindgen-test); the
 //! C2 listener integration test runs in browsers as part of Phase E
-//! manual smoke. The Instant-using tests rely on `Instant::now()`
-//! being available natively; on wasm32-unknown-unknown that call
-//! panics, which is exactly why the mapper itself takes `timestamp`
-//! as a parameter (the C2 listener supplies a polyfill).
+//! manual smoke. The wheel mapper takes `t_ms: u64` as a parameter
+//! (the C2 listener supplies the host clock's millisecond value) so
+//! these tests don't need a real clock at all.
 
 use op_editor_ui::{
     ImeKind, KeyCode, KeyLocation, KeyState, KeyValue, Modifiers, NamedKey, ScrollMode,
@@ -19,7 +18,6 @@ use op_host_web::event::{
     keyboard::map_keyboard_parts,
     pointer::{classify_wheel_intent, map_wheel, WheelIntent},
 };
-use std::time::Instant;
 
 // ---------------------------------------------------------------------
 // Keyboard
@@ -333,7 +331,7 @@ fn keyboard_empty_string_key_falls_to_unidentified() {
 fn wheel_flips_w3c_deltay_sign() {
     // W3C scroll-down (+120) → Jian winit-positive-up (-120).
     let pos = jian_core::geometry::Point::new(0.0, 0.0);
-    let event = map_wheel(pos, 0.0, 120.0, 0.0, 0, Modifiers::empty(), Instant::now());
+    let event = map_wheel(pos, 0.0, 120.0, 0.0, 0, Modifiers::empty(), 0);
     assert_eq!(event.delta.y, -120.0);
     assert_eq!(event.delta.x, 0.0);
     assert_eq!(event.mode, ScrollMode::Pixel);
@@ -343,25 +341,25 @@ fn wheel_flips_w3c_deltay_sign() {
 fn wheel_does_not_flip_x_sign() {
     // delta_x is positive-right on both W3C and winit — no flip.
     let pos = jian_core::geometry::Point::new(10.0, 20.0);
-    let event = map_wheel(pos, 5.0, 0.0, 0.0, 0, Modifiers::empty(), Instant::now());
+    let event = map_wheel(pos, 5.0, 0.0, 0.0, 0, Modifiers::empty(), 0);
     assert_eq!(event.delta.x, 5.0);
 }
 
 #[test]
 fn wheel_mode_decoding() {
     let pos = jian_core::geometry::Point::new(0.0, 0.0);
-    let pixel = map_wheel(pos, 0.0, 1.0, 0.0, 0, Modifiers::empty(), Instant::now());
+    let pixel = map_wheel(pos, 0.0, 1.0, 0.0, 0, Modifiers::empty(), 0);
     assert_eq!(pixel.mode, ScrollMode::Pixel);
-    let line = map_wheel(pos, 0.0, 1.0, 0.0, 1, Modifiers::empty(), Instant::now());
+    let line = map_wheel(pos, 0.0, 1.0, 0.0, 1, Modifiers::empty(), 0);
     assert_eq!(line.mode, ScrollMode::Line);
-    let page = map_wheel(pos, 0.0, 1.0, 0.0, 2, Modifiers::empty(), Instant::now());
+    let page = map_wheel(pos, 0.0, 1.0, 0.0, 2, Modifiers::empty(), 0);
     assert_eq!(page.mode, ScrollMode::Page);
 }
 
 #[test]
 fn wheel_delta_z_passthrough() {
     let pos = jian_core::geometry::Point::new(0.0, 0.0);
-    let event = map_wheel(pos, 0.0, 0.0, 1.5, 0, Modifiers::empty(), Instant::now());
+    let event = map_wheel(pos, 0.0, 0.0, 1.5, 0, Modifiers::empty(), 0);
     assert_eq!(event.delta_z, 1.5);
 }
 

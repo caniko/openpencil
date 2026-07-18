@@ -133,6 +133,7 @@ pub fn build_text_node(
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     });
     context.node_count += 1;
     Some(node)

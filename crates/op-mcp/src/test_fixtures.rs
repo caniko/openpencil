@@ -77,6 +77,7 @@ pub fn text(id: &str, name: &str, x: f64, y: f64, w: f64, h: f64, content: &str)
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })
 }
 
@@ -115,6 +116,7 @@ pub fn frame(
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })
 }
 

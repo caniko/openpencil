@@ -35,6 +35,7 @@ fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })
 }
 
@@ -69,6 +70,7 @@ fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })
 }
 
@@ -104,6 +106,7 @@ fn frame_node(
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })
 }
 

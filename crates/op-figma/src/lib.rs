@@ -398,6 +398,8 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             semantics: None,
             gestures: None,
             route: None,
+            // Figma import never authors a responsive breakpoint variant.
+            breakpoint: None,
         }),
         FigmaNodeVariant::Group => PenNode::Group(GroupNode {
             base,
@@ -441,6 +443,8 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             semantics: None,
             gestures: None,
             route: None,
+            // Figma import never authors responsive size constraints.
+            limits: Default::default(),
         }),
         FigmaNodeVariant::Line => PenNode::Line(LineNode {
             base,
@@ -475,6 +479,8 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             semantics: None,
             gestures: None,
             route: None,
+            // Figma import never authors responsive size constraints.
+            limits: Default::default(),
         }),
         FigmaNodeVariant::Path => PenNode::Path(PathNode {
             base,
@@ -494,6 +500,10 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             semantics: None,
             gestures: None,
             route: None,
+            // Figma paths don't author an explicit even-odd/nonzero fill rule.
+            fill_rule: None,
+            // Figma import never authors responsive size constraints.
+            limits: Default::default(),
         }),
         FigmaNodeVariant::Text => PenNode::Text(TextNode {
             base,
@@ -521,6 +531,8 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             semantics: None,
             gestures: None,
             route: None,
+            // Figma import never authors responsive size constraints.
+            limits: Default::default(),
         }),
     }
 }

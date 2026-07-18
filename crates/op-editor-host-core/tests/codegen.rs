@@ -45,6 +45,7 @@ fn frame(id: &str, children: Vec<PenNode>) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })
 }
 

@@ -144,6 +144,7 @@ fn fix_unresolved_images_swaps_blob_image_for_placeholder_rect() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })];
     fix_unresolved_images(&mut nodes);
     match &nodes[0] {
@@ -230,6 +231,7 @@ fn fix_unresolved_images_preserves_corner_radius_on_placeholder() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })];
     fix_unresolved_images(&mut nodes);
     match &nodes[0] {
@@ -270,6 +272,7 @@ fn fix_unresolved_images_recurses_into_frame_children() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     });
     let mut nodes = vec![PenNode::Frame(FrameNode {
         base: base(),
@@ -286,6 +289,7 @@ fn fix_unresolved_images_recurses_into_frame_children() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     fix_unresolved_images(&mut nodes);
     let kids = if let PenNode::Frame(f) = &nodes[0] {
@@ -334,6 +338,7 @@ fn enrich_nodes_from_html_hints_fills_missing_text_props() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })];
     enrich_nodes_from_html_hints(&mut nodes, &hints);
     if let PenNode::Text(t) = &nodes[0] {
@@ -390,6 +395,7 @@ fn enrich_does_not_overwrite_explicit_values() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })];
     enrich_nodes_from_html_hints(&mut nodes, &hints);
     if let PenNode::Text(t) = &nodes[0] {
@@ -471,6 +477,7 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     };
     let mut nodes = vec![PenNode::Ellipse(_placeholder)];
     fix_unresolved_images(&mut nodes);

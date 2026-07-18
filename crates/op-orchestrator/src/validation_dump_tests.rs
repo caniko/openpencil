@@ -38,6 +38,7 @@ fn make_frame(id: &str, children: Option<Vec<PenNode>>) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })
 }
 
@@ -70,6 +71,7 @@ fn make_text(id: &str, content: &str) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })
 }
 
@@ -166,6 +168,7 @@ fn dump_width_height_number() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(dump.contains("w=390"), "expected w=390 in {dump}");
@@ -198,6 +201,7 @@ fn dump_width_keyword_quoted() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(
@@ -242,6 +246,7 @@ fn dump_layout_props() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(
@@ -286,6 +291,7 @@ fn dump_corner_radius() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(dump.contains("cr=8"), "expected cr=8 in {dump}");
@@ -321,6 +327,7 @@ fn dump_fill_color() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(dump.contains("fill=\"#FF0000\""), "expected fill in {dump}");
@@ -364,6 +371,7 @@ fn dump_stroke() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(
@@ -405,6 +413,7 @@ fn dump_text_fields() {
         semantics: None,
         gestures: None,
         route: None,
+        limits: Default::default(),
     })];
     let dump = build_node_tree_dump(&state);
     assert!(dump.contains("type=text"), "missing type=text in {dump}");
@@ -473,6 +482,7 @@ fn dump_exact_format_simple_tree() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     let expected = "id=\"root\" type=frame w=390\n  id=\"lbl\" type=text text=\"Hello\"";
@@ -508,6 +518,7 @@ fn dump_opacity_omitted_at_1() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump = build_node_tree_dump(&state);
     assert!(
@@ -536,6 +547,7 @@ fn dump_opacity_omitted_at_1() {
         semantics: None,
         gestures: None,
         route: None,
+        breakpoint: None,
     })];
     let dump2 = build_node_tree_dump(&state);
     assert!(
