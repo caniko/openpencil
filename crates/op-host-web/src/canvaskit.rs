@@ -1263,6 +1263,7 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 // (mirrors the skia mount's post-press drain points).
                 drop(b);
                 crate::web_chat::drain_chat_flags(&inner);
+                crate::web_image_panel::drain_image_jobs(&inner);
                 crate::iconify_web::drain_iconify_request(&inner);
                 crate::codegen_web::drain_codegen_flags(&inner);
                 crate::web_design_md::drain_design_md_action(&inner);
@@ -1528,9 +1529,11 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 crate::repaint_coalescer::request();
             }
             // Release the borrow before draining: Enter may have queued a chat
-            // send (apply_send → pending_send); the drain launches the turn.
+            // send (apply_send → pending_send) or an image-panel search
+            // (apply_image_panel_send → search_epoch); the drains launch them.
             drop(b);
             crate::web_chat::drain_chat_flags(&inner);
+            crate::web_image_panel::drain_image_jobs(&inner);
         })?;
     }
 

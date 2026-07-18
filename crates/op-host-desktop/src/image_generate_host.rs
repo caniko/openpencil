@@ -194,7 +194,10 @@ async fn generate_gemini(
         }))
         .send()
         .await
-        .map_err(|e| format!("Gemini request failed: {e}"))?;
+        // `without_url`: the Gemini endpoint carries `?key=…`, and a plain
+        // reqwest error Display would echo that URL — API key included —
+        // into the surfaced error string.
+        .map_err(|e| format!("Gemini request failed: {}", e.without_url()))?;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     if !status.is_success() {

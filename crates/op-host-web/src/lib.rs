@@ -74,6 +74,10 @@ mod web_chat;
 mod web_credential_sync;
 #[cfg(feature = "canvaskit")]
 mod web_design_md;
+// Web image-panel drain — Search / Generate popover network via the daemon's
+// `/api/ai/image/*` routes (desktop `image_panel_host` counterpart).
+#[cfg(feature = "canvaskit")]
+mod web_image_panel;
 #[cfg(feature = "canvaskit")]
 mod web_model_catalog;
 #[cfg(feature = "canvaskit")]
