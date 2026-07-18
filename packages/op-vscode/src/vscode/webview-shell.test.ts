@@ -69,4 +69,10 @@ describe("appendEmbedQuery", () => {
   test("never percent-encodes the equals sign", () => {
     expect(appendEmbedQuery("http://127.0.0.1:1/")).not.toContain("%3D");
   });
+  test("inserts before a fragment so location.search still sees the flag", () => {
+    expect(appendEmbedQuery("http://127.0.0.1:1/#frag")).toBe("http://127.0.0.1:1/?embed=vscode#frag");
+    expect(appendEmbedQuery("https://t.example/x?tkn=a#frag")).toBe(
+      "https://t.example/x?tkn=a&embed=vscode#frag",
+    );
+  });
 });

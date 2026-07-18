@@ -17,7 +17,12 @@ export function originOf(url: string): string {
  *  `EmbedHost::from_query` refuses by design. Tolerates a base that already
  *  carries a query (e.g. tunnel tokens in remote scenarios). */
 export function appendEmbedQuery(base: string): string {
-  return `${base}${base.includes("?") ? "&" : "?"}embed=vscode`;
+  // Insert BEFORE any fragment — a plain tail-append after "#…" would land
+  // the flag inside the fragment, where location.search never sees it.
+  const hashAt = base.indexOf("#");
+  const head = hashAt === -1 ? base : base.slice(0, hashAt);
+  const fragment = hashAt === -1 ? "" : base.slice(hashAt);
+  return `${head}${head.includes("?") ? "&" : "?"}embed=vscode${fragment}`;
 }
 
 /** Phase 1: no iframe. On load it reports window.origin so the extension can
