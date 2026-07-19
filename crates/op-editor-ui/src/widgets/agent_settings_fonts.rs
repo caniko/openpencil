@@ -16,7 +16,6 @@ const SECTION_TITLE_HEIGHT: f32 = 36.0;
 const EMPTY_BODY_HEIGHT: f32 = 44.0;
 const SECTION_GAP: f32 = 28.0;
 const BOTTOM_PAD: f32 = 24.0;
-const REMOVE_WIDTH: f32 = 88.0;
 const REMOVE_HEIGHT: f32 = 28.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +65,11 @@ fn imported_row_rect(content: Rect, ui: &EditorUiState, row: usize) -> Rect {
 
 pub(crate) fn imported_remove_rect(content: Rect, ui: &EditorUiState, row: usize) -> Rect {
     let row = imported_row_rect(content, ui, row);
+    let width = super::missing_fonts_panel::fit_button_width(translate(ui, "common.delete"), 11.0);
     Rect::xywh(
-        row.origin.x + row.size.x - REMOVE_WIDTH,
+        row.origin.x + row.size.x - width,
         row.origin.y + (ROW_HEIGHT - REMOVE_HEIGHT) / 2.0,
-        REMOVE_WIDTH,
+        width,
         REMOVE_HEIGHT,
     )
 }
@@ -86,7 +86,8 @@ pub(super) fn content_height(ui: &EditorUiState) -> f32 {
 
 pub fn hit_test(content: Rect, ui: &EditorUiState, scrolled: Point2D) -> FontsHit {
     for (row, entry) in missing_entries(ui).iter().enumerate() {
-        if !entry.resolved && row_button_rect(missing_row_rect(content, row)).contains(scrolled) {
+        if !entry.resolved && row_button_rect(missing_row_rect(content, row), ui).contains(scrolled)
+        {
             return FontsHit::ChooseFile(row);
         }
     }
@@ -287,7 +288,7 @@ mod tests {
     fn choose_file_hit_maps_to_missing_row() {
         let state = state_with_missing(&["Katibeh"]);
         let row = missing_row_rect(content_rect(), 0);
-        let button = row_button_rect(row);
+        let button = row_button_rect(row, &state.editor_ui);
         let point = Point2D::new(
             button.origin.x + button.size.x / 2.0,
             button.origin.y + button.size.y / 2.0,

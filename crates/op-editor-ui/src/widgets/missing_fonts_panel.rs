@@ -13,7 +13,6 @@ const BASE_HEIGHT: f32 = 140.0;
 pub(crate) const ROW_HEIGHT: f32 = 44.0;
 const ROWS_TOP: f32 = 68.0;
 const HORIZONTAL_PAD: f32 = 20.0;
-const BUTTON_WIDTH: f32 = 150.0;
 const BUTTON_HEIGHT: f32 = 28.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +65,7 @@ impl<'a> MissingFontsPanel<'a> {
             }
         }
 
-        if dismiss_rect(panel).contains(point) {
+        if dismiss_rect(panel, self.ui).contains(point) {
             MissingFontsHit::Dismiss
         } else {
             MissingFontsHit::Inside
@@ -74,7 +73,7 @@ impl<'a> MissingFontsPanel<'a> {
     }
 
     pub(crate) fn row_button_rect(&self, panel: Rect, row: usize) -> Rect {
-        row_button_rect(modal_row_rect(panel, row))
+        row_button_rect(modal_row_rect(panel, row), self.ui)
     }
 }
 
@@ -89,20 +88,27 @@ fn modal_row_rect(panel: Rect, row: usize) -> Rect {
 }
 
 /// Shared choose-file geometry used by the modal and Settings Fonts tab.
-pub(crate) fn row_button_rect(row: Rect) -> Rect {
+/// Fit-content pill width: label width + 12px padding each side.
+pub(crate) fn fit_button_width(label: &str, font_size: f32) -> f32 {
+    super::layer_panel_paint::approx_text_width(label, font_size) + 24.0
+}
+
+pub(crate) fn row_button_rect(row: Rect, ui: &EditorUiState) -> Rect {
+    let width = fit_button_width(translate(ui, "missingFonts.chooseFile"), 11.0);
     Rect {
-        origin: Point2D::new(row.origin.x + row.size.x - BUTTON_WIDTH, row.origin.y + 8.0),
-        size: Point2D::new(BUTTON_WIDTH, BUTTON_HEIGHT),
+        origin: Point2D::new(row.origin.x + row.size.x - width, row.origin.y + 8.0),
+        size: Point2D::new(width, BUTTON_HEIGHT),
     }
 }
 
-fn dismiss_rect(panel: Rect) -> Rect {
+fn dismiss_rect(panel: Rect, ui: &EditorUiState) -> Rect {
+    let width = fit_button_width(translate(ui, "missingFonts.dismiss"), 12.0);
     Rect {
         origin: Point2D::new(
-            panel.origin.x + panel.size.x - HORIZONTAL_PAD - 100.0,
+            panel.origin.x + panel.size.x - HORIZONTAL_PAD - width,
             panel.origin.y + panel.size.y - 44.0,
         ),
-        size: Point2D::new(100.0, BUTTON_HEIGHT),
+        size: Point2D::new(width, BUTTON_HEIGHT),
     }
 }
 
@@ -165,7 +171,7 @@ pub(crate) fn paint_missing_font_row(
         theme.muted_foreground,
     );
 
-    let action = row_button_rect(row);
+    let action = row_button_rect(row, ui);
     if entry.resolved {
         let chip = Rect {
             origin: Point2D::new(action.origin.x + action.size.x - 76.0, action.origin.y),
@@ -265,7 +271,7 @@ impl Widget for MissingFontsPanel<'_> {
             );
         }
 
-        let dismiss = dismiss_rect(panel);
+        let dismiss = dismiss_rect(panel, self.ui);
         let dismiss_hovered = self.ui.missing_fonts_hover
             == Some(op_editor_core::missing_fonts::MissingFontsHover::Dismiss);
         if dismiss_hovered {
@@ -368,7 +374,7 @@ mod tests {
         let state = prompt_state(1);
         let panel = MissingFontsPanel::for_editor(&state).expect("open");
         let rect = panel.rect(1200.0, 800.0);
-        let dismiss = dismiss_rect(rect);
+        let dismiss = dismiss_rect(rect, &state.editor_ui);
         let centre = Point2D::new(
             dismiss.origin.x + dismiss.size.x / 2.0,
             dismiss.origin.y + dismiss.size.y / 2.0,
