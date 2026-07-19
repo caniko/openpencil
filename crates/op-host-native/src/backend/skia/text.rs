@@ -100,6 +100,33 @@ impl NativeBackend {
         self.measure_text_family_styled(text, font_size, family, 400, false)
     }
 
+    /// Alphabetic ascent for the default typeface at `weight`.
+    pub fn text_ascent(&mut self, font_size: f32, weight: u16) -> f32 {
+        self.text_ascent_family(font_size, "", weight)
+    }
+
+    /// Alphabetic ascent for the same family resolver used by draw/measure.
+    /// Skia reports ascent above the baseline as a negative value.
+    pub fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
+        let fallback = font_size * 0.8;
+        let Some(resolved) = self
+            .font_resolver
+            .typeface_for_char(Some(family), 'M', weight, false)
+        else {
+            return fallback;
+        };
+        let ascent = jian_skia::with_font_lock(|| {
+            let font = skia_safe::Font::new(&resolved.typeface, font_size);
+            let (_, metrics) = font.metrics();
+            -metrics.ascent
+        });
+        if ascent.is_finite() && ascent > 0.0 {
+            ascent
+        } else {
+            fallback
+        }
+    }
+
     /// Render every shaped run in the layout via cached typefaces +
     /// `Canvas::draw_str` (Step 4 perf fix — see comment on the
     /// `typeface` / `cjk_typeface` fields).

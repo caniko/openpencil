@@ -189,6 +189,12 @@ pub struct NodePayload {
     /// `tile`, `stretch`). `None` defaults to `fill`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_fit: Option<String>,
+    /// Figma image-fill affine transform in normalized UV coordinates.
+    /// `[m00, m01, m02, m10, m11, m12]` maps a node-local unit point
+    /// `(x, y)` to image UV as `(m00*x + m01*y + m02,
+    /// m10*x + m11*y + m12)`. `None` keeps the placement-mode default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_transform: Option<[f32; 6]>,
     /// Per-image adjustment values from image fills / image nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_adjustments: Option<ImageAdjustmentPayload>,

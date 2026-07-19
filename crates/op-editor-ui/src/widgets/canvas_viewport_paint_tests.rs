@@ -95,6 +95,9 @@ mod text_tests {
                 text.chars().count() as f32 * font_size * 0.7 + font_size * font_size * 0.07
             }
         }
+        fn text_ascent_family(&mut self, font_size: f32, _: &str, _: u16) -> f32 {
+            font_size * 0.75
+        }
     }
 
     fn paint_node(
@@ -147,7 +150,7 @@ mod text_tests {
     }
 
     #[test]
-    fn text_node_paint_honors_horizontal_alignment_and_ts_top_baseline() {
+    fn text_node_paint_honors_horizontal_alignment_and_backend_ascent() {
         let mut node = SceneNode::leaf("t", NodeKind::Text);
         node.bounds = Rect::xywh(0.0, 0.0, 200.0, 80.0);
         node.text = Some("Hi".to_string());
@@ -170,8 +173,8 @@ mod text_tests {
             "center-aligned text should move away from the left edge"
         );
         assert_eq!(
-            origin.y, 20.0,
-            "canvas text follows TS paint parity: authored y is the top edge even when textAlignVertical=middle"
+            origin.y, 15.0,
+            "canvas text places the alphabetic baseline at the backend-reported ascent"
         );
     }
 

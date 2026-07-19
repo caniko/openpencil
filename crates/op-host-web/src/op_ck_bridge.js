@@ -562,6 +562,91 @@ export async function opCkInit(canvasId) {
     return base.copy();
   };
 
+  // Encoded document images are stable-id keyed and retained across frames so
+  // CanvasKit does not decode/upload the same payload on every repaint.
+  const IMAGE_CACHE_CAP = 4096;
+  const IMAGE_CACHE_BYTE_BUDGET = 384 * 1024 * 1024;
+  const imageCache = new Map();
+  let imageCacheBytes = 0;
+  const cachedEncodedImage = (lo, hi, encoded) => {
+    const key = String(hi >>> 0) + ':' + String(lo >>> 0);
+    const hit = imageCache.get(key);
+    if (hit) {
+      imageCache.delete(key);
+      imageCache.set(key, hit);
+      return hit.image;
+    }
+    const image = CK.MakeImageFromEncoded(copyBytes(encoded));
+    if (!image) return null;
+    const bytes = encoded.byteLength || encoded.length || 0;
+    imageCache.set(key, { image, bytes });
+    imageCacheBytes += bytes;
+    while (imageCache.size > IMAGE_CACHE_CAP || imageCacheBytes > IMAGE_CACHE_BYTE_BUDGET) {
+      const firstKey = imageCache.keys().next().value;
+      const old = imageCache.get(firstKey);
+      if (!old) break;
+      imageCache.delete(firstKey);
+      imageCacheBytes -= old.bytes;
+      if (old.image && old.image.delete) old.image.delete();
+    }
+    return image;
+  };
+
+  // Figma maps node-normalized coordinates to normalized image UV. Image
+  // shaders consume the inverse, mapping image pixels into the destination
+  // rect: node_rect * inverse(figma) * inverse(image_dimensions).
+  const figmaImageLocalMatrix = (x, y, w, h, imageW, imageH, transform) => {
+    if (transform.length !== 6 || !(w > 0) || !(h > 0) || !(imageW > 0) || !(imageH > 0)) return null;
+    const [a, b, tx, c, d, ty] = transform;
+    const det = a * d - b * c;
+    if (!Number.isFinite(det) || Math.abs(det) <= Number.EPSILON) return null;
+    const invDet = 1 / det;
+    const ia = d * invDet;
+    const ib = -b * invDet;
+    const ic = -c * invDet;
+    const id = a * invDet;
+    const itx = (b * ty - d * tx) * invDet;
+    const ity = (c * tx - a * ty) * invDet;
+    return Float32Array.of(
+      w * ia / imageW, w * ib / imageH, x + w * itx,
+      h * ic / imageW, h * id / imageH, y + h * ity,
+      0, 0, 1,
+    );
+  };
+
+  const imageAdjustmentMatrix = (values) => {
+    if (values.length !== 7 || values.every((v) => v === 0)) return null;
+    const exp = values[0] / 100;
+    const con = values[1] / 100;
+    const sat = values[2] / 100;
+    const temp = values[3] / 100;
+    const tint = values[4] / 100;
+    const hi = values[5] / 100;
+    const sh = values[6] / 100;
+    const e = 1 + exp * 1.5;
+    const contrast = 1 + con;
+    const contrastOffset = 0.5 * (1 - contrast);
+    const saturation = 1 + sat;
+    const [lr, lg, lb] = [0.2126, 0.7152, 0.0722];
+    const [sr, sg, sb] = [(1 - saturation) * lr, (1 - saturation) * lg, (1 - saturation) * lb];
+    const f = contrast * e;
+    const common = (hi + sh * 0.5) * 0.1;
+    return Float32Array.of(
+      f * (sr + saturation), f * sg, f * sb, 0, contrastOffset + temp * 0.15 + common,
+      f * sr, f * (sg + saturation), f * sb, 0, contrastOffset + tint * 0.15 + common,
+      f * sr, f * sg, f * (sb + saturation), 0, contrastOffset - temp * 0.15 + common,
+      0, 0, 0, 1, 0,
+    );
+  };
+
+  const drawImageRectLinear = (image, src, dst, paint) => {
+    if (canvas.drawImageRectOptions) {
+      canvas.drawImageRectOptions(image, src, dst, CK.FilterMode.Linear, CK.MipmapMode.None, paint);
+    } else {
+      canvas.drawImageRect(image, src, dst, paint, false);
+    }
+  };
+
   return {
     beginFrame() {
       // Discard any leaked save / clip / matrix state from a prior (possibly
@@ -706,6 +791,71 @@ export async function opCkInit(canvasId) {
       offsetPath.delete(); path.delete();
     },
 
+    drawImageWithOptions(imageIdLo, imageIdHi, encoded, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius) {
+      const image = cachedEncodedImage(imageIdLo, imageIdHi, encoded);
+      if (!image || !(w > 0) || !(h > 0)) return;
+      const imageW = image.width();
+      const imageH = image.height();
+      if (!(imageW > 0) || !(imageH > 0)) return;
+      const dst = CK.LTRBRect(x, y, x + w, y + h);
+      const src = CK.LTRBRect(0, 0, imageW, imageH);
+      const paint = new CK.Paint();
+      paint.setAntiAlias(true);
+      paint.setAlphaf(Math.max(0, Math.min(1, opacity)));
+      const matrix = imageAdjustmentMatrix(adjustments);
+      const colorFilter = matrix && CK.ColorFilter && CK.ColorFilter.MakeMatrix
+        ? CK.ColorFilter.MakeMatrix(matrix)
+        : null;
+      if (colorFilter) paint.setColorFilter(colorFilter);
+
+      canvas.save();
+      if (cornerRadius > 0.5) {
+        canvas.clipRRect(CK.RRectXY(dst, cornerRadius, cornerRadius), CK.ClipOp.Intersect, true);
+      }
+      let shader = null;
+      const local = figmaImageLocalMatrix(x, y, w, h, imageW, imageH, transform);
+      if (local) {
+        canvas.clipRect(dst, CK.ClipOp.Intersect, true);
+        const tileMode = typeof CK.TileMode.Decal !== 'undefined' ? CK.TileMode.Decal : CK.TileMode.Clamp;
+        shader = image.makeShaderOptions(tileMode, tileMode, CK.FilterMode.Linear, CK.MipmapMode.None, local);
+        if (shader) {
+          paint.setShader(shader);
+          canvas.drawRect(dst, paint);
+        }
+      }
+      if (!shader) {
+        if (mode === 1) {
+          const scale = Math.min(w / imageW, h / imageH);
+          const dw = imageW * scale;
+          const dh = imageH * scale;
+          drawImageRectLinear(image, src, CK.LTRBRect(x + (w - dw) / 2, y + (h - dh) / 2, x + (w + dw) / 2, y + (h + dh) / 2), paint);
+        } else if (mode === 3) {
+          canvas.clipRect(dst, CK.ClipOp.Intersect, true);
+          let startX = x + (w - imageW) / 2;
+          let startY = y + (h - imageH) / 2;
+          while (startX > x) startX -= imageW;
+          while (startY > y) startY -= imageH;
+          for (let iy = startY; iy < y + h; iy += imageH) {
+            for (let ix = startX; ix < x + w; ix += imageW) {
+              drawImageRectLinear(image, src, CK.LTRBRect(ix, iy, ix + imageW, iy + imageH), paint);
+            }
+          }
+        } else if (mode === 0 || mode === 2) {
+          const scale = Math.max(w / imageW, h / imageH);
+          const dw = imageW * scale;
+          const dh = imageH * scale;
+          canvas.clipRect(dst, CK.ClipOp.Intersect, true);
+          drawImageRectLinear(image, src, CK.LTRBRect(x + (w - dw) / 2, y + (h - dh) / 2, x + (w + dw) / 2, y + (h + dh) / 2), paint);
+        } else {
+          drawImageRectLinear(image, src, dst, paint);
+        }
+      }
+      canvas.restore();
+      paint.delete();
+      if (shader && shader.delete) shader.delete();
+      if (colorFilter && colorFilter.delete) colorFilter.delete();
+    },
+
     drawText(t, family, x, y, sz, weight, italic, r, g, b, a) {
       if (!t) return;
       // Per-CHARACTER family resolution: chars the imported face covers draw
@@ -737,6 +887,18 @@ export async function opCkInit(canvasId) {
     },
     measureText(t, sz) {
       return this.measureTextStyled(t, sz, 400, false);
+    },
+    textAscent(family, sz, weight) {
+      const importedEntry = familyTypefaceEntry(family);
+      const font = new CK.Font(importedEntry ? importedEntry.tf : tfFor('M', false), sz);
+      let ascent = sz * 0.8;
+      if (font.getMetrics) {
+        const metrics = font.getMetrics();
+        const candidate = metrics && Number.isFinite(metrics.ascent) ? -metrics.ascent : NaN;
+        if (Number.isFinite(candidate) && candidate > 0) ascent = candidate;
+      }
+      font.delete();
+      return ascent;
     },
     measureTextFamilyStyled(t, family, sz, weight, italic) {
       const importedEntry = familyTypefaceEntry(family);

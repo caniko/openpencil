@@ -283,6 +283,30 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options_and_transform(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+    ) {
+        self.inner.draw_image_with_options_and_transform(
+            rect,
+            image_id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            transform,
+        );
+    }
+
     fn fill_round_rect_linear_gradient(
         &mut self,
         rect: Rect,
@@ -385,6 +409,14 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
 
     fn measure_text_weighted(&mut self, text: &str, font_size: f32, weight: u16) -> f32 {
         self.inner.measure_text_weighted(text, font_size, weight)
+    }
+
+    fn text_ascent(&mut self, font_size: f32, weight: u16) -> f32 {
+        self.inner.text_ascent(font_size, weight)
+    }
+
+    fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
+        self.inner.text_ascent_family(font_size, family, weight)
     }
 
     fn measure_text_styled(

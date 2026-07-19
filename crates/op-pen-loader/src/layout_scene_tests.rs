@@ -28,6 +28,25 @@ fn layout_scene_carries_per_corner_radii() {
         Some([8.0, 0.0, 6.0, 2.0])
     );
 }
+
+#[test]
+fn layout_scene_carries_figma_image_fill_transform() {
+    let src = r#"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"rectangle","id":"crop","width":375,"height":490,
+         "fill":[{"type":"image","url":"data:image/png;base64,AA==","mode":"crop",
+          "transform":{"m00":0.9999718,"m01":0.0,"m02":0.00001408411,
+                       "m10":0.0,"m11":0.602706,"m12":0.12054121}}]}
+      ]}],"children":[]
+    }"#;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    let crop = &scene.active_page().unwrap().children[0];
+
+    assert_eq!(
+        crop.image_transform,
+        Some([0.9999718, 0.0, 0.00001408411, 0.0, 0.602706, 0.12054121])
+    );
+}
 use op_editor_core::EditorState;
 
 /// Build an `EditorState` from a `.op` JSON source — mirrors how the

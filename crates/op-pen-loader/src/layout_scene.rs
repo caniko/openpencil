@@ -314,6 +314,7 @@ fn node_payload_to_scene(
             .map(stable_image_source_id)
             .unwrap_or(0),
         image_fit: image_fit_to_scene(node.image_fit.as_deref()),
+        image_transform: node.image_transform,
         image_adjustments: image_adjustments_to_scene(node.image_adjustments),
         effects: crate::effects::effects_from_payload_ref(&node.effects)
             .into_iter()

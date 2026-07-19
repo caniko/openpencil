@@ -227,6 +227,51 @@ fn canvaskit_text_measurement_uses_draw_text_style() {
 }
 
 #[test]
+fn canvaskit_image_transform_uses_inverse_shader_local_matrix() {
+    let bridge = std::fs::read_to_string(format!(
+        "{}/src/op_ck_bridge.js",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("CanvasKit bridge source is readable");
+    let backend =
+        std::fs::read_to_string(format!("{}/src/canvaskit.rs", env!("CARGO_MANIFEST_DIR")))
+            .expect("CanvasKit backend source is readable");
+
+    for marker in [
+        "const figmaImageLocalMatrix =",
+        "const invDet = 1 / det;",
+        "image.makeShaderOptions(tileMode, tileMode, CK.FilterMode.Linear",
+        "paint.setShader(shader);",
+    ] {
+        assert!(
+            bridge.contains(marker),
+            "missing CanvasKit image transform marker: {marker}"
+        );
+    }
+    assert!(backend.contains("fn draw_image_with_options_and_transform("));
+}
+
+#[test]
+fn canvaskit_exposes_font_metric_ascent() {
+    let bridge = std::fs::read_to_string(format!(
+        "{}/src/op_ck_bridge.js",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("CanvasKit bridge source is readable");
+
+    for marker in [
+        "textAscent(family, sz, weight)",
+        "font.getMetrics()",
+        "-metrics.ascent",
+    ] {
+        assert!(
+            bridge.contains(marker),
+            "missing CanvasKit ascent marker: {marker}"
+        );
+    }
+}
+
+#[test]
 fn canvaskit_paint_style_is_guarded_before_set_style() {
     let source = std::fs::read_to_string(format!(
         "{}/src/op_ck_bridge.js",

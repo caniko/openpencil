@@ -51,6 +51,34 @@ fn contain_rect_fits_tall_image_pillarboxed_horizontally() {
 }
 
 #[test]
+fn captured_tesla_affines_map_source_pixels_back_to_node_corners() {
+    let cases = [
+        (
+            Rect::xywh(11.0, 17.0, 191.0, 236.0),
+            [0.5089059, 0.0, 0.490246, 0.0, 0.28951487, 0.37636933],
+        ),
+        (
+            Rect::xywh(23.0, 29.0, 375.0, 490.0),
+            [0.9999718, 0.0, 0.00001408411, 0.0, 0.602706, 0.12054121],
+        ),
+    ];
+    for (rect, transform) in cases {
+        let local = figma_image_local_matrix(rect, 1179.0, 2556.0, transform)
+            .expect("captured matrix is invertible");
+        for (node_x, node_y) in [(0.0, 0.0), (1.0, 1.0)] {
+            let src_x = (transform[0] * node_x + transform[1] * node_y + transform[2]) * 1179.0;
+            let src_y = (transform[3] * node_x + transform[4] * node_y + transform[5]) * 2556.0;
+            let dst_x = local[0] * src_x + local[1] * src_y + local[2];
+            let dst_y = local[3] * src_x + local[4] * src_y + local[5];
+            let expected_x = rect.origin.x + rect.size.x * node_x;
+            let expected_y = rect.origin.y + rect.size.y * node_y;
+            assert!((dst_x - expected_x).abs() < 0.001, "x orientation");
+            assert!((dst_y - expected_y).abs() < 0.001, "y orientation");
+        }
+    }
+}
+
+#[test]
 fn contain_rect_degenerate_image_size_falls_back_to_outer() {
     // A zero-dimension image must not divide-by-zero — it just
     // returns the outer rect unchanged.

@@ -8,7 +8,9 @@
 //! `RenderBackend` (`jian_widgets::painter::Painter`) the native desktop
 //! backend implements, so all shell-core UI code is shared across platforms.
 
-use op_editor_ui::{Color, Point2D, Rect, RenderBackend, TextLayout};
+use op_editor_ui::{
+    Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, RenderBackend, TextLayout,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/src/op_ck_bridge.js")]
@@ -245,10 +247,28 @@ extern "C" {
         b: f32,
         a: f32,
     );
+    #[wasm_bindgen(method, js_name = drawImageWithOptions)]
+    fn draw_image_with_options(
+        this: &OpCk,
+        image_id_lo: u32,
+        image_id_hi: u32,
+        encoded: &[u8],
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        mode: u8,
+        transform: &[f32],
+        adjustments: &[f32],
+        opacity: f32,
+        corner_radius: f32,
+    );
     #[wasm_bindgen(method, js_name = measureText)]
     fn measure_text(this: &OpCk, t: &str, sz: f32) -> f32;
     #[wasm_bindgen(method, js_name = measureTextStyled)]
     fn measure_text_styled(this: &OpCk, t: &str, sz: f32, weight: i32, italic: bool) -> f32;
+    #[wasm_bindgen(method, js_name = textAscent)]
+    fn text_ascent(this: &OpCk, family: &str, sz: f32, weight: i32) -> f32;
     /// Family-aware measure: when `family` resolves to a registered imported
     /// font the whole run is measured with that single typeface, so the caret /
     /// layout geometry agrees to sub-pixel with what `drawText` paints for the
@@ -342,6 +362,16 @@ fn flatten_gradient_stops(stops: &[(f32, Color)]) -> Vec<f32> {
         flat.extend([*offset, color.r, color.g, color.b, color.a]);
     }
     flat
+}
+
+fn image_draw_mode_code(mode: ImageDrawMode) -> u8 {
+    match mode {
+        ImageDrawMode::Fill => 0,
+        ImageDrawMode::Fit => 1,
+        ImageDrawMode::Crop => 2,
+        ImageDrawMode::Tile => 3,
+        ImageDrawMode::Stretch => 4,
+    }
 }
 
 fn svg_path_even_odd(d: &str) -> bool {
@@ -790,12 +820,107 @@ impl RenderBackend for CanvasKitBackend {
             );
         }
     }
+    fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
+        self.draw_image_with_options_and_transform(
+            rect,
+            image_id,
+            encoded,
+            ImageDrawMode::Fit,
+            ImageAdjustments::default(),
+            1.0,
+            0.0,
+            None,
+        );
+    }
+    fn draw_image_with_mode(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+    ) {
+        self.draw_image_with_options_and_transform(
+            rect,
+            image_id,
+            encoded,
+            mode,
+            ImageAdjustments::default(),
+            1.0,
+            0.0,
+            None,
+        );
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+    ) {
+        self.draw_image_with_options_and_transform(
+            rect,
+            image_id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            None,
+        );
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options_and_transform(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+    ) {
+        let transform = transform.as_ref().map_or(&[][..], |value| &value[..]);
+        let adjustment_values = [
+            adjustments.exposure,
+            adjustments.contrast,
+            adjustments.saturation,
+            adjustments.temperature,
+            adjustments.tint,
+            adjustments.highlights,
+            adjustments.shadows,
+        ];
+        self.ck.draw_image_with_options(
+            image_id as u32,
+            (image_id >> 32) as u32,
+            encoded,
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            image_draw_mode_code(mode),
+            transform,
+            &adjustment_values,
+            opacity,
+            corner_radius,
+        );
+    }
     fn measure_text(&mut self, text: &str, font_size: f32) -> f32 {
         self.ck.measure_text_styled(text, font_size, 400, false)
     }
     fn measure_text_weighted(&mut self, text: &str, font_size: f32, weight: u16) -> f32 {
         self.ck
             .measure_text_styled(text, font_size, i32::from(weight), false)
+    }
+    fn text_ascent(&mut self, font_size: f32, weight: u16) -> f32 {
+        self.ck.text_ascent("", font_size, i32::from(weight))
+    }
+    fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
+        self.ck.text_ascent(family, font_size, i32::from(weight))
     }
     fn measure_text_styled(
         &mut self,

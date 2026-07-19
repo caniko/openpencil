@@ -12,6 +12,13 @@ use crate::payload::{
     ShaderUniformPayload, StrokePayload,
 };
 
+type ImageFillPayload = (
+    jian_ops_schema::node::ImageSrc,
+    String,
+    Option<[f32; 6]>,
+    Option<ImageAdjustmentPayload>,
+);
+
 pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
     NodePayload {
         id: base.id.clone(),
@@ -64,6 +71,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         background_blur: None,
         image_src: None,
         image_fit: None,
+        image_transform: None,
         image_adjustments: None,
         widget: None,
         children: Vec::new(),
@@ -103,20 +111,15 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
     p.fill_type = first_fill_type(fills);
     p.gradient = first_gradient(fills);
     p.shader = first_shader(fills);
-    if let Some((url, fit, adjustments)) = first_image_fill(fills) {
+    if let Some((url, fit, transform, adjustments)) = first_image_fill(fills) {
         p.image_src = Some(url);
         p.image_fit = Some(fit);
+        p.image_transform = transform;
         p.image_adjustments = adjustments;
     }
 }
 
-fn first_image_fill(
-    fills: Option<&[PenFill]>,
-) -> Option<(
-    jian_ops_schema::node::ImageSrc,
-    String,
-    Option<ImageAdjustmentPayload>,
-)> {
+fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
     let body = fills?.first().and_then(|f| match f {
         PenFill::Image(b) => Some(b),
         _ => None,
@@ -128,6 +131,9 @@ fn first_image_fill(
             // Arc bump — never copy the data-URL bytes into the payload.
             body.url.clone(),
             image_fill_mode_to_payload(body.mode.as_ref()),
+            body.transform
+                .as_ref()
+                .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]),
             image_fill_adjustments(body),
         ))
     }

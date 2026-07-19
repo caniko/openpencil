@@ -63,6 +63,35 @@ impl NativeBackend {
         opacity: f32,
         corner_radius: f32,
     ) {
+        self.draw_image_with_options_and_transform(
+            canvas,
+            rect,
+            id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            None,
+        );
+    }
+
+    /// Draw an image with an optional Figma image-fill transform. The affine
+    /// maps the node unit square into image UV; Skia image shaders expect the
+    /// inverse mapping (image pixels into node-local coordinates).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_image_with_options_and_transform(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+    ) {
         let Some(image) = self.cached_image(id, encoded) else {
             return;
         };
@@ -88,6 +117,33 @@ impl NativeBackend {
             paint.set_color_filter(skia_safe::color_filters::matrix_row_major(&matrix, None));
         }
 
+        if let Some(local) = transform.and_then(|affine| {
+            figma_image_local_matrix(rect, image.width() as f32, image.height() as f32, affine)
+        }) {
+            let local_matrix = skia_safe::Matrix::new_all(
+                local[0], local[1], local[2], local[3], local[4], local[5], 0.0, 0.0, 1.0,
+            );
+            let sampling = skia_safe::SamplingOptions::new(
+                skia_safe::FilterMode::Linear,
+                skia_safe::MipmapMode::None,
+            );
+            if let Some(shader) = image.to_shader(
+                (skia_safe::TileMode::Decal, skia_safe::TileMode::Decal),
+                sampling,
+                &local_matrix,
+            ) {
+                paint.set_shader(shader);
+                let save = canvas.save();
+                canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+                canvas.draw_rect(to_sk_rect(rect), &paint);
+                canvas.restore_to_count(save);
+                if clip_round {
+                    canvas.restore();
+                }
+                return;
+            }
+        }
+
         match mode {
             ImageDrawMode::Fit => {
                 let dst = contain_rect(rect, image.width() as f32, image.height() as f32);
@@ -111,6 +167,47 @@ impl NativeBackend {
             canvas.restore();
         }
     }
+}
+
+/// Build Skia's image-shader local matrix from a Figma fill transform.
+///
+/// Figma maps normalized node coordinates to normalized image UV. A Skia
+/// image shader's local matrix maps image pixels to local coordinates, so the
+/// order is `node_rect * inverse(figma) * inverse(image_dimensions)`.
+pub(super) fn figma_image_local_matrix(
+    rect: Rect,
+    img_w: f32,
+    img_h: f32,
+    transform: [f32; 6],
+) -> Option<[f32; 6]> {
+    if rect.size.x <= 0.0
+        || rect.size.y <= 0.0
+        || img_w <= 0.0
+        || img_h <= 0.0
+        || !transform.iter().all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let [a, b, tx, c, d, ty] = transform;
+    let det = a * d - b * c;
+    if !det.is_finite() || det.abs() <= f32::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let ia = d * inv_det;
+    let ib = -b * inv_det;
+    let ic = -c * inv_det;
+    let id = a * inv_det;
+    let itx = (b * ty - d * tx) * inv_det;
+    let ity = (c * tx - a * ty) * inv_det;
+    Some([
+        rect.size.x * ia / img_w,
+        rect.size.x * ib / img_h,
+        rect.origin.x + rect.size.x * itx,
+        rect.size.y * ic / img_w,
+        rect.size.y * id / img_h,
+        rect.origin.y + rect.size.y * ity,
+    ])
 }
 
 pub(super) fn image_adjustment_matrix(adjustments: ImageAdjustments) -> Option<[f32; 20]> {

@@ -343,7 +343,7 @@ pub(super) fn paint_image_node(
             cx.backend.save();
             cx.backend.clip_round_rect_per_corner(world_rect, radii);
         }
-        cx.backend.draw_image_with_options(
+        cx.backend.draw_image_with_options_and_transform(
             world_rect,
             id,
             bytes.as_ref(),
@@ -355,6 +355,7 @@ pub(super) fn paint_image_node(
             } else {
                 0.0
             },
+            node.image_transform,
         );
         if per_corner.is_some() {
             cx.backend.restore();
@@ -468,6 +469,7 @@ mod tests {
     struct ImageRadiusCaptureBackend {
         clips: Vec<[f32; 4]>,
         image_corner_radii: Vec<f32>,
+        image_transforms: Vec<Option<[f32; 6]>>,
     }
 
     impl RenderBackend for ImageRadiusCaptureBackend {
@@ -487,7 +489,7 @@ mod tests {
         fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {}
         fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
         fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
-        fn draw_image_with_options(
+        fn draw_image_with_options_and_transform(
             &mut self,
             _: Rect,
             _: u64,
@@ -496,8 +498,10 @@ mod tests {
             _: ImageAdjustments,
             _: f32,
             corner_radius: f32,
+            transform: Option<[f32; 6]>,
         ) {
             self.image_corner_radii.push(corner_radius);
+            self.image_transforms.push(transform);
         }
         fn resize(&mut self, _: u32, _: u32) {}
         fn dpi_scale(&self) -> f32 {
@@ -525,6 +529,28 @@ mod tests {
 
         assert_eq!(backend.clips, vec![[8.0, 0.0, 8.0, 0.0]]);
         assert_eq!(backend.image_corner_radii, vec![0.0]);
+        assert_eq!(backend.image_transforms, vec![None]);
+    }
+
+    #[test]
+    fn image_fill_forwards_figma_transform_to_backend() {
+        let _guard = lock_statics();
+        let transform = [0.9999718, 0.0, 0.00001408411, 0.0, 0.602706, 0.12054121];
+        let mut node = SceneNode::leaf("image", NodeKind::Rect);
+        node.image_transform = Some(transform);
+        let mut backend = ImageRadiusCaptureBackend::default();
+
+        paint_image_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Rect::xywh(0.0, 0.0, 375.0, 490.0),
+            1.0,
+            "data:image/png;base64,QUJD",
+        );
+
+        assert_eq!(backend.image_transforms, vec![Some(transform)]);
     }
 
     #[test]

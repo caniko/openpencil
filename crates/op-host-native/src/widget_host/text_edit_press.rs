@@ -46,6 +46,12 @@ impl RenderBackend for MeasureOnly<'_> {
     fn measure_text_weighted(&mut self, text: &str, font_size: f32, weight: u16) -> f32 {
         self.inner.measure_text_weighted(text, font_size, weight)
     }
+    fn text_ascent(&mut self, font_size: f32, weight: u16) -> f32 {
+        self.inner.text_ascent(font_size, weight)
+    }
+    fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
+        self.inner.text_ascent_family(font_size, family, weight)
+    }
 }
 
 /// Inverse-rotate a doc point about the node's bounds centre so hit

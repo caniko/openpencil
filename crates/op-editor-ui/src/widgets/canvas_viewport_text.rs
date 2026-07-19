@@ -349,7 +349,8 @@ pub(crate) fn paint_text_node(
         // exports already bake vertical placement into `x/y`; applying
         // middle/bottom again shifts imported labels away from their
         // TS positions.
-        let first_baseline_y = world_rect.origin.y + font_size;
+        let first_baseline_y =
+            world_rect.origin.y + cx.backend.text_ascent_family(font_size, family, weight);
         let last_line = layout.lines.len().saturating_sub(1);
         for (idx, line) in layout.lines.iter().enumerate() {
             if line.is_empty() {
@@ -663,13 +664,13 @@ mod tests {
 
         paint_text_node(&mut cx, &node, node.bounds, 1.0, &None);
 
-        // Baseline = top + font_size = 20; underline at +2.4, strike at -6.
+        // Default ascent = 0.8 * 20 = 16; underline at +2.4, strike at -6.
         assert_eq!(backend.lines.len(), 2);
         let (u_from, u_to, _, _) = backend.lines[0];
-        assert_eq!((u_from.y, u_to.y), (22.4, 22.4));
+        assert_eq!((u_from.y, u_to.y), (18.4, 18.4));
         assert_eq!((u_from.x, u_to.x), (0.0, 30.0));
         let (s_from, _, _, _) = backend.lines[1];
-        assert_eq!(s_from.y, 14.0);
+        assert_eq!(s_from.y, 10.0);
     }
 
     #[test]

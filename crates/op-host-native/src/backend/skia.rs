@@ -72,7 +72,7 @@ mod image;
 mod path;
 mod text;
 #[cfg(test)]
-use image::{cover_rect, image_adjustment_matrix};
+use image::{cover_rect, figma_image_local_matrix, image_adjustment_matrix};
 
 /// Frame-scoped Jian-DrawOp adapter (spec v19 §5.2.1).
 ///
