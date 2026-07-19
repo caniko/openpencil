@@ -411,7 +411,6 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
-            fill_rule: None,
             limits: Default::default(),
         });
         self.insert_node_above_selection(node);
@@ -603,7 +602,6 @@ impl EditorState {
             semantics: None,
             gestures: None,
             route: None,
-            fill_rule: None,
             limits: Default::default(),
         });
         self.active_children_mut().push(node);

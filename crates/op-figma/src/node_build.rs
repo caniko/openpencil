@@ -163,7 +163,6 @@ pub fn path_node(
         gestures: None,
         route: None,
         // Figma paths don't author an explicit even-odd/nonzero fill rule.
-        fill_rule: None,
         // Figma import never authors responsive size constraints.
         limits: Default::default(),
     })

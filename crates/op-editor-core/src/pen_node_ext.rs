@@ -407,7 +407,6 @@ pub fn make_path(id: String, name: &str, first: (f64, f64)) -> PenNode {
         semantics: None,
         gestures: None,
         route: None,
-        fill_rule: None,
         limits: Default::default(),
     })
 }

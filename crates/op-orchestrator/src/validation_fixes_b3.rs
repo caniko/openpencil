@@ -443,7 +443,6 @@ fn build_path_node(
         semantics: None,
         gestures: None,
         route: None,
-        fill_rule: None,
         limits: Default::default(),
     }))
 }

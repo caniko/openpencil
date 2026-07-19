@@ -210,6 +210,7 @@ impl<'a> SnapshotCtx<'a> {
         Some(PenNode::Frame(FrameNode {
             base,
             container,
+            breakpoint: None,
             children: Some(children),
             image_search_query: None,
             reusable: None,
@@ -270,6 +271,7 @@ impl<'a> SnapshotCtx<'a> {
             .map(|color| vec![solid_fill(color)]);
         Some(PenNode::Text(TextNode {
             base: self.base(id, Some("Text".into()), rect, Some(parent_rect)),
+            limits: Default::default(),
             width: Some(SizingBehavior::Number(rect.w)),
             height: Some(SizingBehavior::Number(rect.h)),
             content: TextContent::Plain(text),
@@ -319,6 +321,7 @@ impl<'a> SnapshotCtx<'a> {
             self.tainted_images += 1;
         }
         Some(PenNode::Image(ImageNode {
+            limits: Default::default(),
             base: self.base(
                 id,
                 object

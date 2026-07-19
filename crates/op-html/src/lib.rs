@@ -197,6 +197,7 @@ pub(crate) fn wrap_imported_document(imported: HtmlImportResult) -> HtmlDocument
             pages: None,
             children: imported.nodes,
             format_version: None,
+            responsive: None,
             id: None,
             app: None,
             routes: None,

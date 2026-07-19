@@ -206,7 +206,6 @@ pub fn build_leaf_node(
             semantics: None,
             gestures: None,
             route: None,
-            fill_rule: None,
             limits: Default::default(),
         }),
         // Form-widget kinds (Phase D2) build their own default props.
