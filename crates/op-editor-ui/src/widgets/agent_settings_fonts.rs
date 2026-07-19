@@ -168,7 +168,7 @@ pub(super) fn paint_fonts_tab(
         let remove_hovered = ui.missing_fonts_hover
             == Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row));
         let remove_bg = if remove_hovered {
-            theme.accent
+            theme.border
         } else {
             theme.muted
         };

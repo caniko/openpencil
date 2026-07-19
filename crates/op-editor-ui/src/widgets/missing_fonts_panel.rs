@@ -90,7 +90,19 @@ fn modal_row_rect(panel: Rect, row: usize) -> Rect {
 /// Shared choose-file geometry used by the modal and Settings Fonts tab.
 /// Fit-content pill width: label width + 12px padding each side.
 pub(crate) fn fit_button_width(label: &str, font_size: f32) -> f32 {
-    super::layer_panel_paint::approx_text_width(label, font_size) + 24.0
+    // CJK glyphs are full-width (~1.0 x font size); a flat Latin
+    // factor undershoots them and clips the label.
+    let text: f32 = label
+        .chars()
+        .map(|c| {
+            if (c as u32) > 0x2E7F {
+                font_size
+            } else {
+                font_size * 0.55
+            }
+        })
+        .sum();
+    text + 24.0
 }
 
 pub(crate) fn row_button_rect(row: Rect, ui: &EditorUiState) -> Rect {
@@ -188,9 +200,10 @@ pub(crate) fn paint_missing_font_row(
             theme.primary,
         );
     } else {
-        // Hover wash mirrors the settings-card affordance (accent).
+        // Hover steps to `border` — `accent` is visually identical
+        // to `muted` in both palettes (invisible wash).
         let bg = if choose_hovered {
-            theme.accent
+            theme.border
         } else {
             theme.muted
         };
@@ -275,7 +288,7 @@ impl Widget for MissingFontsPanel<'_> {
         let dismiss_hovered = self.ui.missing_fonts_hover
             == Some(op_editor_core::missing_fonts::MissingFontsHover::Dismiss);
         if dismiss_hovered {
-            cx.backend.fill_round_rect(dismiss, 6.0, self.theme.muted);
+            cx.backend.fill_round_rect(dismiss, 6.0, self.theme.border);
         }
         paint_text(
             cx,
