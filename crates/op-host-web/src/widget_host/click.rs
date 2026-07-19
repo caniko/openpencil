@@ -361,6 +361,9 @@ impl WidgetHost {
                 LayerPanelHit::Page(idx) => {
                     let _ = self.editor_state.set_active_page(idx);
                     self.editor_state.clear_selection();
+                    // Land centered on the new page's content instead
+                    // of keeping the previous page's pan/zoom.
+                    self.zoom_to_fit(self.last_viewport_w, self.last_viewport_h);
                     self.mark_dirty();
                     return true;
                 }
