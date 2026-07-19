@@ -321,3 +321,11 @@ fn new_chat_aborts_the_old_running_tab_without_dirtying_the_fresh_tab() {
     assert!(tabs[1].messages.is_empty());
     op_editor_core::agent_indicators::clear();
 }
+
+#[test]
+fn html_paste_guard() {
+    assert!(!crate::keyboard_input::html_paste_should_consume("   \n"));
+    assert!(crate::keyboard_input::html_paste_should_consume(
+        "<div>x</div>"
+    ));
+}

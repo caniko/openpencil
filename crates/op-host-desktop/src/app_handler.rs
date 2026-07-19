@@ -671,6 +671,10 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 if self.pump_figma_clipboard_paste() {
                     self.redraw_dirty = true;
                 }
+                // Drain a finished HTML clipboard paste decode.
+                if self.pump_html_clipboard_paste() {
+                    self.redraw_dirty = true;
+                }
                 match figma_import_session::pump(
                     &mut self.host,
                     &mut self.current_figma_import,
@@ -909,7 +913,9 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(33),
                     ));
-                } else if self.current_figma_import.is_some() || self.pending_figma_paste.is_some()
+                } else if self.current_figma_import.is_some()
+                    || self.pending_figma_paste.is_some()
+                    || self.pending_html_paste.is_some()
                 {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(
                         Instant::now() + Duration::from_millis(100),
@@ -1175,7 +1181,17 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 // Font import / removal raised by the property-panel
                 // font picker — open the rfd dialog / run FontStore IO,
                 // then refresh the picker's imported-family snapshot.
-                if crate::font_import_host::drain_font_requests(&mut self.host) {
+                let font_request_ran = crate::font_import_host::drain_font_requests(&mut self.host);
+                if font_request_ran {
+                    self.host.refresh_missing_fonts_prompt();
+                    self.request_redraw(true);
+                }
+                let missing_fonts_detection_ready = {
+                    let ui = &self.host.editor_state().editor_ui;
+                    ui.missing_fonts_pending_detect && ui.system_fonts_loaded
+                };
+                if missing_fonts_detection_ready {
+                    self.host.arm_missing_fonts_detection();
                     self.request_redraw(true);
                 }
                 if let Some(action) = self
@@ -1536,6 +1552,7 @@ impl DesktopApp {
             || !self.sub_agents.is_empty()
             || self.current_figma_import.is_some()
             || self.pending_figma_paste.is_some()
+            || self.pending_html_paste.is_some()
             || self.host.next_animation_deadline_ms().is_some()
             || self.update_probe.is_pending()
             || self.model_probe.is_pending()

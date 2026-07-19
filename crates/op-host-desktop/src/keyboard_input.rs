@@ -442,7 +442,10 @@ impl DesktopApp {
             return true;
         }
         if let Some(html) = payload.html.take() {
-            if let Some(result) = self.try_figma_clipboard_paste(html) {
+            if let Some(result) = self.try_figma_clipboard_paste(html.clone()) {
+                return result;
+            }
+            if let Some(result) = self.try_html_clipboard_paste(html) {
                 return result;
             }
         }
@@ -530,6 +533,52 @@ impl DesktopApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pending_figma_paste = None;
+                false
+            }
+        }
+    }
+
+    /// Probe pasted HTML (any non-Figma `text/html` payload) and
+    /// convert it to editable nodes on a worker thread — the CSS
+    /// cascade can be heavy and must not stall the keyboard handler.
+    /// `pump_html_clipboard_paste` applies the parsed nodes on a
+    /// later frame. `None` when the payload is blank (caller falls
+    /// back to the image / internal clipboard branches).
+    fn try_html_clipboard_paste(&mut self, html: String) -> Option<bool> {
+        if !html_paste_should_consume(&html) {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = op_html::import_html(&html, &op_html::HtmlImportOptions::default());
+            let _ = tx.send((result.nodes, result.warnings));
+        });
+        self.pending_html_paste = Some(rx);
+        // Consumed — the paste lands asynchronously (or decodes to
+        // nothing and is silently dropped, never raw-HTML-pasted).
+        Some(true)
+    }
+
+    /// Drain a finished HTML decode — inserts the nodes centred on
+    /// the viewport. Called once per frame by the redraw path.
+    pub(crate) fn pump_html_clipboard_paste(&mut self) -> bool {
+        let Some(rx) = self.pending_html_paste.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok((nodes, warnings)) => {
+                self.pending_html_paste = None;
+                for warning in &warnings {
+                    eprintln!("[import-html] warning: {warning}");
+                }
+                !nodes.is_empty()
+                    && self
+                        .host
+                        .paste_figma_nodes(nodes, self.viewport_width, self.viewport_height)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_html_paste = None;
                 false
             }
         }
@@ -686,6 +735,13 @@ impl DesktopApp {
         self.host.force_rotate_chat_owner();
         self.host.mark_editor_state_dirty();
     }
+}
+
+/// Whether a pasted `text/html` payload should be consumed by the
+/// HTML importer (any non-blank markup qualifies; Figma payloads are
+/// intercepted by `try_figma_clipboard_paste` first).
+pub(crate) fn html_paste_should_consume(html: &str) -> bool {
+    !html.trim().is_empty()
 }
 
 #[cfg(test)]

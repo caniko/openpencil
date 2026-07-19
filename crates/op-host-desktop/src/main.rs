@@ -201,6 +201,10 @@ struct DesktopApp {
     /// In-flight Figma CLIPBOARD paste decode (Cmd+V) — worker sends
     /// the parsed nodes; the redraw path pumps + inserts them.
     pending_figma_paste: Option<std::sync::mpsc::Receiver<Vec<jian_ops_schema::node::PenNode>>>,
+    /// In-flight clipboard HTML decode (non-Figma `text/html` paste):
+    /// worker thread sends `(nodes, warnings)`.
+    pending_html_paste:
+        Option<std::sync::mpsc::Receiver<(Vec<jian_ops_schema::node::PenNode>, Vec<String>)>>,
     /// Background AI-model discovery — probes the installed CLIs
     /// on a worker thread; its result is drained into
     /// `chat.available_models` on a later frame.
@@ -410,6 +414,7 @@ impl DesktopApp {
             design_md_test_provider: None,
             current_figma_import: None,
             pending_figma_paste: None,
+            pending_html_paste: None,
             model_probe,
             image_search: image_search_session::ImageSearchSession::new(),
             image_panel: image_panel_host::ImagePanelJobs::new(),
