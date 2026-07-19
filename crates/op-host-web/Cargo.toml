@@ -54,6 +54,7 @@ serde_json = { workspace = true, optional = true }
 # browser bundle. Optional + behind `canvaskit` with the rest of the document
 # pipeline deps so the wasm32-clean stub baseline never pulls it.
 op-figma = { path = "../op-figma", optional = true }
+op-html = { path = "../op-html" }
 # Step 1b §3.6: handwritten DOM mirror consumes accesskit::TreeUpdate (0.24).
 accesskit = "0.24"
 console_error_panic_hook = "0.1"

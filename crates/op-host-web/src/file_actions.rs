@@ -289,6 +289,21 @@ pub fn ingest_figma_bytes(bytes: &[u8], file_name: &str) -> Result<IngestedDoc, 
     })
 }
 
+/// Parse an HTML file into a fresh editable document. Browser imports cannot
+/// synchronously fetch external resources, so the converter records those as
+/// warnings and keeps the best-effort structured result.
+pub fn ingest_html_source(source: &str, file_name: &str) -> Result<IngestedDoc, String> {
+    let options = op_html::HtmlImportOptions {
+        document_name: Some(file_name.to_string()),
+        ..Default::default()
+    };
+    let imported = op_html::import_html_document(source, &options, None, None);
+    Ok(IngestedDoc {
+        state: EditorState::from_document(imported.document),
+        warnings: imported.warnings,
+    })
+}
+
 /// Carry app-level preferences from the state being replaced into a
 /// freshly ingested one. Port of the desktop's
 /// `persistence::preserve_app_preferences` (private there, so
@@ -323,6 +338,8 @@ pub enum DropKind {
     Document,
     /// Binary Figma `.fig` export — imported via `op_figma`.
     Figma,
+    /// HTML document — imported into editable auto-layout nodes.
+    Html,
     /// SVG file — parsed into editable nodes via `import_svg_named`.
     Svg,
     /// Raster image — inserted as an Image node carrying a data URL.
@@ -338,6 +355,8 @@ pub fn drop_kind(name: &str) -> DropKind {
         DropKind::Document
     } else if lower.ends_with(".fig") {
         DropKind::Figma
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        DropKind::Html
     } else if lower.ends_with(".svg") {
         DropKind::Svg
     } else if [".png", ".jpg", ".jpeg", ".gif", ".webp"]
@@ -576,5 +595,18 @@ mod tests {
         assert_eq!(kit.name, "Imported System");
         assert_eq!(kit.components.len(), 1);
         assert_eq!(kit.components[0].id, "card");
+    }
+
+    #[test]
+    fn drop_kind_recognizes_html() {
+        assert!(matches!(drop_kind("page.html"), DropKind::Html));
+        assert!(matches!(drop_kind("PAGE.HTM"), DropKind::Html));
+        assert!(matches!(drop_kind("a.svg"), DropKind::Svg));
+    }
+
+    #[test]
+    fn ingest_html_source_builds_state() {
+        let ingested = ingest_html_source("<h1>T</h1>", "page").expect("HTML import");
+        assert_eq!(ingested.state.doc.children.len(), 1);
     }
 }

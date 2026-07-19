@@ -834,6 +834,21 @@ fn handle_paste_event<C: RepaintContext + 'static>(
         // the paste rather than dumping raw HTML text (native parity).
         return;
     }
+    if !html.is_empty() {
+        evt.prevent_default();
+        let result = op_html::import_html(&html, &op_html::HtmlImportOptions::default());
+        for warning in &result.warnings {
+            console_warn(&format!("[import-html] {warning}"));
+        }
+        if !result.nodes.is_empty() {
+            let mut b = inner.borrow_mut();
+            let (w, h) = b.viewport_size();
+            if b.host_mut().paste_figma_nodes(result.nodes, w, h) {
+                let _ = b.repaint();
+            }
+        }
+        return;
+    }
     // System image/file paste: `clipboardData.files` carries pasted images
     // (PNG/JPEG from another app — Chrome names them `image.png`, so the
     // name-based `drop_kind` routes them to `insert_image`). Route through the
@@ -900,6 +915,29 @@ fn route_dropped_file<C: RepaintContext + 'static>(inner: &InnerRc<C>, file: web
             );
         }
         DropKind::Figma => ingest_figma_file(inner, file),
+        DropKind::Html => {
+            let inner2 = inner.clone();
+            read_file(
+                file,
+                ReadMode::Text,
+                Box::new(move |value| match value.as_string() {
+                    Some(source) => match file_actions::ingest_html_source(&source, &name) {
+                        Ok(ingested) => {
+                            for warning in &ingested.warnings {
+                                console_warn(&format!("[import-html] warning: {warning}"));
+                            }
+                            let mut b = inner2.borrow_mut();
+                            b.host_mut().install_ingested_state(ingested.state);
+                            let (w, h) = b.viewport_size();
+                            b.host_mut().fit_content_to_viewport(w, h);
+                            let _ = b.repaint();
+                        }
+                        Err(error) => console_error(&format!("[import-html] {name}: {error}")),
+                    },
+                    None => console_error("[import-html] dropped file read produced no text"),
+                }),
+            );
+        }
         DropKind::Svg => {
             let inner2 = inner.clone();
             read_file(
