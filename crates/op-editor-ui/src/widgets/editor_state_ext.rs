@@ -146,6 +146,20 @@ pub fn agent_settings_button(
 /// `op_editor_core::ExportDialogButton` for the modal export dialog's
 /// hover wash. The `Format` arm reuses [`export_format`] to canonicalise
 /// the widget `ExportFormat`.
+/// Map a missing-fonts modal hit onto the hoverable-control enum —
+/// `Some` for the per-row choose-file buttons and the dismiss action.
+pub fn missing_fonts_button(
+    hit: crate::widgets::missing_fonts_panel::MissingFontsHit,
+) -> Option<op_editor_core::missing_fonts::MissingFontsHover> {
+    use crate::widgets::missing_fonts_panel::MissingFontsHit;
+    use op_editor_core::missing_fonts::MissingFontsHover;
+    match hit {
+        MissingFontsHit::ChooseFile(row) => Some(MissingFontsHover::ChooseFile(row)),
+        MissingFontsHit::Dismiss => Some(MissingFontsHover::Dismiss),
+        MissingFontsHit::Inside | MissingFontsHit::Outside => None,
+    }
+}
+
 pub fn export_dialog_button(
     hit: crate::widgets::export_dialog::ExportDialogHit,
 ) -> op_editor_core::ExportDialogButton {

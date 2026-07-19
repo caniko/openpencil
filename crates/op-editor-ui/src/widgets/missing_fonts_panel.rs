@@ -132,9 +132,12 @@ pub(crate) fn paint_missing_font_row(
     theme: &Theme,
     ui: &EditorUiState,
     entry: &MissingFontEntry,
+    row_index: usize,
     row: Rect,
     divider: bool,
 ) {
+    let choose_hovered = ui.missing_fonts_hover
+        == Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row_index));
     if divider {
         cx.backend.fill_rect(
             Rect {
@@ -179,7 +182,13 @@ pub(crate) fn paint_missing_font_row(
             theme.primary,
         );
     } else {
-        cx.backend.fill_round_rect(action, 6.0, theme.muted);
+        // Hover wash mirrors the settings-card affordance (accent).
+        let bg = if choose_hovered {
+            theme.accent
+        } else {
+            theme.muted
+        };
+        cx.backend.fill_round_rect(action, 6.0, bg);
         paint_text(
             cx,
             translate(ui, "missingFonts.chooseFile"),
@@ -250,12 +259,18 @@ impl Widget for MissingFontsPanel<'_> {
                 &self.theme,
                 self.ui,
                 entry,
+                row,
                 modal_row_rect(panel, row),
                 row > 0,
             );
         }
 
         let dismiss = dismiss_rect(panel);
+        let dismiss_hovered = self.ui.missing_fonts_hover
+            == Some(op_editor_core::missing_fonts::MissingFontsHover::Dismiss);
+        if dismiss_hovered {
+            cx.backend.fill_round_rect(dismiss, 6.0, self.theme.muted);
+        }
         paint_text(
             cx,
             translate(self.ui, "missingFonts.dismiss"),
@@ -265,7 +280,11 @@ impl Widget for MissingFontsPanel<'_> {
             ),
             12.0,
             500,
-            self.theme.muted_foreground,
+            if dismiss_hovered {
+                self.theme.foreground
+            } else {
+                self.theme.muted_foreground
+            },
         );
     }
 

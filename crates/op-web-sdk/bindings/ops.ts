@@ -45,7 +45,7 @@ export type AppLifecycleHooks = { onLaunch: Array<Action> | null, onResume: Arra
 
 export type BlendMode = "normal" | "darken" | "multiply" | "screen" | "overlay" | "lighten" | "difference" | "hue" | "saturation" | "color" | "luminosity";
 
-export type BlurBody = { radius: number, };
+export type BlurBody = { radius: number, visible: boolean | null, };
 
 /**
  * Boolean that may also be an expression.
@@ -150,7 +150,13 @@ export type FontWeight = number | string;
  * Forward declaration of PenNode union — defined in `node/mod.rs`.
  * We accept `Vec<super::PenNode>` as children.
  */
-export type FrameNode = { children: Array<PenNode> | null, imageSearchQuery: string | null, reusable: boolean | null, slot: Array<string> | null, state: { [key in string]?: StateEntry } | null, bindings: { [key in string]?: Expression } | null, events: EventHandlers | null, lifecycle: NodeLifecycleHooks | null, semantics: SemanticsMeta | null, gestures: GestureOverrides | null, route: NavigationRoute | null, id: string, name: string | null, role: string | null, explain: string | null, x: number | null, y: number | null, rotation: number | null, opacity: NumberOrExpression | null, enabled: BoolOrExpression | null, visible: boolean | null, locked: boolean | null, flipX: boolean | null, flipY: boolean | null, theme: { [key in string]?: string } | null, width: SizingBehavior | null, height: SizingBehavior | null, layout: LayoutMode | null, gap: NumberOrExpression | null, padding: Padding | null, justifyContent: JustifyContent | null, alignItems: AlignItems | null, clipContent: boolean | null, cornerRadius: CornerRadius | null, fill: Array<PenFill> | null, stroke: PenStroke | null, effects: Array<PenEffect> | null, };
+export type FrameNode = { children: Array<PenNode> | null, imageSearchQuery: string | null, reusable: boolean | null, slot: Array<string> | null, state: { [key in string]?: StateEntry } | null, bindings: { [key in string]?: Expression } | null, events: EventHandlers | null, lifecycle: NodeLifecycleHooks | null, semantics: SemanticsMeta | null, gestures: GestureOverrides | null, route: NavigationRoute | null,
+/**
+ * Screen marker: this top-level frame is one screen of the app,
+ * mounted at the given route path ("/" = entry). Consumed only by
+ * the screen-projection pass; ignored elsewhere. Additive 1.x.
+ */
+screen: string | null, id: string, name: string | null, role: string | null, explain: string | null, x: number | null, y: number | null, rotation: number | null, opacity: NumberOrExpression | null, enabled: BoolOrExpression | null, visible: boolean | null, locked: boolean | null, flipX: boolean | null, flipY: boolean | null, theme: { [key in string]?: string } | null, width: SizingBehavior | null, height: SizingBehavior | null, layout: LayoutMode | null, gap: NumberOrExpression | null, padding: Padding | null, justifyContent: JustifyContent | null, alignItems: AlignItems | null, clipContent: boolean | null, cornerRadius: CornerRadius | null, fill: Array<PenFill> | null, stroke: PenStroke | null, effects: Array<PenEffect> | null, };
 
 export type GestureOverrides = {
 /**
@@ -266,7 +272,9 @@ export type Padding = number | [number, number] | [number, number, number, numbe
 
 export type PageLifecycleHooks = { onEnter: Array<Action> | null, onLeave: Array<Action> | null, onForeground: Array<Action> | null, onBackground: Array<Action> | null, };
 
-export type PathNode = { iconId: string | null, d: string | null, anchors: Array<PenPathAnchor> | null, closed: boolean | null, width: SizingBehavior | null, height: SizingBehavior | null, fill: Array<PenFill> | null, stroke: PenStroke | null, effects: Array<PenEffect> | null, state: { [key in string]?: StateEntry } | null, bindings: { [key in string]?: Expression } | null, events: EventHandlers | null, lifecycle: NodeLifecycleHooks | null, semantics: SemanticsMeta | null, gestures: GestureOverrides | null, route: NavigationRoute | null, id: string, name: string | null, role: string | null, explain: string | null, x: number | null, y: number | null, rotation: number | null, opacity: NumberOrExpression | null, enabled: BoolOrExpression | null, visible: boolean | null, locked: boolean | null, flipX: boolean | null, flipY: boolean | null, theme: { [key in string]?: string } | null, };
+export type PathFillRule = "nonzero" | "evenodd";
+
+export type PathNode = { iconId: string | null, d: string | null, anchors: Array<PenPathAnchor> | null, closed: boolean | null, fillRule: PathFillRule | null, width: SizingBehavior | null, height: SizingBehavior | null, fill: Array<PenFill> | null, stroke: PenStroke | null, effects: Array<PenEffect> | null, state: { [key in string]?: StateEntry } | null, bindings: { [key in string]?: Expression } | null, events: EventHandlers | null, lifecycle: NodeLifecycleHooks | null, semantics: SemanticsMeta | null, gestures: GestureOverrides | null, route: NavigationRoute | null, id: string, name: string | null, role: string | null, explain: string | null, x: number | null, y: number | null, rotation: number | null, opacity: NumberOrExpression | null, enabled: BoolOrExpression | null, visible: boolean | null, locked: boolean | null, flipX: boolean | null, flipY: boolean | null, theme: { [key in string]?: string } | null, };
 
 export type PenDocument = {
 /**
@@ -449,7 +457,7 @@ uniforms: { [key in string]?: ShaderUniformValue } | null, explain: string | nul
  */
 export type ShaderUniformValue = number | Array<number> | string;
 
-export type ShadowBody = { inner: boolean | null, offsetX: number, offsetY: number, blur: number, spread: number, color: string, };
+export type ShadowBody = { inner: boolean | null, visible: boolean | null, offsetX: number, offsetY: number, blur: number, spread: number, color: string, };
 
 export type SidedThickness = { top: number | null, right: number | null, bottom: number | null, left: number | null, };
 

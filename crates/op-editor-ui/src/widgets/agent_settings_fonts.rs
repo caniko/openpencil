@@ -132,6 +132,7 @@ pub(super) fn paint_fonts_tab(
                 theme,
                 ui,
                 entry,
+                row,
                 missing_row_rect(content, row),
                 row > 0,
             );

@@ -1267,6 +1267,9 @@ pub struct EditorUiState {
     pub missing_fonts_pending_detect: bool,
     /// Row whose choose-file action is waiting for a platform import drain.
     pub missing_fonts_import_row: Option<usize>,
+    /// Hovered missing-fonts control (modal button / settings row) —
+    /// cursor-move updates it, paint tints from it.
+    pub missing_fonts_hover: Option<crate::missing_fonts::MissingFontsHover>,
     /// Raised by `PropertyPanelAction::ImportFont` — the desktop host
     /// drains it to open a native font-file dialog + `FontStore::import`.
     pub pending_font_import: bool,
@@ -1595,6 +1598,7 @@ impl Default for EditorUiState {
             missing_fonts_modal_open: false,
             missing_fonts_pending_detect: false,
             missing_fonts_import_row: None,
+            missing_fonts_hover: None,
             pending_font_import: false,
             pending_font_remove: None,
             image_panel: crate::image_panel_state::ImagePanelState::default(),

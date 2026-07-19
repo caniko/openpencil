@@ -16,6 +16,15 @@ pub struct MissingFontEntry {
     pub resolved: bool,
 }
 
+/// Hoverable controls of the missing-fonts modal and the shared row
+/// component — cursor-move hover wash state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingFontsHover {
+    ChooseFile(usize),
+    RemoveImported(usize),
+    Dismiss,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MissingFontsPrompt {
     pub entries: Vec<MissingFontEntry>,

@@ -497,6 +497,23 @@ impl WidgetHostNative {
         {
             return true;
         }
+        // Missing-fonts modal — owns the cursor while open. Hover the
+        // per-row choose-file buttons + the dismiss action.
+        if self.editor_state.editor_ui.missing_fonts_modal_open {
+            use op_editor_ui::widgets::missing_fonts_panel::MissingFontsPanel;
+            let new_hover = MissingFontsPanel::for_editor(&self.editor_state)
+                .map(|panel| {
+                    let rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
+                    panel.hit_test(rect, Point2D::new(x, y))
+                })
+                .and_then(op_editor_ui::widgets::editor_state_ext::missing_fonts_button);
+            let changed = new_hover != self.editor_state.editor_ui.missing_fonts_hover;
+            if changed {
+                self.editor_state.editor_ui.missing_fonts_hover = new_hover;
+                self.mark_dirty();
+            }
+            return changed;
+        }
         if self.editor_state.editor_ui.agent_settings_open && self.update_agent_settings_hover(x, y)
         {
             return true;

@@ -23,6 +23,7 @@ impl WidgetHostNative {
             }
             MissingFontsHit::Dismiss => {
                 self.editor_state.editor_ui.missing_fonts_modal_open = false;
+                self.editor_state.editor_ui.missing_fonts_hover = None;
             }
             MissingFontsHit::Inside | MissingFontsHit::Outside => {}
         }
@@ -77,6 +78,7 @@ impl WidgetHostNative {
         self.editor_state.editor_ui.missing_fonts_prompt = Some(prompt);
         if all_resolved {
             self.editor_state.editor_ui.missing_fonts_modal_open = false;
+            self.editor_state.editor_ui.missing_fonts_hover = None;
         }
         self.mark_dirty();
     }
