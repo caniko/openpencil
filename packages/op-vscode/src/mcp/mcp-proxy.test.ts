@@ -141,11 +141,16 @@ test("a bad Host header is rejected 403", async () => {
   expect(status).toBe(403);
 });
 
-test("non-POST or non-/mcp paths are 404", async () => {
+test("non-POST on /mcp is 405 (streamable-http GET probe); unknown paths are 404", async () => {
   const pool = new PoolStub();
   const { port } = await startProxy(pool);
+  // Clients probe GET /mcp for the optional SSE stream — the spec's
+  // "unsupported" answer is 405; a 404 makes them mark the connection broken.
   const get = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "GET" });
-  expect(get.status).toBe(404);
+  expect(get.status).toBe(405);
+  expect(get.headers.get("allow")).toBe("POST");
+  const del = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "DELETE" });
+  expect(del.status).toBe(405);
   const wrong = await fetch(`http://127.0.0.1:${port}/other`, { method: "POST", body: "{}" });
   expect(wrong.status).toBe(404);
 });

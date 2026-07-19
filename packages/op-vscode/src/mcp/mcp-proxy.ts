@@ -61,8 +61,16 @@ export class McpProxy {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== "POST" || req.url !== "/mcp") {
+    if (req.url !== "/mcp") {
       res.writeHead(404).end();
+      return;
+    }
+    if (req.method !== "POST") {
+      // Streamable-HTTP clients probe GET /mcp for a server-initiated SSE
+      // stream (and DELETE for session teardown). The spec's answer for
+      // "unsupported" is 405 — a 404 here reads as "endpoint missing" and
+      // makes clients (e.g. Cursor) mark the whole connection broken.
+      res.writeHead(405, { allow: "POST" }).end();
       return;
     }
     // Loopback cross-site defenses: MCP clients send no Origin; a request that
