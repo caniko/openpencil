@@ -776,9 +776,24 @@ jobs:
           fi
           # First-run namespace claim; harmless "already exists" afterwards.
           bunx ovsx create-namespace openpencil -p "$OPENVSX_TOKEN" || true
+          # Per-file tolerance so a partial failure is retryable: a re-run
+          # skips targets that already landed ("already published") instead
+          # of aborting the loop on them, keeps going past a real failure to
+          # attempt every remaining platform, and fails the job at the end
+          # if anything genuinely failed.
+          failed=0
           for f in ./openpencil-vscode-"${OP_VERSION}"-*.vsix; do
-            bunx ovsx publish --packagePath "$f" -p "$OPENVSX_TOKEN"
+            if out="$(bunx ovsx publish --packagePath "$f" -p "$OPENVSX_TOKEN" 2>&1)"; then
+              printf '%s\n' "$out"
+            elif printf '%s' "$out" | grep -qiE "already (exists|published)"; then
+              echo "skipping ${f}: this target/version is already on open-vsx"
+            else
+              printf '%s\n' "$out"
+              echo "::error::open-vsx publish failed for ${f}"
+              failed=1
+            fi
           done
+          exit "$failed"
 
   release-draft:
     name: Create / update GitHub prerelease
