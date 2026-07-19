@@ -31,10 +31,12 @@ name: Rust release artifacts
 #                                                bundles usr/bin/op
 #           openpencil-desktop-<label>.tar.gz    raw binary (kept)
 #           op-cli-<label>.tar.gz                standalone CLI
-#   all     openpencil-vscode-<v>.vsix           VS Code extension (platform-
-#                                                neutral; daemon binary not
-#                                                embedded yet — packaging
-#                                                Plan 3)
+#   all     openpencil-vscode-<v>-<t>.vsix       VS Code extension, one per
+#                                                vsce target (darwin/linux/
+#                                                win32 × x64/arm64), each
+#                                                bundling the platform's
+#                                                op-host-web-server + the
+#                                                wasm/CanvasKit web assets
 #
 # Branding: productName "OpenPencil" everywhere (parity with
 # electron-builder.yml). The macOS bundle id stays com.zseven-w.openpencil
@@ -204,7 +206,7 @@ jobs:
             sleep "$delay"
           done
       - name: Build (host)
-        run: cargo build -p op-host-desktop -p op-cli --target ${{ matrix.target }} --release
+        run: cargo build -p op-host-desktop -p op-cli -p op-host-web-server --target ${{ matrix.target }} --release
       - name: Package archives (unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
@@ -491,6 +493,17 @@ jobs:
             openpencil-desktop-${{ matrix.label }}.zip
             op-cli-${{ matrix.label }}.tar.gz
             op-cli-${{ matrix.label }}.zip
+      # Raw daemon binary for the platform vsix (the extension's bundled
+      # runtime). No archive extension, so release-draft's flatten step
+      # never picks it up as a release file on its own.
+      - name: Upload daemon binary for the VS Code extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpencil-daemon-${{ matrix.label }}
+          path: |
+            target/${{ matrix.target }}/release/op-host-web-server
+            target/${{ matrix.target }}/release/op-host-web-server.exe
+          if-no-files-found: error
             OpenPencil-*-mac.dmg
             OpenPencil-*-win-setup.exe
             OpenPencil-*-linux.AppImage
@@ -641,22 +654,54 @@ jobs:
           if-no-files-found: error
 
   vsix:
-    name: Package VS Code extension
-    needs: version
+    name: Package VS Code extension (platform vsix with bundled runtime)
+    needs: [version, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     env:
       OP_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.94'
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web-sdk-release
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Install wasm-bindgen-cli (pinned to Cargo.lock)
+        shell: bash
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/{found=1; next} found && /^version = /{gsub(/[" ]/,"",$3); print $3; exit}' Cargo.lock)"
+          if [ -z "$version" ]; then
+            echo "::error::could not resolve wasm-bindgen version from Cargo.lock"
+            exit 1
+          fi
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - name: Install binaryen
+        run: |
+          BINARYEN_VERSION=version_123
+          curl -fsSL \
+            "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" \
+            | tar -xz
+          echo "${GITHUB_WORKSPACE}/binaryen-${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+      - name: Build web bundle (served by the bundled daemon)
+        run: bash tools/check-wasm-bundle.sh
+      - name: Download daemon binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: daemons
+          pattern: openpencil-daemon-*
       - name: Install package workspace dependencies
         working-directory: packages
         run: bun install --frozen-lockfile
-      - name: Check, build, and package
+      - name: Check and build extension
         working-directory: packages/op-vscode
         shell: bash
         run: |
@@ -668,9 +713,47 @@ jobs:
           # extension is not in the sync-version managed set yet).
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.OP_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
           cp ../../LICENSE LICENSE
-          bunx @vscode/vsce package --no-dependencies --allow-missing-repository \
-            --out "openpencil-vscode-${OP_VERSION}.vsix"
-      - name: Upload .vsix artifact
+      - name: Package platform vsix (daemon + web assets bundled)
+        working-directory: packages/op-vscode
+        shell: bash
+        run: |
+          set -euo pipefail
+          # build-matrix label -> vsce --target. The extension resolves
+          # bin/op-host-web-server[.exe] and web/{pkg,canvaskit} at runtime
+          # (restart-source.ts bundledDaemonPath / bundledDaemonEnv).
+          pairs=(
+            "macos-aarch64 darwin-arm64"
+            "macos-x86_64 darwin-x64"
+            "linux-x86_64 linux-x64"
+            "linux-aarch64 linux-arm64"
+            "windows-x86_64 win32-x64"
+            "windows-aarch64 win32-arm64"
+          )
+          for pair in "${pairs[@]}"; do
+            label="${pair% *}"
+            vs_target="${pair#* }"
+            exe="op-host-web-server"
+            case "$label" in windows-*) exe="op-host-web-server.exe";; esac
+            src="../../daemons/openpencil-daemon-${label}/${exe}"
+            if [ ! -f "$src" ]; then
+              echo "::error::missing daemon binary for ${label}: ${src}"
+              exit 1
+            fi
+            rm -rf bin web
+            mkdir -p bin web
+            cp "$src" "bin/${exe}"
+            chmod +x "bin/${exe}" || true
+            cp -R ../../crates/op-host-web/pkg web/pkg
+            # The .opt.wasm is a byte-identical intermediate of the served
+            # op_host_web_bg.wasm — shipping both doubles the vsix.
+            rm -f web/pkg/*.opt.wasm web/pkg/*.d.ts
+            cp -R ../../crates/op-host-web/assets/canvaskit web/canvaskit
+            bunx @vscode/vsce package --no-dependencies --allow-missing-repository \
+              --target "$vs_target" \
+              --out "openpencil-vscode-${OP_VERSION}-${vs_target}.vsix"
+          done
+          ls -la ./*.vsix
+      - name: Upload .vsix artifacts
         uses: actions/upload-artifact@v4
         with:
           name: openpencil-vscode-vsix
@@ -719,8 +802,8 @@ jobs:
             echo "::error::expected 3 SDK tarballs, found ${#sdk[@]}"
             exit 1
           fi
-          if [ "${#vsix[@]}" -ne 1 ]; then
-            echo "::error::expected 1 VS Code extension .vsix, found ${#vsix[@]}"
+          if [ "${#vsix[@]}" -ne 6 ]; then
+            echo "::error::expected 6 platform VS Code extension .vsix, found ${#vsix[@]}"
             exit 1
           fi
       - name: Generate CLI install scripts

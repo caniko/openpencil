@@ -28,6 +28,9 @@ export interface SpawnOptions {
    *  mismatching handshake version logs a warning (never a failure — dev
    *  builds drift), and the warning must NOT include the token. */
   expectedVersion?: string;
+  /** Extra environment for the daemon process, merged over the inherited
+   *  env (e.g. the vsix-bundled web asset directories). */
+  env?: Record<string, string>;
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -83,7 +86,10 @@ export class DaemonClient {
       opts.allowOrigin,
     ];
 
-    const child = spawn(exe, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(exe, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    });
     const timeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 
     // Every rejection path funnels through cleanup() so a rejected spawn (which

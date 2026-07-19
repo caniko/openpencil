@@ -12,7 +12,7 @@ import { McpProxy } from "./mcp/mcp-proxy";
 import { SessionRegistry } from "./session/session-registry";
 import { PenEditorProvider } from "./vscode/pen-editor-provider";
 import { isFigPath } from "./vscode/fig-source";
-import { resolveDaemonBinary } from "./vscode/restart-source";
+import { bundledDaemonEnv, resolveDaemonBinary } from "./vscode/restart-source";
 import { configureMcpCommand, removeMcpCommand } from "./vscode/configure-command";
 import { installSkillCommand, removeSkillCommand } from "./vscode/skill-command";
 import { generateCodeCommand, registerChatParticipant } from "./vscode/codegen-command";
@@ -102,7 +102,7 @@ async function assemble(
 ): Promise<void> {
   if (state.assembled) return; // idempotent guard
   const registry = new SessionRegistry();
-  const spawn = makeSpawn(logger);
+  const spawn = makeSpawn(logger, context.extensionPath);
   const pool = new DaemonPool(spawn, logger);
   const proxy = new McpProxy(pool, logger);
 
@@ -148,13 +148,15 @@ async function onTrustGranted(
   }
 }
 
-/** DaemonClient spawn factory: resolves the binary per file's workspace. */
-function makeSpawn(logger: DaemonLogger) {
+/** DaemonClient spawn factory: resolves the binary per file's workspace,
+ *  preferring a vsix-bundled runtime (binary + web assets) when this install
+ *  carries one. */
+function makeSpawn(logger: DaemonLogger, extensionRoot: string) {
   return async (filePath: string, allowOrigin: string) => {
     const uri = vscode.Uri.file(filePath);
     const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
     const configured = vscode.workspace.getConfiguration("openpencil").get<string>("dev.daemonPath");
-    const binary = resolveDaemonBinary(configured, folder?.uri.fsPath);
+    const binary = resolveDaemonBinary(configured, folder?.uri.fsPath, extensionRoot);
     if (!binary) throw new Error("op-host-web-server binary not found; set openpencil.dev.daemonPath");
     return DaemonClient.spawn({
       command: [binary],
@@ -165,6 +167,7 @@ function makeSpawn(logger: DaemonLogger) {
       allowOrigin,
       logger,
       expectedVersion: undefined,
+      env: bundledDaemonEnv(extensionRoot),
     });
   };
 }
