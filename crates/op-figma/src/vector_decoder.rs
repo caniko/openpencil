@@ -2,7 +2,16 @@
 //! Decodes the two Figma path blob formats — the opcode command
 //! stream (`fillGeometry` / `strokeGeometry`) and the vertex/segment
 //! vector-network table — into SVG path `d` strings.
+//!
+//! Vector-network regions follow the segment table as
+//! `u32 packed_style_and_winding; u32 loop_count;` followed by each
+//! loop's `u32 segment_count` and segment indices. The packed word is
+//! `style_id = raw >> 1`; its low bit is 1 for NONZERO and 0 for ODD.
+//! That winding interpretation was empirically confirmed against all
+//! 6,698 correlating region/fillGeometry samples in `tesla.fig`
+//! (6,698/6,698 matches; zero matches for the inverted mapping).
 
+use crate::corner_geometry::rounded_polyline_path;
 use crate::figma_types::BlobOrString;
 use crate::kiwi::FigValue;
 use jian_ops_schema::node::PathFillRule;
@@ -290,6 +299,64 @@ struct VnSegment {
     te: (f64, f64),
 }
 
+struct VnRegion {
+    _style_id: u32,
+    nonzero_winding: bool,
+    loops: Vec<Vec<usize>>,
+}
+
+struct VnPathContext<'a> {
+    segments: &'a [VnSegment],
+    vertices: &'a [(f64, f64)],
+    sx: f64,
+    sy: f64,
+    corner_radius: f64,
+    corner_smoothing: f64,
+}
+
+fn parse_vn_regions(
+    blob: &[u8],
+    mut off: usize,
+    region_count: usize,
+    segment_count: usize,
+) -> Option<Vec<VnRegion>> {
+    let mut regions = Vec::with_capacity(region_count);
+    for _ in 0..region_count {
+        let raw_style_and_winding = u32_le(blob, off)?;
+        let loop_count = u32_le(blob, off.checked_add(4)?)? as usize;
+        off = off.checked_add(8)?;
+        if loop_count > blob.len().saturating_sub(off) / 4 {
+            return None;
+        }
+
+        let mut loops = Vec::with_capacity(loop_count);
+        for _ in 0..loop_count {
+            let index_count = u32_le(blob, off)? as usize;
+            off = off.checked_add(4)?;
+            let index_bytes = index_count.checked_mul(4)?;
+            if index_bytes > blob.len().saturating_sub(off) {
+                return None;
+            }
+            let mut indices = Vec::with_capacity(index_count);
+            for _ in 0..index_count {
+                let index = u32_le(blob, off)? as usize;
+                if index >= segment_count {
+                    return None;
+                }
+                indices.push(index);
+                off = off.checked_add(4)?;
+            }
+            loops.push(indices);
+        }
+        regions.push(VnRegion {
+            _style_id: raw_style_and_winding >> 1,
+            nonzero_winding: raw_style_and_winding & 1 == 1,
+            loops,
+        });
+    }
+    Some(regions)
+}
+
 /// Decode the vertex/segment vector-network blob — the fallback when
 /// no geometry blob is present. Coordinates are scaled by
 /// `nodeSize / normalizedSize`; tangents are start/end-relative.
@@ -308,8 +375,8 @@ pub fn decode_vector_network_blob(
 
     let vertex_count = u32_le(blob, 0)? as usize;
     let segment_count = u32_le(blob, 4)? as usize;
-    let _region_count = u32_le(blob, 8)? as usize;
-    if vertex_count > 100_000 || segment_count > 100_000 {
+    let region_count = u32_le(blob, 8)? as usize;
+    if vertex_count > 100_000 || segment_count > 100_000 || region_count > 100_000 {
         return None;
     }
 
@@ -339,13 +406,15 @@ pub fn decode_vector_network_blob(
         let end = u32_le(blob, off + 16)? as usize;
         let te = (f32_le(blob, off + 20)?, f32_le(blob, off + 24)?);
         off += 28;
-        if start < vertex_count && end < vertex_count {
-            segments.push(VnSegment { start, end, ts, te });
+        if start >= vertex_count || end >= vertex_count {
+            return None;
         }
+        segments.push(VnSegment { start, end, ts, te });
     }
     if segments.is_empty() || vertices.is_empty() {
         return None;
     }
+    let regions = parse_vn_regions(blob, segments_end, region_count, segment_count)?;
 
     let norm = vector_data.get("normalizedSize");
     let norm_w = norm.and_then(|n| n.get_f64("x")).unwrap_or(1.0);
@@ -355,48 +424,31 @@ pub fn decode_vector_network_blob(
     let node_h = size.and_then(|s| s.get_f64("y")).unwrap_or(norm_h);
     let sx = if norm_w > 0.001 { node_w / norm_w } else { 1.0 };
     let sy = if norm_h > 0.001 { node_h / norm_h } else { 1.0 };
-
-    // Adjacency: segment indices keyed by their start vertex.
-    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (i, seg) in segments.iter().enumerate() {
-        adj.entry(seg.start).or_default().push(i);
-    }
+    let corner_radius = node.get_f64("cornerRadius").unwrap_or(0.0).max(0.0);
+    let corner_smoothing = node
+        .get_f64("cornerSmoothing")
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let context = VnPathContext {
+        segments: &segments,
+        vertices: &vertices,
+        sx,
+        sy,
+        corner_radius,
+        corner_smoothing,
+    };
 
     let mut parts: Vec<String> = Vec::new();
-    let mut used = vec![false; segments.len()];
-    for i in 0..segments.len() {
-        if used[i] {
-            continue;
-        }
-        let seg = &segments[i];
-        let sv = vertices[seg.start];
-        parts.push(format!("M{} {}", r(sv.0 * sx), r(sv.1 * sy)));
-        used[i] = true;
-        emit_segment(seg, &vertices, sx, sy, &mut parts);
-        let chain_start = seg.start;
-        let mut current = seg.end;
-        loop {
-            let mut found = false;
-            if let Some(nexts) = adj.get(&current) {
-                for &ni in nexts {
-                    if used[ni] {
-                        continue;
-                    }
-                    used[ni] = true;
-                    emit_segment(&segments[ni], &vertices, sx, sy, &mut parts);
-                    current = segments[ni].end;
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                break;
-            }
-        }
-        if current == chain_start {
-            parts.push("Z".to_string());
-        }
-    }
+    let fill_rule = if regions.is_empty() {
+        assemble_greedy_paths(&context, &mut parts)?;
+        None
+    } else {
+        assemble_region_paths(&regions, &context, &mut parts)?;
+        regions
+            .iter()
+            .any(|region| !region.nonzero_winding)
+            .then_some(PathFillRule::Evenodd)
+    };
 
     let result = parts.join(" ");
     if result.is_empty() {
@@ -404,25 +456,185 @@ pub fn decode_vector_network_blob(
     } else {
         Some(DecodedVectorPath {
             d: result,
-            fill_rule: None,
+            fill_rule,
         })
     }
 }
 
-fn emit_segment(
+fn assemble_greedy_paths(context: &VnPathContext<'_>, parts: &mut Vec<String>) -> Option<()> {
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, seg) in context.segments.iter().enumerate() {
+        adj.entry(seg.start).or_default().push(i);
+    }
+
+    let mut used = vec![false; context.segments.len()];
+    for i in 0..context.segments.len() {
+        if used[i] {
+            continue;
+        }
+        let seg = &context.segments[i];
+        let mut oriented = vec![(i, false)];
+        used[i] = true;
+        let chain_start = seg.start;
+        let mut current = seg.end;
+        loop {
+            let Some(nexts) = adj.get(&current) else {
+                break;
+            };
+            let Some(&next) = nexts.iter().find(|&&index| !used[index]) else {
+                break;
+            };
+            used[next] = true;
+            oriented.push((next, false));
+            current = context.segments[next].end;
+        }
+        emit_oriented_chain(&oriented, current == chain_start, context, parts)?;
+    }
+    Some(())
+}
+
+fn assemble_region_paths(
+    regions: &[VnRegion],
+    context: &VnPathContext<'_>,
+    parts: &mut Vec<String>,
+) -> Option<()> {
+    for region in regions {
+        for segment_indices in &region.loops {
+            let (&first_index, rest) = segment_indices.split_first()?;
+            let first = context.segments.get(first_index)?;
+            let reverse_first = if let Some(&second_index) = rest.first() {
+                let second = context.segments.get(second_index)?;
+                let forward_connects = first.end == second.start || first.end == second.end;
+                let reverse_connects = first.start == second.start || first.start == second.end;
+                if !forward_connects && !reverse_connects {
+                    return None;
+                }
+                !forward_connects
+            } else {
+                false
+            };
+            let loop_start = if reverse_first {
+                first.end
+            } else {
+                first.start
+            };
+            let mut oriented = vec![(first_index, reverse_first)];
+            let mut current = if reverse_first {
+                first.start
+            } else {
+                first.end
+            };
+
+            for &segment_index in rest {
+                let segment = context.segments.get(segment_index)?;
+                let reverse = if segment.start == current {
+                    false
+                } else if segment.end == current {
+                    true
+                } else {
+                    return None;
+                };
+                oriented.push((segment_index, reverse));
+                current = if reverse { segment.start } else { segment.end };
+            }
+            // Figma also uses region index lists for stroke-only open
+            // networks (for example a single line segment). Close only
+            // when the listed chain actually returns to its first vertex.
+            emit_oriented_chain(&oriented, current == loop_start, context, parts)?;
+        }
+    }
+    Some(())
+}
+
+fn emit_oriented_chain(
+    oriented: &[(usize, bool)],
+    closed: bool,
+    context: &VnPathContext<'_>,
+    parts: &mut Vec<String>,
+) -> Option<()> {
+    let &(first_index, reverse_first) = oriented.first()?;
+    let first = context.segments.get(first_index)?;
+    let first_vertex = if reverse_first {
+        first.end
+    } else {
+        first.start
+    };
+
+    if context.corner_radius > 0.0
+        && oriented
+            .iter()
+            .all(|&(index, _)| context.segments.get(index).is_some_and(segment_is_straight))
+    {
+        let mut points = Vec::with_capacity(oriented.len() + 1);
+        let start = context.vertices[first_vertex];
+        points.push((start.0 * context.sx, start.1 * context.sy));
+        for &(index, reverse) in oriented {
+            let segment = context.segments.get(index)?;
+            let end_index = if reverse { segment.start } else { segment.end };
+            let end = context.vertices[end_index];
+            points.push((end.0 * context.sx, end.1 * context.sy));
+        }
+        if closed {
+            points.pop();
+        }
+        if let Some(path) = rounded_polyline_path(
+            &points,
+            closed,
+            context.corner_radius,
+            context.corner_smoothing,
+        ) {
+            parts.push(path);
+            return Some(());
+        }
+    }
+
+    let sv = context.vertices[first_vertex];
+    parts.push(format!(
+        "M{} {}",
+        r(sv.0 * context.sx),
+        r(sv.1 * context.sy)
+    ));
+    for &(index, reverse) in oriented {
+        emit_oriented_segment(
+            context.segments.get(index)?,
+            reverse,
+            context.vertices,
+            context.sx,
+            context.sy,
+            parts,
+        );
+    }
+    if closed {
+        parts.push("Z".to_string());
+    }
+    Some(())
+}
+
+fn segment_is_straight(seg: &VnSegment) -> bool {
+    seg.ts.0.abs() < 1e-4 && seg.ts.1.abs() < 1e-4 && seg.te.0.abs() < 1e-4 && seg.te.1.abs() < 1e-4
+}
+
+fn emit_oriented_segment(
     seg: &VnSegment,
+    reverse: bool,
     vertices: &[(f64, f64)],
     sx: f64,
     sy: f64,
     parts: &mut Vec<String>,
 ) {
+    if reverse {
+        let reversed = VnSegment {
+            start: seg.end,
+            end: seg.start,
+            ts: seg.te,
+            te: seg.ts,
+        };
+        emit_oriented_segment(&reversed, false, vertices, sx, sy, parts);
+        return;
+    }
     let sv = vertices[seg.start];
     let ev = vertices[seg.end];
-    let straight = seg.ts.0.abs() < 1e-4
-        && seg.ts.1.abs() < 1e-4
-        && seg.te.0.abs() < 1e-4
-        && seg.te.1.abs() < 1e-4;
-    if straight {
+    if segment_is_straight(seg) {
         parts.push(format!("L{} {}", r(ev.0 * sx), r(ev.1 * sy)));
     } else {
         let cp1x = (sv.0 + seg.ts.0) * sx;

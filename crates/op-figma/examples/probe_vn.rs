@@ -10,6 +10,8 @@
 
 #[path = "../src/container.rs"]
 mod container;
+#[path = "../src/corner_geometry.rs"]
+mod corner_geometry;
 #[path = "../src/figma_types.rs"]
 mod figma_types;
 #[path = "../src/kiwi.rs"]
@@ -22,6 +24,12 @@ mod zip_reader;
 use figma_types::{parse_fig_file, BlobOrString};
 use kiwi::FigValue;
 use vector_decoder::decode_figma_vector_path;
+
+#[derive(Debug)]
+struct RegionRecord {
+    raw_style_and_winding: u32,
+    loops: Vec<Vec<u32>>,
+}
 
 fn u32_le(b: &[u8], o: usize) -> Option<u32> {
     b.get(o..o + 4)
@@ -39,6 +47,44 @@ fn keys(v: &FigValue) -> Vec<String> {
     }
 }
 
+fn parse_region_records(blob: &[u8]) -> Option<(usize, usize, Vec<RegionRecord>)> {
+    let (Some(vertices), Some(segments), Some(regions)) =
+        (u32_le(blob, 0), u32_le(blob, 4), u32_le(blob, 8))
+    else {
+        return None;
+    };
+    let mut off = 12usize
+        .checked_add(vertices as usize * 12)
+        .and_then(|value| value.checked_add(segments as usize * 28))?;
+    let region_start = off;
+    let mut decoded = Vec::new();
+    for _ in 0..regions as usize {
+        let raw_style_and_winding = u32_le(blob, off)?;
+        let loop_count = u32_le(blob, off + 4)?;
+        off += 8;
+        let mut loops = Vec::new();
+        for _ in 0..loop_count as usize {
+            let index_count = u32_le(blob, off)?;
+            off += 4;
+            let mut indices = Vec::with_capacity(index_count as usize);
+            for _ in 0..index_count as usize {
+                let segment_index = u32_le(blob, off)?;
+                if segment_index >= segments {
+                    return None;
+                }
+                indices.push(segment_index);
+                off += 4;
+            }
+            loops.push(indices);
+        }
+        decoded.push(RegionRecord {
+            raw_style_and_winding,
+            loops,
+        });
+    }
+    (off <= blob.len()).then_some((region_start, off, decoded))
+}
+
 fn dump_region_records(blob: &[u8], blob_index: usize, name: &str) -> bool {
     let (Some(vertices), Some(segments), Some(regions)) =
         (u32_le(blob, 0), u32_le(blob, 4), u32_le(blob, 8))
@@ -48,43 +94,9 @@ fn dump_region_records(blob: &[u8], blob_index: usize, name: &str) -> bool {
     if regions == 0 {
         return false;
     }
-    let Some(mut off) = 12usize
-        .checked_add(vertices as usize * 12)
-        .and_then(|value| value.checked_add(segments as usize * 28))
-    else {
+    let Some((region_start, off, decoded)) = parse_region_records(blob) else {
         return false;
     };
-    let region_start = off;
-    let mut decoded = Vec::new();
-    for region_index in 0..regions as usize {
-        let Some(winding) = u32_le(blob, off) else {
-            return false;
-        };
-        let Some(loop_count) = u32_le(blob, off + 4) else {
-            return false;
-        };
-        off += 8;
-        let mut loops = Vec::new();
-        for _ in 0..loop_count as usize {
-            let Some(index_count) = u32_le(blob, off) else {
-                return false;
-            };
-            off += 4;
-            let mut indices = Vec::with_capacity(index_count as usize);
-            for _ in 0..index_count as usize {
-                let Some(segment_index) = u32_le(blob, off) else {
-                    return false;
-                };
-                if segment_index >= segments {
-                    return false;
-                }
-                indices.push(segment_index);
-                off += 4;
-            }
-            loops.push(indices);
-        }
-        decoded.push((region_index, winding, loops));
-    }
     let Some(raw) = blob.get(region_start..off) else {
         return false;
     };
@@ -93,8 +105,14 @@ fn dump_region_records(blob: &[u8], blob_index: usize, name: &str) -> bool {
         blob.len()
     );
     println!("  raw region bytes: {raw:02x?}");
-    for (region_index, winding, loops) in decoded {
-        println!("  region[{region_index}] winding={winding} loops={loops:?}");
+    for (region_index, region) in decoded.into_iter().enumerate() {
+        let raw = region.raw_style_and_winding;
+        println!(
+            "  region[{region_index}] raw={raw} styleID={} lowBit={} loops={:?}",
+            raw >> 1,
+            raw & 1,
+            region.loops
+        );
     }
     println!("  exact consumption: {}", off == blob.len());
     true
@@ -122,12 +140,14 @@ fn main() {
     let mut printed = 0usize;
     let mut failing_blobs: Vec<(usize, usize, String, Vec<u8>)> = Vec::new();
     let mut region_samples = 0usize;
+    let mut correlation_nodes = 0usize;
+    let mut correlation_samples = 0usize;
+    let mut low_one_nonzero = 0usize;
+    let mut low_one_odd = 0usize;
+    let mut unpaired_regions = 0usize;
+    let mut unpaired_fill_geometry = 0usize;
 
     for nc in &decoded.node_changes {
-        let ty = nc.get_str("type").unwrap_or("");
-        if !["VECTOR", "STAR", "REGULAR_POLYGON", "BOOLEAN_OPERATION"].contains(&ty) {
-            continue;
-        }
         let Some(vd) = nc.get("vectorData") else {
             continue;
         };
@@ -137,14 +157,44 @@ fn main() {
         let Some(BlobOrString::Bytes(blob)) = decoded.blobs.get(idx as usize) else {
             continue;
         };
+        let ty = nc.get_str("type").unwrap_or("");
+
+        if let (Some((_, _, regions)), Some(fill_geometry)) =
+            (parse_region_records(blob), nc.get_array("fillGeometry"))
+        {
+            let rules: Vec<Option<&str>> = fill_geometry
+                .iter()
+                .map(|geometry| geometry.get_str("windingRule"))
+                .collect();
+            if !regions.is_empty() && rules.iter().any(Option::is_some) {
+                correlation_nodes += 1;
+                let paired = regions.len().min(rules.len());
+                unpaired_regions += regions.len() - paired;
+                unpaired_fill_geometry += rules.len() - paired;
+                for (region_index, (region, rule)) in regions.iter().zip(rules.iter()).enumerate() {
+                    let Some(rule) = rule else { continue };
+                    let low_bit = region.raw_style_and_winding & 1;
+                    let is_nonzero = rule.eq_ignore_ascii_case("NONZERO");
+                    let is_odd = rule.eq_ignore_ascii_case("ODD");
+                    correlation_samples += 1;
+                    low_one_nonzero += usize::from((low_bit == 1) == is_nonzero);
+                    low_one_odd += usize::from((low_bit == 1) == is_odd);
+                    if (low_bit == 1) != is_nonzero {
+                        println!(
+                            "CORRELATION MISMATCH node={:?} type={ty} blobIdx={} region={region_index} raw={} styleID={} lowBit={low_bit} windingRule={rule}",
+                            nc.get_str("name").unwrap_or(""),
+                            idx as usize,
+                            region.raw_style_and_winding,
+                            region.raw_style_and_winding >> 1,
+                        );
+                    }
+                }
+            }
+        }
 
         if dump_regions
             && region_samples < 5
-            && dump_region_records(
-                blob,
-                idx as usize,
-                nc.get_str("name").unwrap_or(""),
-            )
+            && dump_region_records(blob, idx as usize, nc.get_str("name").unwrap_or(""))
         {
             let fill_rules: Vec<&str> = nc
                 .get_array("fillGeometry")
@@ -268,6 +318,13 @@ fn main() {
     println!("  layout A (current) length-consistent: {layout_a_consistent}");
     println!("  layout B (V,S,R header) length-consistent: {layout_b_consistent}");
     println!("  neither: {neither}");
+    println!("\nwinding-bit correlation across all vector-network nodes:");
+    println!("  qualifying nodes: {correlation_nodes}");
+    println!("  correlating region/fillGeometry samples: {correlation_samples}");
+    println!("  lowBit=1 <-> NONZERO matches: {low_one_nonzero}/{correlation_samples}");
+    println!("  lowBit=1 <-> ODD matches: {low_one_odd}/{correlation_samples}");
+    println!("  unpaired regions: {unpaired_regions}");
+    println!("  unpaired fillGeometry entries: {unpaired_fill_geometry}");
 
     if dump_smallest > 0 {
         failing_blobs.sort_by_key(|(len, idx, _, _)| (*len, *idx));

@@ -3,10 +3,11 @@
 //! canonical `PenNode`s.
 
 use crate::common::{
-    common_props, extract_position, lookup_icon_by_name, map_corner_radius, normalize_angle,
-    resolve_height, resolve_width, round2, round3, ConversionContext, FigLayoutMode, IconStyle,
-    SKIPPED_TYPES,
+    common_props, extract_position, lookup_icon_by_name, map_corner_radius, map_corner_smoothing,
+    normalize_angle, resolve_height, resolve_width, round2, round3, ConversionContext,
+    FigLayoutMode, IconStyle, SKIPPED_TYPES,
 };
+use crate::corner_geometry::smoothed_rect_path;
 use crate::figma_types::FigVec2;
 use crate::instance::{apply_instance_overrides_cached, merge_symbol_props};
 use crate::kiwi::FigValue;
@@ -19,9 +20,7 @@ use crate::node_build::{
 };
 use crate::text_mapper::map_figma_text_props;
 use crate::tree::{guid_to_string, TreeNode};
-use crate::vector_decoder::{
-    compute_svg_path_bounds, decode_figma_vector_path, DecodedVectorPath,
-};
+use crate::vector_decoder::{compute_svg_path_bounds, decode_figma_vector_path, DecodedVectorPath};
 use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::ContainerProps;
 use jian_ops_schema::node::PenNode;
@@ -347,10 +346,39 @@ fn convert_rectangle(
 ) -> PenNode {
     let id = ctx.generate_id();
     let figma = &tree.figma;
+    let corner_radius = map_corner_radius(figma);
+    let smoothing = map_corner_smoothing(figma);
+    if smoothing > 0.0 {
+        let size = figma.get("size");
+        let width_px = size.and_then(|value| value.get_f64("x")).unwrap_or(0.0);
+        let height_px = size.and_then(|value| value.get_f64("y")).unwrap_or(0.0);
+        let radii = match corner_radius.as_ref() {
+            Some(jian_ops_schema::node::container::CornerRadius::Uniform(radius)) => {
+                Some([*radius; 4])
+            }
+            Some(jian_ops_schema::node::container::CornerRadius::PerCorner(radii)) => Some(*radii),
+            None => None,
+        };
+        if let Some(path_d) =
+            radii.and_then(|radii| smoothed_rect_path(width_px, height_px, radii, smoothing))
+        {
+            return path_node(
+                common_props(figma, id),
+                Some(path_d),
+                None,
+                None,
+                resolve_width(figma, parent_stack_mode, ctx),
+                resolve_height(figma, parent_stack_mode, ctx),
+                map_figma_fills(figma.get_array("fillPaints")),
+                map_figma_stroke(figma),
+                map_figma_effects(figma.get_array("effects")),
+            );
+        }
+    }
     let container = ContainerProps {
         width: Some(resolve_width(figma, parent_stack_mode, ctx)),
         height: Some(resolve_height(figma, parent_stack_mode, ctx)),
-        corner_radius: map_corner_radius(figma),
+        corner_radius,
         fill: map_figma_fills(figma.get_array("fillPaints")),
         stroke: map_figma_stroke(figma),
         effects: map_figma_effects(figma.get_array("effects")),
@@ -544,8 +572,10 @@ fn convert_vector(
         return build_icon_path_node(figma, id, parent_stack_mode, ctx, icon);
     }
 
-    let DecodedVectorPath { d: path_d, fill_rule } =
-        decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
+    let DecodedVectorPath {
+        d: path_d,
+        fill_rule,
+    } = decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
 
     if !path_d.is_empty() {
         let mut base = common_props(figma, id);

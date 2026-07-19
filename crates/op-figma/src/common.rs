@@ -226,6 +226,16 @@ pub fn map_corner_radius(figma: &FigValue) -> Option<CornerRadius> {
     }
 }
 
+/// Figma continuous-corner smoothing, clamped to its documented
+/// normalized range. Missing and non-positive values keep the native
+/// rounded-rectangle representation.
+pub fn map_corner_smoothing(figma: &FigValue) -> f64 {
+    figma
+        .get_f64("cornerSmoothing")
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0)
+}
+
 /// Assemble the shared base props spread into every PenNode.
 pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
     let (x, y) = extract_position(figma);
@@ -405,6 +415,14 @@ mod tests {
             map_corner_radius(&n),
             Some(CornerRadius::Uniform(8.0))
         ));
+    }
+
+    #[test]
+    fn corner_smoothing_is_clamped_to_normalized_range() {
+        let high = obj(vec![("cornerSmoothing", FigValue::Float(1.5))]);
+        let low = obj(vec![("cornerSmoothing", FigValue::Float(-0.5))]);
+        assert_eq!(map_corner_smoothing(&high), 1.0);
+        assert_eq!(map_corner_smoothing(&low), 0.0);
     }
 
     #[test]

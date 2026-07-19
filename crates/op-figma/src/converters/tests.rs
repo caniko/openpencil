@@ -55,6 +55,43 @@ fn fresh_ctx() -> ConversionContext {
 }
 
 #[test]
+fn smoothed_rounded_rectangle_imports_as_bounded_cubic_path() {
+    let tree = TreeNode {
+        figma: obj(vec![
+            ("type", FigValue::Str("ROUNDED_RECTANGLE".into())),
+            ("name", FigValue::Str("smooth card".into())),
+            (
+                "size",
+                obj(vec![
+                    ("x", FigValue::Float(100.0)),
+                    ("y", FigValue::Float(60.0)),
+                ]),
+            ),
+            ("cornerRadius", FigValue::Float(20.0)),
+            ("cornerSmoothing", FigValue::Float(1.0)),
+        ]),
+        children: vec![],
+    };
+    let mut ctx = fresh_ctx();
+
+    let node = convert_rectangle(&tree, None, &mut ctx);
+    let PenNode::Path(path) = node else {
+        panic!("expected smoothed rectangle to bake into a Path");
+    };
+    let d = path.d.expect("smoothed path data");
+    assert!(d.contains('C'), "squircle corners must be cubic: {d}");
+    assert!(
+        !d.contains('A'),
+        "squircle must not retain arc commands: {d}"
+    );
+    let bounds = compute_svg_path_bounds(&d).expect("smoothed path bounds");
+    assert_eq!(
+        (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y),
+        (0.0, 0.0, 100.0, 60.0)
+    );
+}
+
+#[test]
 fn convert_vector_uses_icon_lookup_when_set() {
     let _g = LOOKUP_GUARD.lock().unwrap();
     set_icon_lookup(|name| {

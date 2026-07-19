@@ -11,6 +11,7 @@ mod color;
 mod common;
 mod container;
 mod converters;
+mod corner_geometry;
 mod figma_types;
 mod image_resolver;
 mod instance;

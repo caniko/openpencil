@@ -154,6 +154,27 @@ fn vector_network_node(blob: &[u8]) -> (FigValue, Vec<BlobOrString>) {
     (node, vec![BlobOrString::Bytes(blob.to_vec())])
 }
 
+fn push_straight_segment(blob: &mut Vec<u8>, start: u32, end: u32) {
+    push_u32(blob, 0); // segment style
+    push_u32(blob, start);
+    push_f32(blob, 0.0);
+    push_f32(blob, 0.0); // start tangent
+    push_u32(blob, end);
+    push_f32(blob, 0.0);
+    push_f32(blob, 0.0); // end tangent
+}
+
+fn push_region(blob: &mut Vec<u8>, raw_style_and_winding: u32, loops: &[&[u32]]) {
+    push_u32(blob, raw_style_and_winding);
+    push_u32(blob, loops.len() as u32);
+    for indices in loops {
+        push_u32(blob, indices.len() as u32);
+        for &index in *indices {
+            push_u32(blob, index);
+        }
+    }
+}
+
 #[test]
 fn vn_layout_header_and_strides_decode() {
     let mut blob = Vec::new();
@@ -189,6 +210,76 @@ fn real_captured_blobs_decode() {
         let (node, blobs) = vector_network_node(blob);
         assert!(decode_vector_network_blob(&node, &blobs).is_some());
     }
+}
+
+#[test]
+fn vn_regions_assemble_closed_subpaths_in_region_order_and_expose_winding() {
+    let mut blob = Vec::new();
+    push_u32(&mut blob, 8); // vertexCount
+    push_u32(&mut blob, 8); // segmentCount
+    push_u32(&mut blob, 2); // regionCount
+    for (x, y) in [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (0.0, 10.0),
+        (20.0, 0.0),
+        (30.0, 0.0),
+        (30.0, 10.0),
+        (20.0, 10.0),
+    ] {
+        push_u32(&mut blob, 0); // vertex style
+        push_f32(&mut blob, x);
+        push_f32(&mut blob, y);
+    }
+    for (start, end) in [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+    ] {
+        push_straight_segment(&mut blob, start, end);
+    }
+    // Packed record: style_id = raw >> 1; low bit 1 = NONZERO, 0 = ODD.
+    push_region(&mut blob, 5, &[&[4, 5, 6, 7]]); // style 2, NONZERO
+    push_region(&mut blob, 2, &[&[0, 1, 2, 3]]); // style 1, ODD
+
+    let (node, blobs) = vector_network_node(&blob);
+    let decoded = decode_vector_network_blob(&node, &blobs).expect("regions decode");
+    assert_eq!(
+        decoded.d,
+        "M20 0 L30 0 L30 10 L20 10 L20 0 Z M0 0 L10 0 L10 10 L0 10 L0 0 Z"
+    );
+    assert_eq!(decoded.fill_rule, Some(PathFillRule::Evenodd));
+}
+
+#[test]
+fn vn_corner_radius_rounds_straight_region_vertices() {
+    let mut blob = Vec::new();
+    push_u32(&mut blob, 4);
+    push_u32(&mut blob, 4);
+    push_u32(&mut blob, 1);
+    for (x, y) in [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)] {
+        push_u32(&mut blob, 0);
+        push_f32(&mut blob, x);
+        push_f32(&mut blob, y);
+    }
+    for (start, end) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+        push_straight_segment(&mut blob, start, end);
+    }
+    push_region(&mut blob, 1, &[&[0, 1, 2, 3]]);
+    let (mut node, blobs) = vector_network_node(&blob);
+    node.set("cornerRadius", FigValue::Float(2.0));
+
+    let decoded = decode_vector_network_blob(&node, &blobs).expect("rounded network decodes");
+    assert_eq!(
+        decoded.d,
+        "M2 0 L8 0 Q10 0 10 2 L10 8 Q10 10 8 10 L2 10 Q0 10 0 8 L0 2 Q0 0 2 0 Z"
+    );
 }
 
 #[test]

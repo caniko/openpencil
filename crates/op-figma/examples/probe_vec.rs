@@ -8,6 +8,8 @@
 
 #[path = "../src/container.rs"]
 mod container;
+#[path = "../src/corner_geometry.rs"]
+mod corner_geometry;
 #[path = "../src/figma_types.rs"]
 mod figma_types;
 #[path = "../src/kiwi.rs"]
