@@ -374,6 +374,9 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     event_loop.exit();
                 }
             }
+            DesktopEvent::ImageDecodeReady => {
+                self.request_redraw(true);
+            }
             DesktopEvent::ForwardedFileReady => {
                 if self.drain_forwarded_files() {
                     self.request_redraw(true);
@@ -811,6 +814,11 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 if self.remote_images.pump() {
                     self.redraw_dirty = true;
                 }
+                if let Some(backend) = self.backend.as_mut() {
+                    if self.image_decodes.pump(backend) {
+                        self.redraw_dirty = true;
+                    }
+                }
                 // Drain background model discovery once it lands.
                 if self.model_probe.poll_into(self.host.editor_state_mut()) {
                     self.host.mark_editor_state_dirty();
@@ -965,6 +973,8 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     // picks them up).
                     || self.remote_images.is_pending()
                     || op_editor_ui::widgets::canvas_viewport_image::has_pending_remote_image_requests()
+                    || self.image_decodes.is_pending()
+                    || op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes()
                     || self
                         .iconify_job
                         .as_ref()
@@ -1592,6 +1602,8 @@ impl DesktopApp {
             || self.model_probe.is_pending()
             || self.image_search.is_pending()
             || self.image_panel.is_pending()
+            || self.image_decodes.is_pending()
+            || op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes()
             || self
                 .iconify_job
                 .as_ref()

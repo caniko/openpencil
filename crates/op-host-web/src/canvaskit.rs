@@ -252,7 +252,6 @@ extern "C" {
         this: &OpCk,
         image_id_lo: u32,
         image_id_hi: u32,
-        encoded: &[u8],
         x: f32,
         y: f32,
         w: f32,
@@ -263,6 +262,10 @@ extern "C" {
         opacity: f32,
         corner_radius: f32,
     );
+    #[wasm_bindgen(method, js_name = imageDecoded)]
+    fn image_decoded(this: &OpCk, image_id_lo: u32, image_id_hi: u32) -> bool;
+    #[wasm_bindgen(method, js_name = decodeImage)]
+    fn decode_image(this: &OpCk, image_id_lo: u32, image_id_hi: u32, encoded: &[u8]) -> bool;
     #[wasm_bindgen(method, js_name = measureText)]
     fn measure_text(this: &OpCk, t: &str, sz: f32) -> f32;
     #[wasm_bindgen(method, js_name = measureTextStyled)]
@@ -374,6 +377,22 @@ fn image_draw_mode_code(mode: ImageDrawMode) -> u8 {
     }
 }
 
+fn take_web_decode_batch(max: usize) -> Vec<(u64, std::sync::Arc<[u8]>)> {
+    use op_editor_ui::widgets::canvas_viewport_image::{
+        cached_bytes_for, mark_decode_done, take_pending_decodes,
+    };
+    take_pending_decodes(max)
+        .into_iter()
+        .filter_map(|id| match cached_bytes_for(id) {
+            Some(bytes) => Some((id, bytes)),
+            None => {
+                mark_decode_done(id);
+                None
+            }
+        })
+        .collect()
+}
+
 fn svg_path_even_odd(d: &str) -> bool {
     d.matches(['Z', 'z']).count() > 1
 }
@@ -435,6 +454,17 @@ impl CanvasKitBackend {
     /// Drop a previously imported font face by family name.
     pub fn remove_imported_font(&mut self, family: &str) {
         self.ck.remove_imported_font(family);
+    }
+
+    fn drain_pending_decodes(&mut self, max: usize) -> usize {
+        use op_editor_ui::widgets::canvas_viewport_image::mark_decode_done;
+        let batch = take_web_decode_batch(max);
+        for (id, bytes) in &batch {
+            self.ck
+                .decode_image(*id as u32, (*id >> 32) as u32, bytes.as_ref());
+            mark_decode_done(*id);
+        }
+        batch.len()
     }
 }
 
@@ -820,6 +850,11 @@ impl RenderBackend for CanvasKitBackend {
             );
         }
     }
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
+        let _ = encoded;
+        self.ck
+            .image_decoded(image_id as u32, (image_id >> 32) as u32)
+    }
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.draw_image_with_options_and_transform(
             rect,
@@ -877,7 +912,7 @@ impl RenderBackend for CanvasKitBackend {
         &mut self,
         rect: Rect,
         image_id: u64,
-        encoded: &[u8],
+        _encoded: &[u8],
         mode: ImageDrawMode,
         adjustments: ImageAdjustments,
         opacity: f32,
@@ -897,7 +932,6 @@ impl RenderBackend for CanvasKitBackend {
         self.ck.draw_image_with_options(
             image_id as u32,
             (image_id >> 32) as u32,
-            encoded,
             rect.origin.x,
             rect.origin.y,
             rect.size.x,
@@ -1038,6 +1072,7 @@ struct CkInner {
 
 impl CkInner {
     fn repaint(&mut self) {
+        self.backend.drain_pending_decodes(2);
         crate::web_chat::reconcile_models(self.host.editor_state_mut());
         // Detect a credential edit and enqueue the daemon sync BEFORE mirroring
         // the sync status below: a corrective edit clears the stale error in
@@ -1084,6 +1119,9 @@ impl CkInner {
             }
         }
         if self.host.layout_transition_active() {
+            crate::repaint_coalescer::request();
+        }
+        if op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes() {
             crate::repaint_coalescer::request();
         }
     }
@@ -1389,6 +1427,9 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 crate::repaint_coalescer::request();
             }
         }));
+    }
+    if op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes() {
+        crate::repaint_coalescer::request();
     }
     crate::web_fonts::drain_font_requests(&inner);
     crate::web_fonts::drain_missing_fonts_detection(&inner);
@@ -1914,6 +1955,55 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use op_editor_ui::widgets::canvas_viewport_image::{
+        has_pending_decodes, mark_decode_done, note_pending_decode, store_remote_image_bytes,
+        take_pending_decodes,
+    };
+    use std::sync::Mutex;
+
+    static DECODE_REGISTRY_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn web_decode_batch_takes_at_most_two_and_keeps_remaining_work_queued() {
+        let _guard = DECODE_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for stale in take_pending_decodes(usize::MAX) {
+            mark_decode_done(stale);
+        }
+        for id in 0xC100..0xC103 {
+            store_remote_image_bytes(id, vec![id as u8]);
+            note_pending_decode(id);
+        }
+
+        let batch = take_web_decode_batch(2);
+
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].0, 0xC100);
+        assert_eq!(batch[1].0, 0xC101);
+        assert!(has_pending_decodes());
+        for (id, _) in batch {
+            mark_decode_done(id);
+        }
+        for id in take_pending_decodes(usize::MAX) {
+            mark_decode_done(id);
+        }
+    }
+
+    #[test]
+    fn canvaskit_draw_path_only_reads_predecoded_images() {
+        let bridge = include_str!("op_ck_bridge.js");
+        let draw_start = bridge
+            .find("drawImageWithOptions(")
+            .expect("draw bridge method");
+        let draw_end = bridge[draw_start..]
+            .find("\n    },")
+            .expect("draw bridge end")
+            + draw_start;
+        let draw = &bridge[draw_start..draw_end];
+        assert!(draw.contains("cachedImage(imageIdLo, imageIdHi)"));
+        assert!(!draw.contains("MakeImageFromEncoded"));
+    }
 
     #[test]
     fn display_dpr_uses_a_two_x_quality_floor() {

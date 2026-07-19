@@ -315,6 +315,10 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.fill_dots(self.canvas, centers, radius, color);
     }
 
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
+        self.inner.image_decoded(image_id, encoded)
+    }
+
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.inner.draw_image(self.canvas, rect, image_id, encoded);
     }

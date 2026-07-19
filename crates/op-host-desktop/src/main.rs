@@ -39,6 +39,7 @@ mod git_session;
 mod git_ssh_host;
 mod html_import_session;
 mod iconify_host;
+mod image_decode_host;
 mod image_downscale;
 mod image_generate_host;
 mod image_panel_host;
@@ -81,6 +82,8 @@ const INITIAL_VIEWPORT_H: f32 = 900.0;
 #[derive(Clone, Copy, Debug)]
 enum DesktopEvent {
     McpWake,
+    /// A background image decode completed and can be installed.
+    ImageDecodeReady,
     /// A second launch forwarded a document to this instance (see
     /// `single_instance`). Wakes the loop to drain the forward queue + raise
     /// the window.
@@ -228,6 +231,8 @@ struct DesktopApp {
     /// canvas painter recorded as cache misses — fetched bytes land in
     /// the painter's shared byte cache so the next frame draws them.
     remote_images: remote_image_host::RemoteImageSession,
+    /// Two-thread local image raster decode pool.
+    image_decodes: image_decode_host::ImageDecodeHost,
     /// Cross-thread wake handle used by live MCP connection threads.
     mcp_wake_proxy: Option<EventLoopProxy<DesktopEvent>>,
     /// Paths forwarded by second-launch processes (`single_instance`),
@@ -429,6 +434,7 @@ impl DesktopApp {
             image_search: image_search_session::ImageSearchSession::new(),
             image_panel: image_panel_host::ImagePanelJobs::new(),
             remote_images: remote_image_host::RemoteImageSession::new(),
+            image_decodes: image_decode_host::ImageDecodeHost::new(),
             mcp_wake_proxy: None,
             forwarded_files: single_instance::ForwardQueue::default(),
             iconify_job: None,
@@ -1143,6 +1149,7 @@ fn main() {
     // Give the non-bundled binary a proper Dock name + icon.
     macos_app::apply();
     let mut app = DesktopApp::new(initial_file);
+    app.image_decodes.set_wake_proxy(mcp_wake_proxy.clone());
     app.mcp_wake_proxy = Some(mcp_wake_proxy);
     // Start accepting forwarded opens from second launches, sharing the queue
     // the UI thread drains in `drain_forwarded_files`.

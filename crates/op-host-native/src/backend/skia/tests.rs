@@ -125,33 +125,38 @@ fn image_adjustment_matrix_matches_ts_formula() {
 }
 
 #[test]
-fn image_cache_caches_decode_failure_without_redecoding() {
+fn image_decoded_is_false_before_install_and_true_after() {
     let mut be = NativeBackend::with_dpi(1.0);
-    // Garbage bytes fail to decode → None.
-    assert!(be.cached_image(7, b"not a real image").is_none());
-    assert_eq!(be.image_cache_len(), 1, "the failure is cached as None");
-    // A second call for the same id ignores the bytes entirely —
-    // proven by passing an empty slice and still getting None.
-    assert!(be.cached_image(7, b"").is_none());
-    assert_eq!(be.image_cache_len(), 1, "no second cache entry");
+    let png = encode_test_png(4, 3);
+    assert!(!be.image_decoded(7, &png));
+
+    let image = decode_raster(&png).expect("valid PNG rasterizes");
+    be.install_raster_image(7, image);
+
+    assert!(be.image_decoded(7, &png));
+    assert_eq!(
+        be.raster_image(7).expect("installed").dimensions(),
+        (4, 3).into()
+    );
 }
 
 #[test]
 fn image_cache_evicts_least_recently_used_over_byte_budget() {
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(4, 3);
-    be.cached_image(1, &png);
-    be.cached_image(2, &png);
-    be.cached_image(3, &png);
+    be.install_raster_image(1, decode_raster(&png).unwrap());
+    be.install_raster_image(2, decode_raster(&png).unwrap());
+    be.install_raster_image(3, decode_raster(&png).unwrap());
     assert_eq!(be.image_cache_len(), 3);
     // Touch id 1 so id 2 becomes the least-recently-used entry.
-    be.cached_image(1, &png);
-    // A budget that only fits two payloads must evict exactly the
+    be.raster_image(1);
+    let raster_bytes = 4 * 3 * 4;
+    // A budget that only fits two rasters must evict exactly the
     // LRU entry (id 2) — not the most recently touched (id 1).
-    be.evict_images_over(png.len() * 2, usize::MAX);
+    be.evict_images_over(raster_bytes * 2, usize::MAX);
     assert_eq!(be.image_cache_len(), 2, "one entry evicted");
-    be.cached_image(1, b"");
-    be.cached_image(3, b"");
+    assert!(be.raster_image(1).is_some());
+    assert!(be.raster_image(3).is_some());
     assert_eq!(
         be.image_cache_len(),
         2,
@@ -160,12 +165,11 @@ fn image_cache_evicts_least_recently_used_over_byte_budget() {
 }
 
 #[test]
-fn image_cache_entry_cap_bounds_failed_decodes() {
+fn image_cache_entry_cap_bounds_small_rasters() {
     let mut be = NativeBackend::with_dpi(1.0);
-    // Failed decodes carry ~no bytes, so only the entry cap bounds
-    // them. Insert past a small cap and evict.
+    let png = encode_test_png(1, 1);
     for id in 0..10u64 {
-        be.cached_image(id, b"garbage");
+        be.install_raster_image(id, decode_raster(&png).unwrap());
     }
     be.evict_images_over(usize::MAX, 4);
     assert_eq!(be.image_cache_len(), 4, "entry cap enforced");
@@ -173,12 +177,14 @@ fn image_cache_entry_cap_bounds_failed_decodes() {
 
 #[test]
 fn image_cache_decodes_a_valid_png() {
-    let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(4, 3);
-    let img = be.cached_image(1, &png).expect("valid PNG decodes");
+    let img = decode_raster(&png).expect("valid PNG decodes");
     assert_eq!(img.width(), 4);
     assert_eq!(img.height(), 3);
-    assert_eq!(be.image_cache_len(), 1);
+    assert!(
+        img.peek_pixels().is_some(),
+        "decode helper returns raster pixels"
+    );
 }
 
 #[test]
@@ -770,6 +776,7 @@ fn image_draw_respects_node_opacity() {
     // toward white (≈ 50% each); full opacity would leave it pure blue.
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(8, 8);
+    be.install_raster_image(4242, decode_raster(&png).unwrap());
     let mut surface = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
     surface.canvas().clear(skia_safe::Color::WHITE);
     let rect = Rect {

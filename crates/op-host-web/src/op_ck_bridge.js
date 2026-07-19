@@ -568,16 +568,20 @@ export async function opCkInit(canvasId) {
   const IMAGE_CACHE_BYTE_BUDGET = 384 * 1024 * 1024;
   const imageCache = new Map();
   let imageCacheBytes = 0;
-  const cachedEncodedImage = (lo, hi, encoded) => {
-    const key = String(hi >>> 0) + ':' + String(lo >>> 0);
+  const imageKey = (lo, hi) => String(hi >>> 0) + ':' + String(lo >>> 0);
+  const cachedImage = (lo, hi) => {
+    const key = imageKey(lo, hi);
     const hit = imageCache.get(key);
-    if (hit) {
-      imageCache.delete(key);
-      imageCache.set(key, hit);
-      return hit.image;
-    }
+    if (!hit) return null;
+    imageCache.delete(key);
+    imageCache.set(key, hit);
+    return hit.image;
+  };
+  const installDecodedImage = (lo, hi, encoded) => {
+    const key = imageKey(lo, hi);
+    if (imageCache.has(key)) return true;
     const image = CK.MakeImageFromEncoded(copyBytes(encoded));
-    if (!image) return null;
+    if (!image) return false;
     const bytes = encoded.byteLength || encoded.length || 0;
     imageCache.set(key, { image, bytes });
     imageCacheBytes += bytes;
@@ -589,7 +593,7 @@ export async function opCkInit(canvasId) {
       imageCacheBytes -= old.bytes;
       if (old.image && old.image.delete) old.image.delete();
     }
-    return image;
+    return true;
   };
 
   // Figma maps node-normalized coordinates to normalized image UV. Image
@@ -791,8 +795,16 @@ export async function opCkInit(canvasId) {
       offsetPath.delete(); path.delete();
     },
 
-    drawImageWithOptions(imageIdLo, imageIdHi, encoded, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius) {
-      const image = cachedEncodedImage(imageIdLo, imageIdHi, encoded);
+    imageDecoded(imageIdLo, imageIdHi) {
+      return imageCache.has(imageKey(imageIdLo, imageIdHi));
+    },
+
+    decodeImage(imageIdLo, imageIdHi, encoded) {
+      return installDecodedImage(imageIdLo, imageIdHi, encoded);
+    },
+
+    drawImageWithOptions(imageIdLo, imageIdHi, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius) {
+      const image = cachedImage(imageIdLo, imageIdHi);
       if (!image || !(w > 0) || !(h > 0)) return;
       const imageW = image.width();
       const imageH = image.height();

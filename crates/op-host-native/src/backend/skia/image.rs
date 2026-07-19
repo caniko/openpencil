@@ -85,14 +85,14 @@ impl NativeBackend {
         canvas: &skia_safe::Canvas,
         rect: Rect,
         id: u64,
-        encoded: &[u8],
+        _encoded: &[u8],
         mode: ImageDrawMode,
         adjustments: ImageAdjustments,
         opacity: f32,
         corner_radius: f32,
         transform: Option<[f32; 6]>,
     ) {
-        let Some(image) = self.cached_image(id, encoded) else {
+        let Some(image) = self.raster_image(id) else {
             return;
         };
         // Rounded image nodes clip the BITMAP, not just the

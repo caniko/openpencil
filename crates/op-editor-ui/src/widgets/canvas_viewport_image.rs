@@ -85,6 +85,61 @@ fn data_url_cache() -> &'static Mutex<DataUrlCache> {
     DATA_URL_CACHE.get_or_init(|| Mutex::new(DataUrlCache::new()))
 }
 
+const PENDING_DECODE_CAP: usize = 64;
+
+#[derive(Default)]
+struct PendingDecodeRegistry {
+    pending: std::collections::VecDeque<u64>,
+    in_flight: std::collections::HashSet<u64>,
+}
+
+static PENDING_DECODES: OnceLock<Mutex<PendingDecodeRegistry>> = OnceLock::new();
+
+fn pending_decodes() -> &'static Mutex<PendingDecodeRegistry> {
+    PENDING_DECODES.get_or_init(|| Mutex::new(PendingDecodeRegistry::default()))
+}
+
+pub fn note_pending_decode(id: u64) {
+    let Ok(mut reg) = pending_decodes().lock() else {
+        return;
+    };
+    if reg.in_flight.contains(&id)
+        || reg.pending.contains(&id)
+        || reg.pending.len() >= PENDING_DECODE_CAP
+    {
+        return;
+    }
+    reg.pending.push_back(id);
+}
+
+pub fn take_pending_decodes(max: usize) -> Vec<u64> {
+    let Ok(mut reg) = pending_decodes().lock() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(max.min(reg.pending.len()));
+    while out.len() < max {
+        let Some(id) = reg.pending.pop_front() else {
+            break;
+        };
+        reg.in_flight.insert(id);
+        out.push(id);
+    }
+    out
+}
+
+pub fn mark_decode_done(id: u64) {
+    if let Ok(mut reg) = pending_decodes().lock() {
+        reg.in_flight.remove(&id);
+    }
+}
+
+pub fn has_pending_decodes() -> bool {
+    pending_decodes()
+        .lock()
+        .map(|reg| !reg.pending.is_empty())
+        .unwrap_or(false)
+}
+
 /// Most remote misses a single frame can queue before the rest wait
 /// for the next paint (the host drains a few per frame anyway).
 const REMOTE_MISS_QUEUE_CAP: usize = 32;
@@ -201,6 +256,10 @@ pub fn has_cached_image_bytes(id: u64) -> bool {
         .unwrap_or(false)
 }
 
+pub fn cached_bytes_for(id: u64) -> Option<Arc<[u8]>> {
+    data_url_cache().lock().ok()?.get(id)
+}
+
 /// Whether paint has recorded remote misses no host has taken yet —
 /// the desktop host uses this to keep its event loop waking until the
 /// queue is drained.
@@ -277,10 +336,21 @@ pub(super) fn paint_image_node(
     src: &str,
 ) {
     let bytes = image_source_bytes(src, node.image_src_id);
+    let id = if node.image_src_id == 0 {
+        stable_image_source_id(src)
+    } else {
+        node.image_src_id
+    };
+    let decode_ready = bytes
+        .as_deref()
+        .is_some_and(|encoded| cx.backend.image_decoded(id, encoded));
+    if bytes.is_some() && !decode_ready {
+        note_pending_decode(id);
+    }
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);
-    if bytes.is_none() {
+    if !decode_ready {
         if let Some(fill) = node.fill {
             if let Some(radii) = per_corner {
                 cx.backend
@@ -333,12 +403,8 @@ pub(super) fn paint_image_node(
             cx.backend.restore();
         }
     }
-    if let Some(bytes) = bytes {
-        let id = if node.image_src_id == 0 {
-            stable_image_source_id(src)
-        } else {
-            node.image_src_id
-        };
+    if decode_ready {
+        let bytes = bytes.expect("decode-ready image has encoded bytes");
         if let Some(radii) = per_corner {
             cx.backend.save();
             cx.backend.clip_round_rect_per_corner(world_rect, radii);
@@ -394,6 +460,13 @@ fn data_url_cache_len_for_tests() -> usize {
 fn clear_remote_registry_for_tests() {
     if let Ok(mut reg) = remote_images().lock() {
         *reg = RemoteImageRegistry::default();
+    }
+}
+
+#[cfg(test)]
+fn clear_pending_decodes_for_tests() {
+    if let Ok(mut reg) = pending_decodes().lock() {
+        *reg = PendingDecodeRegistry::default();
     }
 }
 
@@ -462,6 +535,7 @@ mod tests {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_data_url_cache_for_tests();
         clear_remote_registry_for_tests();
+        clear_pending_decodes_for_tests();
         guard
     }
 
@@ -470,6 +544,7 @@ mod tests {
         clips: Vec<[f32; 4]>,
         image_corner_radii: Vec<f32>,
         image_transforms: Vec<Option<[f32; 6]>>,
+        decode_ready: Option<bool>,
     }
 
     impl RenderBackend for ImageRadiusCaptureBackend {
@@ -489,6 +564,9 @@ mod tests {
         fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {}
         fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
         fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
+        fn image_decoded(&mut self, _: u64, _: &[u8]) -> bool {
+            self.decode_ready.unwrap_or(true)
+        }
         fn draw_image_with_options_and_transform(
             &mut self,
             _: Rect,
@@ -567,6 +645,60 @@ mod tests {
         assert_eq!(data_url_cache_len_for_tests(), 1);
     }
 
+    #[test]
+    fn pending_decode_queue_dedupes_and_tracks_in_flight_lifecycle() {
+        let _guard = lock_statics();
+        note_pending_decode(41);
+        note_pending_decode(41);
+
+        assert!(has_pending_decodes());
+        assert_eq!(take_pending_decodes(8), vec![41]);
+        assert!(!has_pending_decodes());
+        note_pending_decode(41);
+        assert!(
+            take_pending_decodes(8).is_empty(),
+            "in-flight ids stay deduped"
+        );
+
+        mark_decode_done(41);
+        note_pending_decode(41);
+        assert_eq!(take_pending_decodes(8), vec![41]);
+    }
+
+    #[test]
+    fn pending_decode_queue_is_bounded() {
+        let _guard = lock_statics();
+        for id in 0..(PENDING_DECODE_CAP as u64 + 10) {
+            note_pending_decode(id);
+        }
+        assert_eq!(take_pending_decodes(usize::MAX).len(), PENDING_DECODE_CAP);
+    }
+
+    #[test]
+    fn undecoded_image_is_queued_without_drawing_encoded_bytes() {
+        let _guard = lock_statics();
+        let mut node = SceneNode::leaf("image", NodeKind::Rect);
+        node.image_src_id = 777;
+        let mut backend = ImageRadiusCaptureBackend {
+            decode_ready: Some(false),
+            ..Default::default()
+        };
+
+        paint_image_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Rect::xywh(0.0, 0.0, 100.0, 50.0),
+            1.0,
+            "data:image/png;base64,QUJD",
+        );
+
+        assert!(backend.image_transforms.is_empty());
+        assert_eq!(take_pending_decodes(8), vec![777]);
+        assert_eq!(cached_bytes_for(777).as_deref(), Some(b"ABC".as_slice()));
+    }
+
     /// Eviction is LRU by byte budget: a payload set over budget must
     /// drop the least-recently-USED entry, not the least-recently
     /// inserted one — with hundreds of images painting every frame,
@@ -609,7 +741,6 @@ mod tests {
         assert_eq!(taken, vec![(101, url.to_string())]);
         assert!(!has_pending_remote_image_requests());
 
-        // In-flight (taken) — paint still must not re-queue.
         assert!(image_source_bytes(url, 101).is_none());
         assert!(take_remote_image_requests(8).is_empty());
     }
@@ -625,7 +756,6 @@ mod tests {
 
         let bytes = image_source_bytes(url, 102).expect("cache hit after store");
         assert_eq!(bytes.as_ref(), b"PNGBYTES");
-        // Satisfied — nothing further queued.
         assert!(!has_pending_remote_image_requests());
     }
 

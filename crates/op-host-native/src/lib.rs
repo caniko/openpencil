@@ -97,7 +97,7 @@ pub mod preview;
     target_os = "ios",
     target_os = "android"
 ))]
-pub use backend::{to_jian_rect, NativeBackend, NativeFrameBackend};
+pub use backend::{decode_raster, to_jian_rect, NativeBackend, NativeFrameBackend};
 #[cfg(feature = "gl-host")]
 #[cfg(any(
     target_os = "macos",

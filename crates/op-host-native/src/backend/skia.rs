@@ -87,16 +87,8 @@ pub struct NativeBackend {
     /// jian-skia's `SkiaMeasure`, so geometry sees the same typeface
     /// and synthetic-bold branch the painter uses.
     font_resolver: jian_skia::FontResolver,
-    /// Image cache keyed by the stable source id. `cached_image`
-    /// wraps the encoded bytes once on first sight; later frames
-    /// reuse the cached `Image`. A decode failure is cached as `None`
-    /// so a corrupt payload isn't re-tried every frame. Eviction is
-    /// LRU by encoded-byte budget (see [`IMAGE_CACHE_BYTE_BUDGET`]) —
-    /// keeping handles alive preserves their skia `uniqueID`, which
-    /// keys skia's own decoded-bitmap/GPU-texture caches; evicting and
-    /// re-creating a handle mints a new id and forces a full re-decode
-    /// and re-upload on every paint. A small fixed entry cap caused
-    /// exactly that thrash on image-heavy Figma imports (700+ images).
+    /// Pre-rasterized image cache keyed by stable source id. Paint only
+    /// reads this cache; encoded bytes are decoded on desktop workers.
     image_cache: std::collections::HashMap<u64, ImageCacheEntry>,
     /// Sum of `ImageCacheEntry::bytes` across `image_cache`.
     image_cache_bytes: usize,
@@ -113,23 +105,24 @@ pub struct NativeBackend {
     shader_cache: jian_skia::ShaderCache,
 }
 
-/// One resident image: the (possibly failed) skia handle, the encoded
-/// payload size it pins, and its last-use tick for LRU eviction.
+/// One resident raster image and its LRU accounting.
 struct ImageCacheEntry {
-    image: Option<skia_safe::Image>,
+    image: skia_safe::Image,
     bytes: usize,
     last_used: u64,
 }
 
-/// Encoded-byte budget for the image cache. `skia_safe::Image` handles
-/// hold the ENCODED payload (decode is lazy, inside skia's own
-/// budgeted bitmap/texture caches), so this bounds encoded bytes —
-/// generous enough that an image-heavy document (e.g. a Figma import
-/// with hundreds of down-scaled bitmaps) keeps every handle resident.
+/// Raster-byte budget for decoded images (four bytes per pixel).
 const IMAGE_CACHE_BYTE_BUDGET: usize = 384 * 1024 * 1024;
-/// Safety cap on entry count — bounds accumulation of tiny / failed
-/// entries that contribute few bytes.
+/// Safety cap on entry count for tiny images.
 const IMAGE_CACHE_MAX_ENTRIES: usize = 4096;
+
+/// Decode encoded bytes and force their pixels into a CPU raster image.
+/// This function is called by host workers, never by paint.
+pub fn decode_raster(encoded: &[u8]) -> Option<skia_safe::Image> {
+    let lazy = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded))?;
+    lazy.make_raster_image(None, None)
+}
 
 const ROBOTO_TTF: &[u8] = include_bytes!("../../assets/Roboto-Regular.ttf");
 
@@ -611,40 +604,45 @@ impl NativeBackend {
     /// No-op; surface resize is owned by `SharedSkiaContext::resize`.
     pub fn resize(&mut self, _width: u32, _height: u32) {}
 
-    /// Wrap + cache the image for `id`. The first call wraps
-    /// `encoded`; later calls reuse the cached result (or cached
-    /// `None` on a decode failure) and ignore `encoded`. Eviction is
-    /// least-recently-used, bounded by [`IMAGE_CACHE_BYTE_BUDGET`]
-    /// encoded bytes and [`IMAGE_CACHE_MAX_ENTRIES`] entries (an
-    /// evicted image re-decodes on its next paint).
-    pub(crate) fn cached_image(&mut self, id: u64, encoded: &[u8]) -> Option<skia_safe::Image> {
+    /// Return an already-rasterized image without decoding.
+    pub fn raster_image(&mut self, id: u64) -> Option<skia_safe::Image> {
         self.image_cache_tick += 1;
         let tick = self.image_cache_tick;
-        if let Some(hit) = self.image_cache.get_mut(&id) {
-            hit.last_used = tick;
-            return hit.image.clone();
+        let hit = self.image_cache.get_mut(&id)?;
+        hit.last_used = tick;
+        Some(hit.image.clone())
+    }
+
+    /// Install worker-decoded pixels into the paint-side LRU.
+    pub fn install_raster_image(&mut self, id: u64, image: skia_safe::Image) {
+        self.image_cache_tick += 1;
+        let bytes = (image.width().max(0) as usize)
+            .saturating_mul(image.height().max(0) as usize)
+            .saturating_mul(4);
+        if let Some(old) = self.image_cache.remove(&id) {
+            self.image_cache_bytes = self.image_cache_bytes.saturating_sub(old.bytes);
         }
-        let decoded = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded));
-        // A failed decode pins no payload (the `Data` copy is dropped
-        // with the failed constructor), so it must not consume byte
-        // budget — the entry cap alone bounds negative-cache entries.
-        let bytes = if decoded.is_some() { encoded.len() } else { 0 };
-        self.image_cache_bytes += bytes;
+        self.image_cache_bytes = self.image_cache_bytes.saturating_add(bytes);
         self.image_cache.insert(
             id,
             ImageCacheEntry {
-                image: decoded.clone(),
+                image,
                 bytes,
-                last_used: tick,
+                last_used: self.image_cache_tick,
             },
         );
         self.evict_images_over(IMAGE_CACHE_BYTE_BUDGET, IMAGE_CACHE_MAX_ENTRIES);
-        decoded
+    }
+
+    /// Readiness hook used by `NativeFrameBackend`; never decodes.
+    pub fn image_decoded(&mut self, id: u64, encoded: &[u8]) -> bool {
+        let _ = encoded;
+        self.raster_image(id).is_some()
     }
 
     /// Evict least-recently-used image entries until the cache fits
     /// both `byte_budget` and `max_entries`. Separated from
-    /// [`Self::cached_image`] so tests can exercise eviction with
+    /// [`Self::install_raster_image`] so tests can exercise eviction with
     /// small budgets.
     fn evict_images_over(&mut self, byte_budget: usize, max_entries: usize) {
         while self.image_cache_bytes > byte_budget || self.image_cache.len() > max_entries {

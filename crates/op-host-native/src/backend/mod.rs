@@ -12,4 +12,4 @@ mod frame_backend;
 pub mod skia;
 
 pub use frame_backend::NativeFrameBackend;
-pub use skia::{enumerate_system_font_families, to_jian_rect, NativeBackend};
+pub use skia::{decode_raster, enumerate_system_font_families, to_jian_rect, NativeBackend};
