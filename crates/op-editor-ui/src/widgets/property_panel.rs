@@ -156,7 +156,8 @@ pub struct PropertyPanel {
     /// Which fill row the open fill-type dropdown targets (the Fill
     /// section stacks one type dropdown per fill).
     pub fill_type_picker_index: usize,
-    /// Whether the Effects "+" add-menu (Drop Shadow / Layer Blur) is
+    pub corner_expand_open: bool,
+    /// Whether the Effects "+" add-menu is
     /// open.
     pub effect_add_picker_open: bool,
     /// Whether the Interactions section's Navigate/Back/Remove popover
@@ -474,6 +475,7 @@ impl PropertyPanel {
         // AI Bundle would actually run against this frame.
         let mut codegen = state.codegen.clone();
         codegen.selection_snapshot = live_codegen_target_ids(state);
+        let corner_expand_open = ui.corner_expand_open && snapshot.supports_per_corner;
         Self {
             id: WidgetId::new(2000),
             snapshot,
@@ -510,6 +512,7 @@ impl PropertyPanel {
             fill_type,
             fill_type_picker: ui.fill_type_picker.clone(),
             fill_type_picker_index: ui.fill_type_picker_index,
+            corner_expand_open,
             effect_add_picker_open: ui.effect_add_picker_open,
             interaction_menu_open: ui.interaction_menu_open,
             interaction_menu_hover: ui.interaction_menu_hover,
@@ -656,7 +659,7 @@ impl PropertyPanel {
             self.padding_mode_popover_open,
         )
         .into_iter()
-        .find(|(a, _)| matches!(a, PropertyPanelAction::AddEffect))
+        .find(|(a, _)| matches!(a, PropertyPanelAction::ToggleEffectAddPicker))
         .map(|(_, r)| r)
     }
 
@@ -793,6 +796,9 @@ impl PropertyPanel {
                     .is_some_and(|v| v.warning.is_some()),
             opacity: caps.opacity,
             corner_radius: self.snapshot.has_corner_radius,
+            corner_per_corner: self.snapshot.supports_per_corner,
+            corner_expand: self.corner_expand_open,
+            path_fill_rule: self.snapshot.path_fill_rule,
             polygon_sides: self.snapshot.polygon_sides.is_some(),
             ellipse_arc: self.snapshot.ellipse_arc.is_some(),
             fill: caps.fill,
@@ -931,6 +937,15 @@ impl PropertyPanel {
         // toggle, otherwise clicking a row would just re-toggle.
         for (action, rect) in rects.into_iter().rev() {
             if (rect).contains(point) {
+                if let PropertyPanelAction::AdjustEffectParam { effect, field, .. } = &action {
+                    return Some(PropertyPanelAction::AdjustEffectParam {
+                        effect: *effect,
+                        field: *field,
+                        new_value: crate::widgets::property_panel_effects::slider_value(
+                            rect, point.x,
+                        ),
+                    });
+                }
                 return Some(action);
             }
         }
@@ -991,6 +1006,44 @@ impl PropertyPanel {
         )
     }
 
+    pub fn effect_radius_drag_action(
+        &self,
+        panel_rect: Rect,
+        effect_index: usize,
+        x: f32,
+    ) -> Option<PropertyPanelAction> {
+        if self.is_multi {
+            return None;
+        }
+        sections::action_button_rects_with_fill_picker(
+            self.scrolled_rect(panel_rect),
+            self.visible_sections(),
+            &self.snapshot.effects,
+            &self.snapshot.fills,
+            &self.snapshot.interactions,
+            self.fill_type_picker.open,
+            self.fill_type_picker_index,
+            self.font_picker.open,
+            self.font_weight_picker_open,
+            self.export_scale_picker_open,
+            self.export_format_picker_open,
+            self.padding_mode_popover_open,
+        )
+        .into_iter()
+        .find_map(|(action, rect)| match action {
+            PropertyPanelAction::AdjustEffectParam { effect, field, .. }
+                if effect == effect_index =>
+            {
+                Some(PropertyPanelAction::AdjustEffectParam {
+                    effect,
+                    field,
+                    new_value: crate::widgets::property_panel_effects::slider_value(rect, x),
+                })
+            }
+            _ => None,
+        })
+    }
+
     pub fn image_fill_popover_contains(&self, panel_rect: Rect, point: Point2D) -> bool {
         !self.is_multi
             && self.image_fill_popover_open
@@ -1028,6 +1081,7 @@ impl PropertyPanel {
             self.scrolled_rect(panel_rect),
             self.visible_sections(),
             &self.snapshot.fills,
+            &self.snapshot.effects,
         ) {
             if (rect).contains(point) {
                 return Some(focus);
@@ -1301,6 +1355,7 @@ impl Widget for PropertyPanel {
             &edit_ctx,
             &self.labels,
             self.snapshot.has_corner_radius,
+            self.corner_expand_open,
             x,
             y,
             w,
@@ -1435,7 +1490,6 @@ impl Widget for PropertyPanel {
                 &self.labels,
                 &self.snapshot.effects,
                 &edit_ctx,
-                self.effect_param_focus,
                 x,
                 y,
                 w,
@@ -1464,12 +1518,13 @@ impl Widget for PropertyPanel {
                 w,
             );
         }
-        // Effects "+" add-menu overlay (Drop Shadow / Layer Blur).
+        // Effects "+" add-menu overlay.
         if self.effect_add_picker_open {
             if let Some(add_rect) = self.effect_add_button_rect(scrolled) {
                 crate::widgets::property_panel_effects::paint_effect_add_menu(
                     cx,
                     &self.theme,
+                    &self.labels,
                     add_rect,
                     self.effect_add_menu_hover,
                 );
@@ -1651,6 +1706,14 @@ impl Widget for PropertyPanel {
                         true,
                         self.action_pressed == Some(i),
                     );
+                    if matches!(action, PropertyPanelAction::ToggleCornerExpand) {
+                        crate::widgets::property_panel_corner::paint_tooltip(
+                            cx,
+                            &self.theme,
+                            *r,
+                            self.labels.corner_per_corner,
+                        );
+                    }
                 }
             }
             if let Some(i) = self.action_pressed {

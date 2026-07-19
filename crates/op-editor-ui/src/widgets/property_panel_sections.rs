@@ -69,6 +69,8 @@ pub struct PropertyLabels {
     pub go_to_component: &'static str,
     pub detach_instance: &'static str,
     pub position: &'static str,
+    pub corner_per_corner: &'static str,
+    pub mixed: &'static str,
     pub flex_layout: &'static str,
     pub size: &'static str,
     pub layer: &'static str,
@@ -80,6 +82,11 @@ pub struct PropertyLabels {
     pub fill: &'static str,
     pub stroke: &'static str,
     pub effects: &'static str,
+    pub fill_rule_nonzero: &'static str,
+    pub fill_rule_evenodd: &'static str,
+    pub effects_add_shadow: &'static str,
+    pub effects_add_layer_blur: &'static str,
+    pub effects_add_background_blur: &'static str,
     pub export: &'static str,
     pub fill_width: &'static str,
     pub fill_height: &'static str,
@@ -120,6 +127,8 @@ impl PropertyLabels {
             go_to_component: pick("property.goToComponent", "Go to component"),
             detach_instance: pick("property.detachInstance", "Detach instance"),
             position: pick("size.position", "Position"),
+            corner_per_corner: pick("property.cornerPerCorner", "Edit corners independently"),
+            mixed: pick("property.mixed", "Mixed"),
             flex_layout: pick("layout.flexLayout", "Flex Layout"),
             size: pick("layout.dimensions", "Size"),
             layer: pick("appearance.layer", "Layer"),
@@ -131,6 +140,11 @@ impl PropertyLabels {
             fill: pick("fill.title", "Fill"),
             stroke: pick("stroke.title", "Stroke"),
             effects: pick("effects.title", "Effects"),
+            fill_rule_nonzero: pick("fill.ruleNonzero", "Nonzero"),
+            fill_rule_evenodd: pick("fill.ruleEvenodd", "Even-odd"),
+            effects_add_shadow: pick("effects.addShadow", "Shadow"),
+            effects_add_layer_blur: pick("effects.addLayerBlur", "Layer blur"),
+            effects_add_background_blur: pick("effects.addBackgroundBlur", "Background blur"),
             export: pick("export.title", "Export"),
             fill_width: pick("layout.fillWidth", "Fill Width"),
             fill_height: pick("layout.fillHeight", "Fill Height"),
@@ -543,6 +557,7 @@ pub fn paint_position_section(
     edit: &EditContext<'_>,
     labels: &PropertyLabels,
     show_radius: bool,
+    corner_expanded: bool,
     x: f32,
     y: f32,
     width: f32,
@@ -608,11 +623,24 @@ pub fn paint_position_section(
     if show_radius {
         // Corner radius (R) — editable input bound to Node::corner_radius
         // via PropertyFocus::PositionR.
-        let r_rect = Rect {
-            origin: Point2D::new(x + PAD_X + half_w + 8.0, y),
-            size: Point2D::new(half_w, INPUT_HEIGHT),
+        let (r_rect, toggle_rect) = if snapshot.supports_per_corner {
+            crate::widgets::property_panel_corner::uniform_and_toggle_rects(x, y, width)
+        } else {
+            (
+                Rect {
+                    origin: Point2D::new(x + PAD_X + half_w + 8.0, y),
+                    size: Point2D::new(half_w, INPUT_HEIGHT),
+                },
+                Rect::xywh(0.0, 0.0, 0.0, 0.0),
+            )
         };
-        let r_value = format!("{}", snapshot.corner_radius.round() as i32);
+        let mixed =
+            !crate::widgets::property_panel_corner::radii_are_uniform(snapshot.corner_radii);
+        let r_value = if mixed {
+            labels.mixed.to_string()
+        } else {
+            format!("{}", snapshot.corner_radius.round() as i32)
+        };
         paint_input_with_prefix_focused_state(
             cx,
             theme,
@@ -625,8 +653,29 @@ pub fn paint_position_section(
             edit.input_at(PropertyFocus::PositionR),
             edit.now_ms,
         );
+        if snapshot.supports_per_corner {
+            crate::widgets::property_panel_corner::paint_toggle(
+                cx,
+                theme,
+                toggle_rect,
+                corner_expanded,
+            );
+        }
     }
-    y += INPUT_HEIGHT + 12.0;
+    y += INPUT_HEIGHT;
+    if show_radius && corner_expanded {
+        crate::widgets::property_panel_corner::paint_grid(
+            cx,
+            theme,
+            edit,
+            snapshot.corner_radii,
+            x,
+            y,
+            width,
+        );
+        y += crate::widgets::property_panel_corner::CORNER_GRID_EXTRA_HEIGHT;
+    }
+    y += 12.0;
     paint_section_divider(cx, theme, x, y, width);
     y + SECTION_GAP
 }

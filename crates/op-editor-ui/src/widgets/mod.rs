@@ -48,6 +48,7 @@ pub mod path_anchor_context_menu;
 pub mod property_panel;
 pub mod property_panel_action;
 pub mod property_panel_code;
+pub mod property_panel_corner;
 pub mod property_panel_effects;
 pub mod property_panel_export;
 #[cfg(test)]
@@ -99,6 +100,8 @@ pub(crate) mod property_panel_text_input;
 #[cfg(test)]
 mod property_panel_text_tests;
 pub mod property_panel_typography;
+#[cfg(test)]
+mod property_panel_vector_fidelity_tests;
 pub mod property_panel_visibility;
 #[cfg(test)]
 mod property_panel_wash_tests;

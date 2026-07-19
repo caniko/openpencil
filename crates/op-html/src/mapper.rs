@@ -474,6 +474,7 @@ fn map_shadow(value: &str) -> Option<ShadowBody> {
     }
     Some(ShadowBody {
         inner: inner.then_some(true),
+        visible: None,
         offset_x: lengths[0],
         offset_y: lengths[1],
         blur: lengths.get(2).copied().unwrap_or(0.0),

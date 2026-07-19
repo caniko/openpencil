@@ -998,6 +998,7 @@ pub fn push_drop_shadow(node: &mut PenNode) -> bool {
     };
     effects.push(PenEffect::Shadow(ShadowBody {
         inner: None,
+        visible: None,
         offset_x: 0.0,
         offset_y: 4.0,
         blur: 8.0,
@@ -1015,7 +1016,23 @@ pub fn push_layer_blur(node: &mut PenNode) -> bool {
     };
     effects.push(PenEffect::Blur(jian_ops_schema::style::BlurBody {
         radius: 4.0,
+        visible: None,
     }));
+    true
+}
+
+/// Append a default Gaussian background blur. The optional visibility
+/// field stays absent because absence is the schema's semantic "visible".
+pub fn push_background_blur(node: &mut PenNode) -> bool {
+    let Some(effects) = node_effects_mut(node) else {
+        return false;
+    };
+    effects.push(PenEffect::BackgroundBlur(
+        jian_ops_schema::style::BlurBody {
+            radius: 10.0,
+            visible: None,
+        },
+    ));
     true
 }
 

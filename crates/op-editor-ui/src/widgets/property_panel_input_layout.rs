@@ -3,7 +3,7 @@
 //! Split from `property_panel_layout.rs` so the action-rect walker
 //! and input-rect walker stay under the repository file-size cap.
 
-use crate::widgets::property_panel::{FillSummary, PropertyPanelAction};
+use crate::widgets::property_panel::{EffectSummary, FillSummary, PropertyPanelAction};
 use crate::widgets::property_panel_fill::{fill_head_rects, fill_row_body_height};
 use crate::widgets::property_panel_fill_picker::{
     fill_type_at, fill_type_picker_rect, FILL_TYPE_COUNT, FILL_TYPE_ROW_HEIGHT,
@@ -57,6 +57,7 @@ pub fn editable_input_rects(
     panel_rect: Rect,
     visible: VisibleSections,
     fills: &[FillSummary],
+    effects: &[EffectSummary],
 ) -> Vec<(PropertyFocus, Rect)> {
     let x0 = panel_rect.origin.x;
     let w = panel_rect.size.x;
@@ -86,12 +87,17 @@ pub fn editable_input_rects(
         origin: Point2D::new(x0 + PAD_X, y),
         size: Point2D::new(half_w, INPUT_HEIGHT),
     };
-    let radius_rect = visible.corner_radius.then_some(Rect {
-        origin: Point2D::new(x0 + PAD_X + half_w + 8.0, y),
-        size: Point2D::new(half_w, INPUT_HEIGHT),
-    });
-    y += INPUT_HEIGHT + 12.0;
-    y += SECTION_GAP;
+    let radius_rect = visible
+        .corner_radius
+        .then_some(if visible.corner_per_corner {
+            crate::widgets::property_panel_corner::uniform_and_toggle_rects(x0, y, w).0
+        } else {
+            Rect {
+                origin: Point2D::new(x0 + PAD_X + half_w + 8.0, y),
+                size: Point2D::new(half_w, INPUT_HEIGHT),
+            }
+        });
+    y += INPUT_HEIGHT;
     let mut rects = vec![
         (PropertyFocus::PositionX, x_rect),
         (PropertyFocus::PositionY, y_rect),
@@ -100,6 +106,12 @@ pub fn editable_input_rects(
     if let Some(radius_rect) = radius_rect {
         rects.push((PropertyFocus::PositionR, radius_rect));
     }
+    if visible.corner_radius && visible.corner_expand {
+        rects.extend(crate::widgets::property_panel_corner::input_rects(x0, y, w));
+        y += crate::widgets::property_panel_corner::CORNER_GRID_EXTRA_HEIGHT;
+    }
+    y += 12.0;
+    y += SECTION_GAP;
     if visible.flex_layout {
         crate::widgets::property_panel_flex::push_flex_input_rects(
             &mut rects,
@@ -305,6 +317,19 @@ pub fn editable_input_rects(
             ));
         }
         rects.extend(stroke_side_input_rects(x0, y, w, visible.stroke_edit_mode));
+        y += crate::widgets::property_panel_stroke::stroke_section_body_height(
+            visible.stroke_edit_mode,
+        );
+        y += SECTION_GAP;
+    }
+    if visible.effects {
+        y += SECTION_HEADER_HEIGHT;
+        for (index, _) in effects.iter().enumerate() {
+            let row = crate::widgets::property_panel_effects::effect_row_rects(x0, y, w);
+            rects.push((PropertyFocus::EffectRadius(index), row.value));
+            y += crate::widgets::property_panel_effects::EFFECT_ROW_HEIGHT
+                + crate::widgets::property_panel_effects::EFFECT_ROW_GAP;
+        }
     }
     rects
 }
@@ -335,6 +360,11 @@ pub(crate) fn push_fill_action_rects(
             size: Point2D::new(28.0, SECTION_HEADER_HEIGHT),
         },
     ));
+    if visible.path_fill_rule.is_some() {
+        for (rule, rect) in crate::widgets::property_panel_fill::fill_rule_segment_rects(x0, y, w) {
+            out.push((PropertyPanelAction::SetFillRule(rule), rect));
+        }
+    }
     y += SECTION_HEADER_HEIGHT;
     let primary_stop_count = visible.gradient_stop_count;
     // One row per fill — mirror `paint_one_fill`'s y-walk.

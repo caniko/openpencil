@@ -231,12 +231,16 @@ fn polygon_selection_exposes_sides_layer_input() {
         origin: Point2D::new(0.0, 0.0),
         size: Point2D::new(280.0, 1200.0),
     };
-    let sides_rect =
-        sections::editable_input_rects(rect, visible_for(&panel), &panel.snapshot.fills)
-            .into_iter()
-            .find(|(focus, _)| *focus == op_editor_core::PropertyFocus::PolygonSides)
-            .map(|(_, r)| r)
-            .expect("polygon side input rect");
+    let sides_rect = sections::editable_input_rects(
+        rect,
+        visible_for(&panel),
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .find(|(focus, _)| *focus == op_editor_core::PropertyFocus::PolygonSides)
+    .map(|(_, r)| r)
+    .expect("polygon side input rect");
     let center = Point2D::new(
         sides_rect.origin.x + sides_rect.size.x / 2.0,
         sides_rect.origin.y + sides_rect.size.y / 2.0,
@@ -268,7 +272,12 @@ fn ellipse_selection_exposes_arc_layer_inputs() {
         origin: Point2D::new(0.0, 0.0),
         size: Point2D::new(280.0, 1200.0),
     };
-    let rects = sections::editable_input_rects(rect, visible_for(&panel), &panel.snapshot.fills);
+    let rects = sections::editable_input_rects(
+        rect,
+        visible_for(&panel),
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    );
     for focus in [
         op_editor_core::PropertyFocus::EllipseStart,
         op_editor_core::PropertyFocus::EllipseSweep,
@@ -288,7 +297,7 @@ fn ellipse_selection_exposes_arc_layer_inputs() {
 }
 
 #[test]
-fn effects_add_menu_hits_shadow_and_blur_rows() {
+fn effects_add_menu_hits_all_three_effect_kinds() {
     use crate::widgets::EffectAddMenuHit;
     let mut state = EditorState::sample();
     state.set_single_selection(NodeId::new("n10"));
@@ -306,7 +315,11 @@ fn effects_add_menu_hits_shadow_and_blur_rows() {
         .expect("effects header emits an AddEffect '+' rect");
     let menu = crate::widgets::property_panel_effects::effect_add_menu_rect(add_rect);
     let rows = crate::widgets::property_panel_effects::effect_add_menu_row_rects(menu);
-    assert_eq!(rows.len(), 2, "menu has Drop Shadow + Layer Blur rows");
+    assert_eq!(
+        rows.len(),
+        3,
+        "menu has Shadow + Layer Blur + Background Blur rows"
+    );
     // Hit-testing each row centre resolves to the matching add action.
     for (expected, row) in rows {
         let center = Point2D::new(
@@ -529,7 +542,12 @@ fn fill_width_keeps_both_numeric_inputs_visible_and_hittable() {
         origin: Point2D::new(0.0, 0.0),
         size: Point2D::new(280.0, 1200.0),
     };
-    let fill_rects = sections::editable_input_rects(rect, visible_for(&fill), &fill.snapshot.fills);
+    let fill_rects = sections::editable_input_rects(
+        rect,
+        visible_for(&fill),
+        &fill.snapshot.fills,
+        &fill.snapshot.effects,
+    );
     for focus in [PropertyFocus::SizeW, PropertyFocus::SizeH] {
         let target = fill_rects
             .iter()
@@ -590,8 +608,12 @@ fn both_dimensions_fill_keep_the_size_input_row() {
         (chk_y(&one) - chk_y(&both)).abs() < 0.01,
         "checkbox rows must not jump when both axes use fill"
     );
-    let both_inputs =
-        sections::editable_input_rects(rect, visible_for(&both), &both.snapshot.fills);
+    let both_inputs = sections::editable_input_rects(
+        rect,
+        visible_for(&both),
+        &both.snapshot.fills,
+        &both.snapshot.effects,
+    );
     for focus in [PropertyFocus::SizeW, PropertyFocus::SizeH] {
         assert!(
             both_inputs.iter().any(|(candidate, _)| *candidate == focus),
@@ -670,18 +692,23 @@ fn padding_mode_derives_from_values_and_drives_input_count() {
         let mut s = state_from(&json);
         s.set_single_selection(NodeId::new("f"));
         let panel = PropertyPanel::for_selection(&s).expect("frame panel");
-        sections::editable_input_rects(rect, visible_for(&panel), &panel.snapshot.fills)
-            .into_iter()
-            .filter(|(f, _)| {
-                matches!(
-                    f,
-                    PropertyFocus::PaddingTop
-                        | PropertyFocus::PaddingRight
-                        | PropertyFocus::PaddingBottom
-                        | PropertyFocus::PaddingLeft
-                )
-            })
-            .count()
+        sections::editable_input_rects(
+            rect,
+            visible_for(&panel),
+            &panel.snapshot.fills,
+            &panel.snapshot.effects,
+        )
+        .into_iter()
+        .filter(|(f, _)| {
+            matches!(
+                f,
+                PropertyFocus::PaddingTop
+                    | PropertyFocus::PaddingRight
+                    | PropertyFocus::PaddingBottom
+                    | PropertyFocus::PaddingLeft
+            )
+        })
+        .count()
     };
     // Single → 1 input, Axis → 2, Individual → 4.
     assert_eq!(padding_rects("12"), 1, "uniform padding → 1 input");
@@ -736,11 +763,16 @@ fn flex_advanced_rows_do_not_overlap_gap_modes() {
         })
         .map(|(_, r)| *r)
         .expect("space-around hit rect");
-    let padding_top = sections::editable_input_rects(rect, visible, &panel.snapshot.fills)
-        .into_iter()
-        .find(|(focus, _)| *focus == op_editor_core::PropertyFocus::PaddingTop)
-        .map(|(_, r)| r)
-        .expect("padding top input rect");
+    let padding_top = sections::editable_input_rects(
+        rect,
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .find(|(focus, _)| *focus == op_editor_core::PropertyFocus::PaddingTop)
+    .map(|(_, r)| r)
+    .expect("padding top input rect");
 
     assert!(
         padding_top.origin.y >= last_gap_mode.origin.y + last_gap_mode.size.y + 18.0,

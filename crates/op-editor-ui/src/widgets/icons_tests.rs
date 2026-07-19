@@ -68,6 +68,7 @@ fn every_variant_paints_at_least_one_primitive() {
     for icon in [
         Icon::Cursor,
         Icon::Square,
+        Icon::SquareRoundCorner,
         Icon::ChevronDown,
         Icon::Type,
         Icon::Frame,

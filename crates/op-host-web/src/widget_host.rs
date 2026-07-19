@@ -208,6 +208,7 @@ pub struct WidgetHost {
     /// Active image-fill adjustment slider drag in the floating
     /// property popover.
     image_adjustment_drag: Option<op_editor_core::ImageAdjustmentField>,
+    effect_radius_drag: Option<usize>,
     /// Active generated-code preview text selection drag.
     code_selection_drag: Option<CodeSelectionDragState>,
     /// Active chat input text selection drag.
@@ -507,6 +508,7 @@ impl WidgetHost {
             space_pan: false,
             chat_drag: None,
             image_adjustment_drag: None,
+            effect_radius_drag: None,
             code_selection_drag: None,
             chat_input_selection_drag: None,
             chat_text_selection_drag: None,

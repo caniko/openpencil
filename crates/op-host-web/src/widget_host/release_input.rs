@@ -128,6 +128,9 @@ impl WidgetHost {
         if self.image_adjustment_drag.take().is_some() {
             return true;
         }
+        if self.effect_radius_drag.take().is_some() {
+            return true;
+        }
         let was_dragging = self.drag.is_some();
         self.drag = None;
         was_dragging || pressed_released
@@ -184,6 +187,9 @@ impl WidgetHost {
             return true;
         }
         if self.image_adjustment_drag.take().is_some() {
+            return true;
+        }
+        if self.effect_radius_drag.take().is_some() {
             return true;
         }
         let was_dragging = self.drag.is_some();

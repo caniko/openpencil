@@ -82,6 +82,12 @@ impl WidgetHostNative {
             A::SetPropertyTab(tab) => {
                 self.editor_state.editor_ui.property_tab = tab;
             }
+            A::ToggleCornerExpand => {
+                self.editor_state.editor_ui.toggle_corner_expand();
+            }
+            A::SetFillRule(rule) => {
+                let _ = self.editor_state.set_selected_fill_rule(rule);
+            }
             A::SetFlexLayout(mode) => {
                 self.set_selected_layout_mode(mode);
             }
@@ -436,28 +442,31 @@ impl WidgetHostNative {
                 self.editor_state.editor_ui.pending_file_action =
                     Some(op_editor_core::editor_ui_state::FileAction::ExportImageConfirm);
             }
-            A::AddEffect => {
+            A::ToggleEffectAddPicker => {
                 self.editor_state.editor_ui.toggle_effect_add_picker();
             }
-            A::AddDropShadowEffect => {
-                self.editor_state.add_drop_shadow_to_selected();
+            A::AddEffect(kind) => {
+                use op_editor_ui::widgets::property_panel_snapshot::EffectKind;
+                match kind {
+                    EffectKind::Shadow => {
+                        self.editor_state.add_drop_shadow_to_selected();
+                    }
+                    EffectKind::LayerBlur => {
+                        self.editor_state.add_layer_blur_to_selected();
+                    }
+                    EffectKind::BackgroundBlur => {
+                        self.editor_state.add_background_blur_to_selected();
+                    }
+                }
                 self.editor_state.editor_ui.close_effect_add_picker();
             }
-            A::AddLayerBlur => {
-                self.editor_state.add_layer_blur_to_selected();
-                self.editor_state.editor_ui.close_effect_add_picker();
+            A::SetEffectVisible(index, visible) => {
+                let _ = self
+                    .editor_state
+                    .set_selected_effect_visible(index, visible);
             }
             A::RemoveEffect(index) => {
-                let id = self.editor_state.selection.anchor.clone();
-                if id.is_real() {
-                    self.editor_state.commit_history();
-                    let _ =
-                        self.editor_state
-                            .apply(op_editor_core::EditorCommand::RemoveNodeEffect {
-                                node_id: id,
-                                index: index as u32,
-                            });
-                }
+                let _ = self.editor_state.remove_selected_effect(index);
             }
             A::AdjustEffectParam {
                 effect,
@@ -466,7 +475,10 @@ impl WidgetHostNative {
             } => {
                 let id = self.editor_state.selection.anchor.clone();
                 if id.is_real() {
-                    self.editor_state.commit_history();
+                    if self.effect_radius_drag.is_none() {
+                        self.editor_state.commit_history();
+                    }
+                    self.effect_radius_drag = Some(effect);
                     let _ =
                         self.editor_state
                             .apply(op_editor_core::EditorCommand::SetEffectParam {

@@ -1,29 +1,47 @@
-//! Effects-section paint helpers for [`crate::widgets::PropertyPanel`].
-//!
-//! Card-style layout (one card per effect): title row with the
-//! `投影` label + remove `—` glyph, a 2-column grid of editable
-//! parameter inputs, and an optional colour row (`颜色` label +
-//! swatch + `rgba(...)` text). Geometry is shared with
-//! `property_panel_layout` so paint + hit-test never drift.
+//! Compact Effects rows + the Effects add-menu.
 
 use crate::theme::Theme;
 use crate::widgets::icons::{draw_icon, Icon};
-use crate::widgets::property_panel::{EffectSummary, PropertyPanelAction};
+use crate::widgets::property_panel::{EffectKind, EffectSummary, PropertyPanelAction};
 use crate::widgets::property_panel_inputs::{
-    paint_section_divider, paint_section_label_with_add, paint_text_input_view_value, INPUT_RADIUS,
-    PAD_X, SECTION_GAP,
-};
-use crate::widgets::property_panel_layout::{
-    effect_block_height, effect_color_rect, effect_has_color_row, effect_param_fields,
-    effect_param_rect, effect_param_row_count, EFFECT_CARD_GAP, EFFECT_CARD_PAD,
-    EFFECT_TITLE_ROW_HEIGHT,
+    paint_section_divider, paint_section_label_with_add, INPUT_RADIUS, PAD_X, SECTION_GAP,
 };
 use crate::widgets::property_panel_sections::{EditContext, PropertyLabels};
 use crate::widgets::PaintCx;
-use crate::{Color, Point2D, Rect, TextLayout};
-use op_editor_core::editor_ui_state::EffectParamFocus;
+use crate::{Point2D, Rect, TextLayout};
+use op_editor_core::PropertyFocus;
 
-// Paint-context + geometry args threaded through; a struct adds no gain.
+pub const EFFECT_ROW_HEIGHT: f32 = 36.0;
+pub const EFFECT_ROW_GAP: f32 = 6.0;
+
+#[derive(Debug, Clone, Copy)]
+pub struct EffectRowRects {
+    pub row: Rect,
+    pub slider: Rect,
+    pub value: Rect,
+    pub eye: Rect,
+    pub remove: Rect,
+}
+
+pub fn effect_row_rects(x: f32, y: f32, width: f32) -> EffectRowRects {
+    let row = Rect::xywh(x + PAD_X, y, width - PAD_X * 2.0, EFFECT_ROW_HEIGHT);
+    let remove = Rect::xywh(row.origin.x + row.size.x - 26.0, y + 6.0, 24.0, 24.0);
+    let eye = Rect::xywh(remove.origin.x - 26.0, y + 6.0, 24.0, 24.0);
+    let value = Rect::xywh(eye.origin.x - 42.0, y + 4.0, 38.0, 28.0);
+    let slider = Rect::xywh(value.origin.x - 58.0, y + 8.0, 54.0, 20.0);
+    EffectRowRects {
+        row,
+        slider,
+        value,
+        eye,
+        remove,
+    }
+}
+
+pub fn slider_value(rect: Rect, x: f32) -> f32 {
+    (((x - rect.origin.x) / rect.size.x).clamp(0.0, 1.0) * 100.0).round()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn paint_effects_section(
     cx: &mut PaintCx<'_>,
@@ -31,7 +49,6 @@ pub fn paint_effects_section(
     labels: &PropertyLabels,
     effects: &[EffectSummary],
     edit: &EditContext<'_>,
-    effect_focus: Option<EffectParamFocus>,
     x: f32,
     y: f32,
     width: f32,
@@ -40,65 +57,66 @@ pub fn paint_effects_section(
     if effects.is_empty() {
         row_y += 8.0;
     } else {
-        for (ei, eff) in effects.iter().enumerate() {
-            paint_effect_card(cx, theme, eff, ei, edit, effect_focus, x, row_y, width);
-            row_y += effect_block_height(eff.kind) + EFFECT_CARD_GAP;
+        for (index, effect) in effects.iter().enumerate() {
+            paint_effect_row(cx, theme, labels, effect, index, edit, x, row_y, width);
+            row_y += EFFECT_ROW_HEIGHT + EFFECT_ROW_GAP;
         }
     }
     paint_section_divider(cx, theme, x, row_y, width);
     row_y + SECTION_GAP
 }
 
-/// Rows of the Effects "+" add-menu (Drop Shadow / Layer Blur), in
-/// paint order. Shared by paint + hit-test.
-pub(crate) const EFFECT_ADD_MENU_ROWS: [(PropertyPanelAction, &str); 2] = [
-    (PropertyPanelAction::AddDropShadowEffect, "Drop Shadow"),
-    (PropertyPanelAction::AddLayerBlur, "Layer Blur"),
+pub(crate) const EFFECT_ADD_MENU_ROWS: [(PropertyPanelAction, EffectKind); 3] = [
+    (
+        PropertyPanelAction::AddEffect(EffectKind::Shadow),
+        EffectKind::Shadow,
+    ),
+    (
+        PropertyPanelAction::AddEffect(EffectKind::LayerBlur),
+        EffectKind::LayerBlur,
+    ),
+    (
+        PropertyPanelAction::AddEffect(EffectKind::BackgroundBlur),
+        EffectKind::BackgroundBlur,
+    ),
 ];
 
 pub(crate) const EFFECT_ADD_MENU_ROW_H: f32 = 30.0;
-pub(crate) const EFFECT_ADD_MENU_W: f32 = 148.0;
+pub(crate) const EFFECT_ADD_MENU_W: f32 = 160.0;
 
-/// The add-menu popover rect, anchored to the "+" button's rect
-/// (`add_rect` from the action walker). Drops just below the button,
-/// right-aligned to it.
 pub(crate) fn effect_add_menu_rect(add_rect: Rect) -> Rect {
     let h = EFFECT_ADD_MENU_ROWS.len() as f32 * EFFECT_ADD_MENU_ROW_H + 8.0;
     let right = add_rect.origin.x + add_rect.size.x;
-    Rect {
-        origin: Point2D::new(
-            right - EFFECT_ADD_MENU_W,
-            add_rect.origin.y + add_rect.size.y,
-        ),
-        size: Point2D::new(EFFECT_ADD_MENU_W, h),
-    }
+    Rect::xywh(
+        right - EFFECT_ADD_MENU_W,
+        add_rect.origin.y + add_rect.size.y,
+        EFFECT_ADD_MENU_W,
+        h,
+    )
 }
 
-/// `(action, row_rect)` for each add-menu row, given the menu rect.
 pub(crate) fn effect_add_menu_row_rects(menu: Rect) -> Vec<(PropertyPanelAction, Rect)> {
     EFFECT_ADD_MENU_ROWS
         .iter()
         .enumerate()
-        .map(|(i, (action, _))| {
-            let ry = menu.origin.y + 4.0 + i as f32 * EFFECT_ADD_MENU_ROW_H;
+        .map(|(index, (action, _))| {
             (
                 action.clone(),
-                Rect {
-                    origin: Point2D::new(menu.origin.x, ry),
-                    size: Point2D::new(menu.size.x, EFFECT_ADD_MENU_ROW_H),
-                },
+                Rect::xywh(
+                    menu.origin.x,
+                    menu.origin.y + 4.0 + index as f32 * EFFECT_ADD_MENU_ROW_H,
+                    menu.size.x,
+                    EFFECT_ADD_MENU_ROW_H,
+                ),
             )
         })
         .collect()
 }
 
-/// Paint the Effects "+" add-menu popover (Drop Shadow / Layer Blur)
-/// anchored to `add_rect`. Caller gates this on the picker being open.
-/// `hover` is the row index under the cursor (`None` = none), highlighted
-/// with the same `muted` row wash the other property-panel dropdowns use.
 pub(crate) fn paint_effect_add_menu(
     cx: &mut PaintCx<'_>,
     theme: &Theme,
+    labels: &PropertyLabels,
     add_rect: Rect,
     hover: Option<usize>,
 ) {
@@ -107,15 +125,17 @@ pub(crate) fn paint_effect_add_menu(
         .fill_round_rect(menu, INPUT_RADIUS, theme.popover);
     cx.backend
         .stroke_round_rect(menu, INPUT_RADIUS, theme.border, 1.0);
-    for (i, (_, label)) in EFFECT_ADD_MENU_ROWS.iter().enumerate() {
-        let ry = menu.origin.y + 4.0 + i as f32 * EFFECT_ADD_MENU_ROW_H;
-        if hover == Some(i) {
-            let row = Rect {
-                origin: Point2D::new(menu.origin.x + 4.0, ry),
-                size: Point2D::new(menu.size.x - 8.0, EFFECT_ADD_MENU_ROW_H),
-            };
+    for (index, (_, kind)) in EFFECT_ADD_MENU_ROWS.iter().enumerate() {
+        let row = Rect::xywh(
+            menu.origin.x + 4.0,
+            menu.origin.y + 4.0 + index as f32 * EFFECT_ADD_MENU_ROW_H,
+            menu.size.x - 8.0,
+            EFFECT_ADD_MENU_ROW_H,
+        );
+        if hover == Some(index) {
             cx.backend.fill_round_rect(row, 6.0, theme.muted);
         }
+        let label = effect_label(labels, *kind);
         let text = TextLayout::single_run(
             label,
             "system-ui",
@@ -125,231 +145,155 @@ pub(crate) fn paint_effect_add_menu(
         );
         cx.backend.draw_text(
             &text,
-            Point2D::new(menu.origin.x + 12.0, ry + EFFECT_ADD_MENU_ROW_H / 2.0 + 4.0),
+            Point2D::new(row.origin.x + 10.0, row.origin.y + 19.0),
         );
     }
 }
 
+fn effect_label(labels: &PropertyLabels, kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Shadow => labels.effects_add_shadow,
+        EffectKind::LayerBlur => labels.effects_add_layer_blur,
+        EffectKind::BackgroundBlur => labels.effects_add_background_blur,
+    }
+}
+
+fn effect_icon(kind: EffectKind) -> Icon {
+    match kind {
+        EffectKind::Shadow => Icon::Square,
+        EffectKind::LayerBlur => Icon::Focus,
+        EffectKind::BackgroundBlur => Icon::SquareRoundCorner,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn paint_effect_card(
+fn paint_effect_row(
     cx: &mut PaintCx<'_>,
     theme: &Theme,
-    eff: &EffectSummary,
-    effect_index: usize,
+    labels: &PropertyLabels,
+    effect: &EffectSummary,
+    index: usize,
     edit: &EditContext<'_>,
-    effect_focus: Option<EffectParamFocus>,
     x: f32,
     y: f32,
     width: f32,
 ) {
-    let card_x = x + PAD_X;
-    let card_w = width - PAD_X * 2.0;
-    let card_rect = Rect {
-        origin: Point2D::new(card_x, y),
-        size: Point2D::new(card_w, effect_block_height(eff.kind)),
+    let rects = effect_row_rects(x, y, width);
+    cx.backend.fill_round_rect(rects.row, 8.0, theme.muted);
+    cx.backend
+        .stroke_round_rect(rects.row, 8.0, theme.border, 1.0);
+    let foreground = if effect.visible {
+        theme.foreground
+    } else {
+        theme.muted_foreground
     };
-    cx.backend
-        .fill_round_rect(card_rect, INPUT_RADIUS, theme.muted);
-    cx.backend
-        .stroke_round_rect(card_rect, INPUT_RADIUS, theme.border, 1.0);
-
-    // Title row — effect-kind label on the left, remove `—` on the right.
-    let title = TextLayout::single_run(
-        eff.kind.label(),
-        "system-ui",
-        12.0,
-        (theme.foreground).to_jian(),
-        Point2D::new(0.0, 0.0),
-    );
-    cx.backend.draw_text(
-        &title,
-        Point2D::new(card_x + EFFECT_CARD_PAD + 4.0, y + 18.0),
-    );
     draw_icon(
         cx.backend,
-        Icon::Minus,
-        // Centre the 14px glyph in its RemoveEffect wash cell
-        // (card_x+card_w-EFFECT_CARD_PAD-18, y+4, size 20×(INPUT_HEIGHT-4)).
-        Point2D::new(
-            card_x + card_w - EFFECT_CARD_PAD - 18.0 + (20.0 - 14.0) / 2.0,
-            y + 4.0 + (EFFECT_TITLE_ROW_HEIGHT - 4.0 - 14.0) / 2.0,
-        ),
-        14.0,
-        theme.muted_foreground,
-        1.4,
+        effect_icon(effect.kind),
+        Point2D::new(rects.row.origin.x + 7.0, y + 10.0),
+        16.0,
+        foreground,
+        1.3,
     );
-
-    // Parameter grid.
-    let card_inner_y = y + EFFECT_CARD_PAD;
-    for (i, &(field, label)) in effect_param_fields(eff.kind).iter().enumerate() {
-        let col = i % 2;
-        let row = i / 2;
-        let rect = effect_param_rect(card_x, card_inner_y, card_w, col, row);
-        let focused = effect_focus
-            == Some(EffectParamFocus {
-                effect: effect_index,
-                field,
-            });
-        let caret = if focused && edit.caret_blink_on() {
-            Some(edit.caret.min(edit.draft.len()))
-        } else {
-            None
-        };
-        paint_param_input(
-            cx,
-            theme,
-            label,
-            eff.param_value(field),
-            focused,
-            edit.draft,
-            caret,
-            focused.then_some(edit.input),
-            edit.now_ms,
-            rect,
-        );
-    }
-
-    // Colour row (Shadow only).
-    if effect_has_color_row(eff.kind) {
-        let row_count = effect_param_row_count(eff.kind);
-        let cr = effect_color_rect(card_x, card_inner_y, card_w, row_count);
-        paint_effect_color_row(cx, theme, eff.color, cr);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_param_input(
-    cx: &mut PaintCx<'_>,
-    theme: &Theme,
-    label: &str,
-    value: f32,
-    focused: bool,
-    draft: &str,
-    caret: Option<usize>,
-    input: Option<&jian_core::text_input::TextInputState>,
-    now_ms: u64,
-    rect: Rect,
-) {
-    cx.backend
-        .fill_round_rect(rect, INPUT_RADIUS, theme.background);
-    if focused {
-        cx.backend
-            .stroke_round_rect(rect, INPUT_RADIUS, theme.primary, 1.5);
-    } else {
-        cx.backend
-            .stroke_round_rect(rect, INPUT_RADIUS, theme.border, 1.0);
-    }
-    // Label sits on the left at the muted-foreground colour; the
-    // editable value follows it left-aligned (matches Figma + the
-    // image-spec'd "X 4" pattern).
+    let label = effect_label(labels, effect.kind);
+    let max_label_w = (rects.slider.origin.x - (rects.row.origin.x + 27.0) - 4.0).max(1.0);
+    let measured = cx.backend.measure_text(label, 10.0).max(1.0);
+    let label_size = (10.0 * max_label_w / measured).clamp(8.0, 10.0);
     let label_layout = TextLayout::single_run(
         label,
         "system-ui",
-        12.0,
-        (theme.muted_foreground).to_jian(),
-        Point2D::new(0.0, 0.0),
-    );
-    let label_x = rect.origin.x + 10.0;
-    let baseline_y = rect.origin.y + 19.0;
-    cx.backend
-        .draw_text(&label_layout, Point2D::new(label_x, baseline_y));
-    let label_w = cx.backend.measure_text(label, 12.0);
-    let value_text_owned = format!("{value:.0}");
-    let text: &str = if focused {
-        draft
-    } else {
-        value_text_owned.as_str()
-    };
-    let value_x = label_x + label_w + 8.0;
-    if let (true, Some(input)) = (focused, input) {
-        paint_text_input_view_value(
-            cx,
-            theme,
-            input,
-            Rect {
-                origin: Point2D::new(value_x, rect.origin.y),
-                size: Point2D::new(
-                    (rect.origin.x + rect.size.x - 8.0 - value_x).max(0.0),
-                    rect.size.y,
-                ),
-            },
-            12.0,
-            0.0,
-            baseline_y,
-            now_ms,
-        );
-    } else {
-        let value_layout = TextLayout::single_run(
-            text,
-            "system-ui",
-            12.0,
-            (theme.foreground).to_jian(),
-            Point2D::new(0.0, 0.0),
-        );
-        cx.backend
-            .draw_text(&value_layout, Point2D::new(value_x, baseline_y));
-        if let Some(pos) = caret {
-            let caret_w = cx.backend.measure_text(&text[..pos.min(text.len())], 12.0);
-            cx.backend.fill_rect(
-                Rect {
-                    origin: Point2D::new(value_x + caret_w, rect.origin.y + 6.0),
-                    size: Point2D::new(1.5, rect.size.y - 12.0),
-                },
-                theme.foreground,
-            );
-        }
-    }
-}
-
-fn paint_effect_color_row(cx: &mut PaintCx<'_>, theme: &Theme, color: Color, rect: Rect) {
-    cx.backend
-        .fill_round_rect(rect, INPUT_RADIUS, theme.background);
-    cx.backend
-        .stroke_round_rect(rect, INPUT_RADIUS, theme.border, 1.0);
-    let label_layout = TextLayout::single_run(
-        "颜色",
-        "system-ui",
-        12.0,
-        (theme.muted_foreground).to_jian(),
-        Point2D::new(0.0, 0.0),
-    );
-    let label_x = rect.origin.x + 10.0;
-    let baseline_y = rect.origin.y + 19.0;
-    cx.backend
-        .draw_text(&label_layout, Point2D::new(label_x, baseline_y));
-    // Colour swatch — same alpha-checker treatment as gradient stops
-    // so a translucent shadow colour reads correctly.
-    let swatch = Rect {
-        origin: Point2D::new(rect.origin.x + 38.0, rect.origin.y + 7.0),
-        size: Point2D::new(16.0, 16.0),
-    };
-    jian_widgets::components::swatch::Swatch {
-        color,
-        radius: 3.0,
-        border: false,
-    }
-    .paint(
-        cx.backend,
-        swatch,
-        &crate::widgets::button::tokens_from_theme(theme),
-    );
-    // `rgba(r,g,b,a)` text after the swatch — matches the spec.
-    let text = format!(
-        "rgba({},{},{},{:.2})",
-        (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
-        color.a.clamp(0.0, 1.0)
-    );
-    let value_layout = TextLayout::single_run(
-        &text,
-        "system-ui",
-        12.0,
-        (theme.foreground).to_jian(),
+        label_size,
+        foreground.to_jian(),
         Point2D::new(0.0, 0.0),
     );
     cx.backend.draw_text(
-        &value_layout,
-        Point2D::new(rect.origin.x + 62.0, baseline_y),
+        &label_layout,
+        Point2D::new(rects.row.origin.x + 27.0, y + 22.0),
+    );
+
+    let value = effect.blur.clamp(0.0, 100.0);
+    let track = Rect::xywh(
+        rects.slider.origin.x,
+        rects.slider.origin.y + 8.0,
+        rects.slider.size.x,
+        4.0,
+    );
+    cx.backend.fill_round_rect(track, 2.0, theme.border);
+    cx.backend.fill_round_rect(
+        Rect::xywh(
+            track.origin.x,
+            track.origin.y,
+            track.size.x * value / 100.0,
+            4.0,
+        ),
+        2.0,
+        theme.primary,
+    );
+    cx.backend.fill_oval(
+        Rect::xywh(
+            track.origin.x + track.size.x * value / 100.0 - 4.0,
+            track.origin.y - 2.0,
+            8.0,
+            8.0,
+        ),
+        theme.primary_foreground,
+    );
+
+    let focus = PropertyFocus::EffectRadius(index);
+    cx.backend
+        .fill_round_rect(rects.value, 6.0, theme.background);
+    cx.backend.stroke_round_rect(
+        rects.value,
+        6.0,
+        if edit.focus == Some(focus) {
+            theme.ring
+        } else {
+            theme.border
+        },
+        if edit.focus == Some(focus) { 1.5 } else { 1.0 },
+    );
+    let fallback = format!("{}", value.round() as i32);
+    let text = edit.value_for(focus, &fallback);
+    if !edit.paint_input_view_at(
+        cx,
+        theme,
+        focus,
+        rects.value,
+        11.0,
+        7.0,
+        rects.value.origin.y + 18.0,
+    ) {
+        let layout = TextLayout::single_run(
+            text,
+            "system-ui",
+            11.0,
+            foreground.to_jian(),
+            Point2D::new(0.0, 0.0),
+        );
+        cx.backend.draw_text(
+            &layout,
+            Point2D::new(rects.value.origin.x + 7.0, rects.value.origin.y + 18.0),
+        );
+    }
+
+    draw_icon(
+        cx.backend,
+        if effect.visible {
+            Icon::Eye
+        } else {
+            Icon::EyeOff
+        },
+        Point2D::new(rects.eye.origin.x + 4.0, rects.eye.origin.y + 4.0),
+        16.0,
+        foreground,
+        1.3,
+    );
+    draw_icon(
+        cx.backend,
+        Icon::Close,
+        Point2D::new(rects.remove.origin.x + 5.0, rects.remove.origin.y + 5.0),
+        14.0,
+        theme.muted_foreground,
+        1.3,
     );
 }

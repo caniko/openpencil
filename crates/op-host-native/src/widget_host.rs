@@ -261,6 +261,7 @@ pub struct WidgetHostNative {
     /// Active image-fill adjustment slider drag in the floating
     /// property popover.
     pub(in crate::widget_host) image_adjustment_drag: Option<op_editor_core::ImageAdjustmentField>,
+    pub(in crate::widget_host) effect_radius_drag: Option<usize>,
     /// Active generated-code preview text selection drag.
     pub(in crate::widget_host) code_selection_drag: Option<CodeSelectionDragState>,
     /// Active chat input text selection drag.
@@ -689,6 +690,7 @@ impl WidgetHostNative {
             component_browser_drag: None,
             icon_picker_drag: None,
             image_adjustment_drag: None,
+            effect_radius_drag: None,
             code_selection_drag: None,
             chat_input_selection_drag: None,
             chat_text_selection_drag: None,

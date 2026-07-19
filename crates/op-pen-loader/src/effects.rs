@@ -50,7 +50,7 @@ pub fn blur_from_canonical(node: &PenNode) -> Option<f32> {
         .iter()
         .rev()
         .find_map(|e| match e {
-            PenEffect::Blur(b) if b.radius > 0.0 => Some(b.radius),
+            PenEffect::Blur(b) if b.visible != Some(false) && b.radius > 0.0 => Some(b.radius),
             _ => None,
         })
 }
@@ -61,7 +61,9 @@ pub fn background_blur_from_canonical(node: &PenNode) -> Option<f32> {
         .iter()
         .rev()
         .find_map(|e| match e {
-            PenEffect::BackgroundBlur(b) if b.radius > 0.0 => Some(b.radius),
+            PenEffect::BackgroundBlur(b) if b.visible != Some(false) && b.radius > 0.0 => {
+                Some(b.radius)
+            }
             _ => None,
         })
 }
@@ -153,13 +155,16 @@ pub fn shadows_from_canonical(node: &PenNode) -> Vec<ShadowPayload> {
             // were first imported as opaque black, then dropped).
             // Genuinely unparseable colours still drop the shadow
             // rather than fabricate a wrong one.
-            PenEffect::Shadow(s) => parse_css_color(&s.color).map(|color| ShadowPayload {
-                offset_x: s.offset_x,
-                offset_y: s.offset_y,
-                blur: s.blur,
-                color,
-                inner: s.inner.unwrap_or(false),
-            }),
+            PenEffect::Shadow(s) if s.visible != Some(false) => {
+                parse_css_color(&s.color).map(|color| ShadowPayload {
+                    offset_x: s.offset_x,
+                    offset_y: s.offset_y,
+                    blur: s.blur,
+                    color,
+                    inner: s.inner.unwrap_or(false),
+                })
+            }
+            PenEffect::Shadow(_) => None,
             PenEffect::Blur(_) | PenEffect::BackgroundBlur(_) => None,
         })
         .collect()
@@ -339,6 +344,23 @@ mod tests {
             Some(Effect::BackgroundBlur { radius: 12.0 })
         );
         assert!(background_blur_effect_from_payload(Some(0.0)).is_none());
+    }
+
+    #[test]
+    fn hidden_canonical_effects_are_skipped_at_scene_build_time() {
+        let node: PenNode = serde_json::from_str(
+            r##"{"type":"rectangle","id":"r1","width":20,"height":20,"effects":[
+                {"type":"shadow","visible":false,"offsetX":0,"offsetY":4,
+                 "blur":8,"spread":0,"color":"#00000040"},
+                {"type":"blur","radius":12,"visible":false},
+                {"type":"background_blur","radius":16,"visible":false}
+            ]}"##,
+        )
+        .expect("hidden effects parse");
+
+        assert!(shadows_from_canonical(&node).is_empty());
+        assert_eq!(blur_from_canonical(&node), None);
+        assert_eq!(background_blur_from_canonical(&node), None);
     }
 
     #[test]

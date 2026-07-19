@@ -775,7 +775,29 @@ pub(in crate::widget_host) fn property_focus_initial(
             .map(format_panel_number)
             .unwrap_or_else(|| "0".to_string()),
         F::Rotation => (panel.snapshot.rotation_deg.round() as i32).to_string(),
-        F::PositionR => (panel.snapshot.corner_radius.round() as i32).to_string(),
+        F::PositionR => {
+            if op_editor_ui::widgets::property_panel_corner::radii_are_uniform(
+                panel.snapshot.corner_radii,
+            ) {
+                (panel.snapshot.corner_radius.round() as i32).to_string()
+            } else {
+                String::new()
+            }
+        }
+        F::CornerTL | F::CornerTR | F::CornerBL | F::CornerBR => {
+            op_editor_ui::widgets::property_panel_corner::value_for_focus(
+                panel.snapshot.corner_radii,
+                focus,
+            )
+            .map(format_panel_number)
+            .unwrap_or_else(|| "0".to_string())
+        }
+        F::EffectRadius(index) => panel
+            .snapshot
+            .effects
+            .get(index)
+            .map(|effect| format_panel_number(effect.blur))
+            .unwrap_or_else(|| "0".to_string()),
         F::Opacity => "100".to_string(),
         F::PolygonSides => panel.snapshot.polygon_sides.unwrap_or(3).to_string(),
         F::EllipseStart => format_panel_number(

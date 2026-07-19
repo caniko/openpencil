@@ -166,6 +166,8 @@ mod history_bench_tests;
 #[cfg(test)]
 mod history_snapshot_tests;
 #[cfg(test)]
+mod property_task9_tests;
+#[cfg(test)]
 mod svg_import_tests;
 #[cfg(test)]
 mod test_support;

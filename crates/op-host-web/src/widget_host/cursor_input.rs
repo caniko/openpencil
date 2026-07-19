@@ -5,7 +5,7 @@
 //! the spine under the repo's 800-line cap (mirrors the native
 //! host's `widget_host/input.rs` split).
 
-use op_editor_ui::widgets::{CanvasViewport, TOP_BAR_HEIGHT};
+use op_editor_ui::widgets::{CanvasViewport, PropertyPanel, TOP_BAR_HEIGHT};
 use op_editor_ui::{Point2D, Rect};
 
 use super::WidgetHost;
@@ -38,6 +38,7 @@ impl WidgetHost {
             || self.layer_drag.is_some()
             || self.chat_drag.is_some()
             || self.image_adjustment_drag.is_some()
+            || self.effect_radius_drag.is_some()
             || self.drag.is_some()
     }
 
@@ -475,6 +476,24 @@ impl WidgetHost {
                     ),
                 };
                 if let Some(action) = panel.image_adjustment_drag_action(property_rect, field, x) {
+                    self.apply_property_action(action);
+                    return true;
+                }
+            }
+        }
+        if let Some(effect) = self.effect_radius_drag {
+            if let Some(panel) = PropertyPanel::for_selection(&self.editor_state) {
+                let property_rect = Rect {
+                    origin: Point2D::new(
+                        self.last_viewport_w - self.editor_state.editor_ui.property_panel_width,
+                        TOP_BAR_HEIGHT,
+                    ),
+                    size: Point2D::new(
+                        self.editor_state.editor_ui.property_panel_width,
+                        (self.last_viewport_h - TOP_BAR_HEIGHT).max(0.0),
+                    ),
+                };
+                if let Some(action) = panel.effect_radius_drag_action(property_rect, effect, x) {
                     self.apply_property_action(action);
                     return true;
                 }

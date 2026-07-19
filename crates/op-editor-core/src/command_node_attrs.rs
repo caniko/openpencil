@@ -158,6 +158,40 @@ fn write_corner_radius(node: &mut PenNode, radius: f64) -> bool {
     }
 }
 
+fn corner_radius_slot(node: &mut PenNode) -> Option<&mut Option<CornerRadius>> {
+    match node {
+        PenNode::Frame(n) => Some(&mut n.container.corner_radius),
+        PenNode::Group(n) => Some(&mut n.container.corner_radius),
+        PenNode::Rectangle(n) => Some(&mut n.container.corner_radius),
+        PenNode::Image(n) => Some(&mut n.corner_radius),
+        _ => None,
+    }
+}
+
+fn write_corner_radius_at(node: &mut PenNode, index: usize, radius: f64) -> bool {
+    let Some(slot) = corner_radius_slot(node) else {
+        return false;
+    };
+    let mut values = match slot.as_ref() {
+        Some(CornerRadius::Uniform(value)) => [*value; 4],
+        Some(CornerRadius::PerCorner(values)) => *values,
+        None => [0.0; 4],
+    };
+    let Some(value) = values.get_mut(index) else {
+        return false;
+    };
+    *value = radius;
+    if values
+        .iter()
+        .all(|value| (*value - values[0]).abs() < f64::EPSILON)
+    {
+        *slot = Some(CornerRadius::Uniform(values[0]));
+    } else {
+        *slot = Some(CornerRadius::PerCorner(values));
+    }
+    true
+}
+
 /// Mutably borrow whatever variant's `effects` field. Frame / Group /
 /// Rectangle keep it on `container`; the leaf kinds carry it directly.
 /// `None` for IconFont / Ref (no effects field in the schema).
@@ -313,6 +347,21 @@ impl EditorState {
             return false;
         };
         write_corner_radius(node, radius as f64)
+    }
+
+    pub(crate) fn cmd_set_node_corner_radius_at(
+        &mut self,
+        node_id: &NodeId,
+        index: usize,
+        radius: f32,
+    ) -> bool {
+        if !node_id.is_real() || !radius.is_finite() || radius < 0.0 {
+            return false;
+        }
+        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+            return false;
+        };
+        write_corner_radius_at(node, index, radius as f64)
     }
 
     /// Set the side count on a Polygon node. The TS panel allows
@@ -627,14 +676,21 @@ impl EditorState {
         let effect = match kind {
             "shadow" => PenEffect::Shadow(ShadowBody {
                 inner: None,
+                visible: None,
                 offset_x: 4.0,
                 offset_y: 4.0,
                 blur: 8.0,
                 spread: 0.0,
                 color: "#00000040".to_string(),
             }),
-            "blur" => PenEffect::Blur(BlurBody { radius: 4.0 }),
-            "background_blur" => PenEffect::BackgroundBlur(BlurBody { radius: 8.0 }),
+            "blur" => PenEffect::Blur(BlurBody {
+                radius: 4.0,
+                visible: None,
+            }),
+            "background_blur" => PenEffect::BackgroundBlur(BlurBody {
+                radius: 10.0,
+                visible: None,
+            }),
             _ => return false,
         };
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
@@ -709,6 +765,46 @@ impl EditorState {
             | (PenEffect::BackgroundBlur(b), EffectField::Radius) => b.radius = value.max(0.0),
             _ => return false,
         }
+        true
+    }
+
+    pub(crate) fn cmd_set_effect_visible(
+        &mut self,
+        node_id: &NodeId,
+        index: usize,
+        visible: bool,
+    ) -> bool {
+        if !node_id.is_real() {
+            return false;
+        }
+        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+            return false;
+        };
+        let Some(effects) = node_effects_slot(node).and_then(Option::as_mut) else {
+            return false;
+        };
+        let Some(effect) = effects.get_mut(index) else {
+            return false;
+        };
+        match effect {
+            PenEffect::Shadow(body) => body.visible = Some(visible),
+            PenEffect::Blur(body) | PenEffect::BackgroundBlur(body) => body.visible = Some(visible),
+        }
+        true
+    }
+
+    pub(crate) fn cmd_set_path_fill_rule(
+        &mut self,
+        node_id: &NodeId,
+        fill_rule: jian_ops_schema::node::path::PathFillRule,
+    ) -> bool {
+        if !node_id.is_real() {
+            return false;
+        }
+        let Some(PenNode::Path(path)) = find_node_mut(self.active_children_mut(), node_id) else {
+            return false;
+        };
+        path.fill_rule = Some(fill_rule);
         true
     }
 

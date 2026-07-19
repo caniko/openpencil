@@ -72,7 +72,56 @@ impl EditorState {
             return false;
         }
         match focus {
-            PropertyFocus::PositionR => return self.cmd_set_node_corner_radius(&sel, value),
+            PropertyFocus::PositionR => {
+                let wrote = self.cmd_set_node_corner_radius(&sel, value);
+                if wrote {
+                    self.editor_ui.corner_expand_open = false;
+                }
+                return wrote;
+            }
+            PropertyFocus::CornerTL
+            | PropertyFocus::CornerTR
+            | PropertyFocus::CornerBL
+            | PropertyFocus::CornerBR => {
+                let index = match focus {
+                    PropertyFocus::CornerTL => 0,
+                    PropertyFocus::CornerTR => 1,
+                    PropertyFocus::CornerBR => 2,
+                    PropertyFocus::CornerBL => 3,
+                    _ => unreachable!(),
+                };
+                let wrote = self.cmd_set_node_corner_radius_at(&sel, index, value.max(0.0));
+                if wrote {
+                    self.editor_ui.corner_expand_open = self
+                        .selected_node()
+                        .and_then(node_corner_radii)
+                        .is_some_and(|values| !corner_radii_uniform(values));
+                }
+                return wrote;
+            }
+            PropertyFocus::EffectRadius(index) => {
+                if !value.is_finite() {
+                    return false;
+                }
+                let field = match crate::fills::node_effects(
+                    self.selected_node().expect("real selection resolved above"),
+                )
+                .get(index)
+                {
+                    Some(jian_ops_schema::style::PenEffect::Shadow(_)) => crate::EffectField::Blur,
+                    Some(
+                        jian_ops_schema::style::PenEffect::Blur(_)
+                        | jian_ops_schema::style::PenEffect::BackgroundBlur(_),
+                    ) => crate::EffectField::Radius,
+                    None => return false,
+                };
+                return self.cmd_set_effect_param(
+                    &sel,
+                    index as u32,
+                    field,
+                    value.clamp(0.0, 100.0),
+                );
+            }
             PropertyFocus::StrokeWidth => return self.cmd_set_node_stroke_width(&sel, value),
             PropertyFocus::StrokeTopWidth
             | PropertyFocus::StrokeRightWidth
@@ -275,7 +324,13 @@ impl EditorState {
             PropertyFocus::SizeW => node.set_width_px(v.max(0.0)),
             PropertyFocus::SizeH => node.set_height_px(v.max(0.0)),
             PropertyFocus::Rotation => node.base_mut().rotation = Some(v),
-            PropertyFocus::PositionR | PropertyFocus::StrokeWidth => {
+            PropertyFocus::PositionR
+            | PropertyFocus::CornerTL
+            | PropertyFocus::CornerTR
+            | PropertyFocus::CornerBL
+            | PropertyFocus::CornerBR
+            | PropertyFocus::EffectRadius(_)
+            | PropertyFocus::StrokeWidth => {
                 unreachable!("corner radius / stroke width handled before node borrow")
             }
             PropertyFocus::PolygonSides
@@ -335,6 +390,63 @@ impl EditorState {
             PropertyFocus::GradientStopHex(_) => {}
         }
         true
+    }
+
+    /// Set the selected Path's winding rule and record one undo step.
+    pub fn set_selected_fill_rule(
+        &mut self,
+        fill_rule: jian_ops_schema::node::path::PathFillRule,
+    ) -> bool {
+        let sel = self.selection.anchor.clone();
+        if !sel.is_real() || !self.is_editable(&sel) {
+            return false;
+        }
+        let before = self.snapshot_for_history();
+        let instance_scope = self.begin_instance_write_for_anchor();
+        let wrote = self.cmd_set_path_fill_rule(&sel, fill_rule);
+        if let Some(scope) = instance_scope {
+            self.finish_instance_write(scope);
+        }
+        if wrote && self.snapshot_for_history() != before {
+            self.history_push_past(before);
+        }
+        wrote
+    }
+
+    /// Remove one selected-node effect and record one undo step.
+    pub fn remove_selected_effect(&mut self, index: usize) -> bool {
+        let sel = self.selection.anchor.clone();
+        if !sel.is_real() || !self.is_editable(&sel) {
+            return false;
+        }
+        let before = self.snapshot_for_history();
+        let instance_scope = self.begin_instance_write_for_anchor();
+        let wrote = self.cmd_remove_node_effect(&sel, index as u32);
+        if let Some(scope) = instance_scope {
+            self.finish_instance_write(scope);
+        }
+        if wrote && self.snapshot_for_history() != before {
+            self.history_push_past(before);
+        }
+        wrote
+    }
+
+    /// Write the shared optional effect visibility flag and record one undo step.
+    pub fn set_selected_effect_visible(&mut self, index: usize, visible: bool) -> bool {
+        let sel = self.selection.anchor.clone();
+        if !sel.is_real() || !self.is_editable(&sel) {
+            return false;
+        }
+        let before = self.snapshot_for_history();
+        let instance_scope = self.begin_instance_write_for_anchor();
+        let wrote = self.cmd_set_effect_visible(&sel, index, visible);
+        if let Some(scope) = instance_scope {
+            self.finish_instance_write(scope);
+        }
+        if wrote && self.snapshot_for_history() != before {
+            self.history_push_past(before);
+        }
+        wrote
     }
 
     /// Write a string-typed widget prop (placeholder / value / label)
@@ -579,6 +691,27 @@ impl EditorState {
             crate::fills::reset_primary_image_adjustments(node)
         }
     }
+}
+
+fn node_corner_radii(node: &PenNode) -> Option<[f64; 4]> {
+    use jian_ops_schema::node::container::CornerRadius;
+    let radius = match node {
+        PenNode::Frame(node) => node.container.corner_radius.as_ref(),
+        PenNode::Group(node) => node.container.corner_radius.as_ref(),
+        PenNode::Rectangle(node) => node.container.corner_radius.as_ref(),
+        PenNode::Image(node) => node.corner_radius.as_ref(),
+        _ => None,
+    }?;
+    Some(match radius {
+        CornerRadius::Uniform(value) => [*value; 4],
+        CornerRadius::PerCorner(values) => *values,
+    })
+}
+
+fn corner_radii_uniform(values: [f64; 4]) -> bool {
+    values
+        .iter()
+        .all(|value| (*value - values[0]).abs() < f64::EPSILON)
 }
 
 fn container_padding_values(node: &PenNode) -> [f64; 4] {

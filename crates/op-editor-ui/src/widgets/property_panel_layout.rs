@@ -6,7 +6,7 @@
 //! Pulled out of `property_panel_sections.rs` to keep that file
 //! under the 800-line ceiling.
 
-use crate::widgets::property_panel::{EffectKind, EffectSummary, FillSummary, PropertyPanelAction};
+use crate::widgets::property_panel::{EffectSummary, FillSummary, PropertyPanelAction};
 use crate::widgets::property_panel_fill::fill_row_height;
 use crate::widgets::property_panel_inputs::{
     COLOR_VARIABLE_BUTTON_W, COLOR_VARIABLE_GAP, CREATE_COMPONENT_BTN_H, CREATE_COMPONENT_PAD_TOP,
@@ -17,113 +17,17 @@ use crate::widgets::property_panel_interactions::{
 };
 use crate::widgets::property_panel_stroke::{push_stroke_action_rects, stroke_section_body_height};
 use crate::{Point2D, Rect};
-use op_editor_core::{EffectField, FillType};
+use op_editor_core::FillType;
 
 pub(crate) use crate::widgets::property_panel_visibility::SectionCapabilities;
 pub use crate::widgets::property_panel_visibility::{ComponentButtonState, VisibleSections};
 
 pub use crate::widgets::property_panel_input_layout::editable_input_rects;
 
-/// Height (px) of an effect card's title row — `投影` label on
-/// the left + remove `—` icon on the right.
-pub const EFFECT_TITLE_ROW_HEIGHT: f32 = INPUT_HEIGHT;
-
-/// Height (px) of one effect-parameter input row inside the
-/// 2-column grid. Sits below the title row.
-pub const EFFECT_PARAM_ROW_HEIGHT: f32 = INPUT_HEIGHT + 4.0;
-
-/// Vertical padding above + below the card body inside the
-/// outlined card.
-pub const EFFECT_CARD_PAD: f32 = 6.0;
-
-/// Gap between stacked effect cards in the section.
-pub const EFFECT_CARD_GAP: f32 = 6.0;
-
-/// Height (px) of an effect's header row. Kept under the legacy
-/// name so existing tests / hit-test callers compile.
-pub const EFFECT_ROW_HEIGHT: f32 = EFFECT_TITLE_ROW_HEIGHT;
-
-/// Doc-px a single "−" / "+" stepper click moves an effect parameter.
-pub const EFFECT_PARAM_STEP: f32 = 1.0;
+pub use crate::widgets::property_panel_effects::{EFFECT_ROW_GAP, EFFECT_ROW_HEIGHT};
 pub const COLOR_VARIABLE_MENU_W: f32 = 210.0;
 pub const COLOR_VARIABLE_MENU_ROW_H: f32 = 32.0;
 pub const COLOR_VARIABLE_MENU_PAD_Y: f32 = 6.0;
-
-/// The editable scalar params an effect kind exposes, in row order,
-/// each paired with its short row label. Shadow exposes four; the
-/// blur kinds expose a single radius.
-pub fn effect_param_fields(kind: EffectKind) -> &'static [(EffectField, &'static str)] {
-    match kind {
-        EffectKind::Shadow => &[
-            (EffectField::OffsetX, "X"),
-            (EffectField::OffsetY, "Y"),
-            (EffectField::Blur, "Blur"),
-            (EffectField::Spread, "Spread"),
-        ],
-        EffectKind::Blur | EffectKind::BackgroundBlur => &[(EffectField::Radius, "Radius")],
-    }
-}
-
-/// On-screen rect of one effect-parameter input box inside the
-/// card grid. Cards lay parameters out in a 2-column grid below
-/// the title row; `col` is 0 (left) or 1 (right), `row` is 0-based
-/// from the first param row. `card_x` / `card_w` are the card's
-/// outer geometry.
-pub fn effect_param_rect(card_x: f32, card_y: f32, card_w: f32, col: usize, row: usize) -> Rect {
-    let inner_x = card_x + EFFECT_CARD_PAD;
-    let inner_w = card_w - EFFECT_CARD_PAD * 2.0;
-    let col_w = (inner_w - 6.0) / 2.0;
-    let col_x = inner_x + col as f32 * (col_w + 6.0);
-    let row_y = card_y + EFFECT_TITLE_ROW_HEIGHT + row as f32 * EFFECT_PARAM_ROW_HEIGHT;
-    Rect {
-        origin: Point2D::new(col_x, row_y),
-        size: Point2D::new(col_w, INPUT_HEIGHT),
-    }
-}
-
-/// Colour row rect inside an effect card — full-width pill that
-/// paints the colour swatch + `rgba(...)` text and acts as the
-/// click target for the gradient-stop-style colour picker.
-pub fn effect_color_rect(card_x: f32, card_y: f32, card_w: f32, param_rows: usize) -> Rect {
-    let inner_x = card_x + EFFECT_CARD_PAD;
-    let inner_w = card_w - EFFECT_CARD_PAD * 2.0;
-    let row_y = card_y + EFFECT_TITLE_ROW_HEIGHT + param_rows as f32 * EFFECT_PARAM_ROW_HEIGHT;
-    Rect {
-        origin: Point2D::new(inner_x, row_y),
-        size: Point2D::new(inner_w, INPUT_HEIGHT),
-    }
-}
-
-/// Legacy single-input rect — preserved for callers that still
-/// reach for the old layout (effects-section tests). Returns the
-/// left column of the new grid layout.
-pub fn effect_param_value_rect(x: f32, y: f32, width: f32) -> Rect {
-    effect_param_rect(x, y - EFFECT_TITLE_ROW_HEIGHT, width, 0, 0)
-}
-
-/// Number of 2-column grid rows the card's editable params occupy:
-/// `ceil(field_count / 2)`. Shadow has 4 → 2 rows; Blur/BG-Blur
-/// have 1 → 1 row.
-pub fn effect_param_row_count(kind: EffectKind) -> usize {
-    effect_param_fields(kind).len().div_ceil(2)
-}
-
-/// Whether the card has a colour row (only Shadow does today).
-pub fn effect_has_color_row(kind: EffectKind) -> bool {
-    matches!(kind, EffectKind::Shadow)
-}
-
-/// Total height one effect card consumes — title + param grid +
-/// optional colour row + top/bottom card padding.
-pub fn effect_block_height(kind: EffectKind) -> f32 {
-    let rows = effect_param_row_count(kind) as f32 * EFFECT_PARAM_ROW_HEIGHT;
-    let colour = if effect_has_color_row(kind) {
-        EFFECT_PARAM_ROW_HEIGHT
-    } else {
-        0.0
-    };
-    EFFECT_TITLE_ROW_HEIGHT + rows + colour + EFFECT_CARD_PAD * 2.0
-}
 
 /// Total vertical space the Effects section consumes: the section
 /// header plus one block per effect (or an 8 px filler when the node
@@ -134,7 +38,7 @@ pub fn effects_section_height(effects: &[EffectSummary]) -> f32 {
         + if effects.is_empty() {
             8.0
         } else {
-            effects.iter().map(|e| effect_block_height(e.kind)).sum()
+            effects.len() as f32 * (EFFECT_ROW_HEIGHT + EFFECT_ROW_GAP)
         }
 }
 
@@ -284,7 +188,7 @@ pub fn property_panel_content_height(
         false,
         false,
     );
-    let inputs = editable_input_rects(panel_rect, visible, fills);
+    let inputs = editable_input_rects(panel_rect, visible, fills, effects);
     let bottom = actions
         .iter()
         .map(|(_, r)| r.origin.y + r.size.y)
@@ -356,7 +260,17 @@ pub fn action_button_rects_with_fill_picker(
     // Position section.
     y += SECTION_HEADER_HEIGHT;
     y += INPUT_HEIGHT + 6.0;
-    y += INPUT_HEIGHT + 12.0;
+    if visible.corner_per_corner {
+        out.push((
+            PropertyPanelAction::ToggleCornerExpand,
+            crate::widgets::property_panel_corner::uniform_and_toggle_rects(x0, y, w).1,
+        ));
+    }
+    if visible.corner_radius && visible.corner_expand {
+        y += INPUT_HEIGHT + crate::widgets::property_panel_corner::CORNER_GRID_EXTRA_HEIGHT + 12.0;
+    } else {
+        y += INPUT_HEIGHT + 12.0;
+    }
     y += SECTION_GAP;
 
     if visible.flex_layout {
@@ -543,60 +457,34 @@ pub fn action_button_rects_with_fill_picker(
     }
     if visible.effects {
         // Mirrors `paint_effects_section`: header + one block per
-        // effect. The header's "+" opens the add-menu (Drop Shadow /
-        // Layer Blur choice) rather than adding directly.
+        // effect. The header's "+" opens the three-kind add-menu.
         let plus = Rect {
             origin: Point2D::new(x0 + w - PAD_X - 22.0, y),
             size: Point2D::new(28.0, SECTION_HEADER_HEIGHT),
         };
-        out.push((PropertyPanelAction::AddEffect, plus));
+        out.push((PropertyPanelAction::ToggleEffectAddPicker, plus));
         y += SECTION_HEADER_HEIGHT;
         for (ei, eff) in effects.iter().enumerate() {
-            // Card outer rect — used to anchor the title-row remove
-            // glyph (top-right) and the 2-column param grid below.
-            let card_x = x0 + PAD_X;
-            let card_w = w - PAD_X * 2.0;
-            // Remove (`—`) glyph in the title row's right corner.
+            let rects = crate::widgets::property_panel_effects::effect_row_rects(x0, y, w);
+            out.push((PropertyPanelAction::RemoveEffect(ei), rects.remove));
             out.push((
-                PropertyPanelAction::RemoveEffect(ei),
-                Rect {
-                    origin: Point2D::new(card_x + card_w - EFFECT_CARD_PAD - 18.0, y + 4.0),
-                    size: Point2D::new(20.0, INPUT_HEIGHT - 4.0),
-                },
+                PropertyPanelAction::SetEffectVisible(ei, !eff.visible),
+                rects.eye,
             ));
-            // 2-column param grid — each cell is a focusable input.
-            let card_inner_y = y + EFFECT_CARD_PAD;
-            for (i, &(field, _)) in effect_param_fields(eff.kind).iter().enumerate() {
-                let col = i % 2;
-                let row = i / 2;
-                let cur = eff.param_value(field);
-                out.push((
-                    PropertyPanelAction::FocusEffectParam {
-                        effect: ei,
-                        field,
-                        value: cur,
-                    },
-                    effect_param_rect(card_x, card_inner_y, card_w, col, row),
-                ));
-            }
-            // Color row — emits the same picker action as a gradient
-            // stop swatch, but indexed by the effect; see
-            // `EffectColor` outcome path on the host. Wired only for
-            // Shadow today (Blur kinds carry no colour).
-            if effect_has_color_row(eff.kind) {
-                let row_count = effect_param_row_count(eff.kind);
-                let cr = effect_color_rect(card_x, card_inner_y, card_w, row_count);
-                // Swatch sub-rect on the left of the color row — clicks
-                // open a colour picker scoped to `effect[ei].color`.
-                out.push((
-                    PropertyPanelAction::OpenEffectColorPicker(ei),
-                    Rect {
-                        origin: Point2D::new(cr.origin.x + 32.0, cr.origin.y),
-                        size: Point2D::new(28.0, cr.size.y),
-                    },
-                ));
-            }
-            y += effect_block_height(eff.kind) + EFFECT_CARD_GAP;
+            let field = if matches!(eff.kind, crate::widgets::property_panel::EffectKind::Shadow) {
+                op_editor_core::EffectField::Blur
+            } else {
+                op_editor_core::EffectField::Radius
+            };
+            out.push((
+                PropertyPanelAction::AdjustEffectParam {
+                    effect: ei,
+                    field,
+                    new_value: eff.blur,
+                },
+                rects.slider,
+            ));
+            y += EFFECT_ROW_HEIGHT + EFFECT_ROW_GAP;
         }
         if effects.is_empty() {
             y += 8.0;

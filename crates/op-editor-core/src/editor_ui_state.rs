@@ -1209,8 +1209,9 @@ pub struct EditorUiState {
     /// the row whose picker is showing. Meaningless when the picker is
     /// closed; defaults to `0`.
     pub fill_type_picker_index: usize,
-    /// Whether the Effects section's "+" add-menu (Drop Shadow / Layer
-    /// Blur choice) is open. `false` = closed.
+    /// Whether the Position section shows the per-corner 2×2 radius grid.
+    pub corner_expand_open: bool,
+    /// Whether the Effects section's three-kind "+" add-menu is open.
     pub effect_add_picker_open: bool,
     /// Row index hovered in the Effects add-menu (`None` = none), so the
     /// popover highlights the row under the cursor like the other
@@ -1576,6 +1577,7 @@ impl Default for EditorUiState {
             size_clip_content: false,
             fill_type_picker: jian_widgets::components::select::SelectState::default(),
             fill_type_picker_index: 0,
+            corner_expand_open: false,
             effect_add_picker_open: false,
             effect_add_menu_hover: None,
             interaction_menu_open: false,
@@ -1717,10 +1719,27 @@ impl EditorUiState {
         self.pressed_button == Some(target)
     }
 
-    /// Toggle the Effects "+" add-menu (Drop Shadow / Layer Blur).
+    /// Toggle the Effects "+" add-menu. The corner-radius editor and
+    /// effect menu are mutually exclusive inspector overlays.
     pub fn toggle_effect_add_picker(&mut self) {
         self.effect_add_picker_open = !self.effect_add_picker_open;
+        if self.effect_add_picker_open {
+            self.corner_expand_open = false;
+        }
         self.effect_add_menu_hover = None;
+    }
+
+    pub fn toggle_corner_expand(&mut self) {
+        self.corner_expand_open = !self.corner_expand_open;
+        if self.corner_expand_open {
+            self.close_effect_add_picker();
+        }
+    }
+
+    pub fn close_corner_expand(&mut self) -> bool {
+        let was = self.corner_expand_open;
+        self.corner_expand_open = false;
+        was
     }
 
     /// Close the Effects add-menu. Returns true when it was open (so

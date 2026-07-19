@@ -161,6 +161,8 @@ pub enum PropertyPanelAction {
     /// switches `editor_ui.property_tab`.
     SetPropertyTab(op_editor_core::PropertyTab),
     SetFlexLayout(op_editor_core::FlexLayout),
+    ToggleCornerExpand,
+    SetFillRule(jian_ops_schema::node::path::PathFillRule),
     ToggleSizeFillWidth,
     ToggleSizeFillHeight,
     ToggleSizeHugWidth,
@@ -245,14 +247,12 @@ pub enum PropertyPanelAction {
     /// the chosen scale + format (pops the native Save dialog).
     ExportImageNow,
     /// User clicked the Effects section's "+" — host toggles the
-    /// add-menu (Drop Shadow / Layer Blur choice).
-    AddEffect,
-    /// User picked "Drop Shadow" in the add-menu — host appends a
-    /// default drop shadow to the selected node and closes the menu.
-    AddDropShadowEffect,
-    /// User picked "Layer Blur" in the add-menu — host appends a
-    /// default Gaussian layer blur to the selected node and closes it.
-    AddLayerBlur,
+    /// three-kind add-menu.
+    ToggleEffectAddPicker,
+    /// User picked an effect kind in the add-menu.
+    AddEffect(crate::widgets::property_panel_snapshot::EffectKind),
+    /// User clicked an effect row's eye affordance.
+    SetEffectVisible(usize, bool),
     /// User clicked the "✕" on an effect row — host removes the
     /// effect at this index from the selected node.
     RemoveEffect(usize),

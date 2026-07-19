@@ -293,11 +293,15 @@ fn single_fill_node_emits_indexed_hex_and_opacity_inputs() {
     let panel = panel_for(&state);
     assert_eq!(panel.snapshot.fills.len(), 1);
 
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible_for(&panel), &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible_for(&panel),
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
 
     assert!(focuses.contains(&PropertyFocus::FillHex(0)));
     assert!(focuses.contains(&PropertyFocus::FillOpacity(0)));

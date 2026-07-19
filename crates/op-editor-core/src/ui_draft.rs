@@ -31,6 +31,13 @@ pub enum PropertyFocus {
     PositionY,
     Rotation,
     PositionR,
+    CornerTL,
+    CornerTR,
+    CornerBL,
+    CornerBR,
+    /// Compact Effects-row strength input. Shadow targets `blur`;
+    /// layer/background blur target `radius`.
+    EffectRadius(usize),
     SizeW,
     SizeH,
     /// Container flex-layout gap in document px.

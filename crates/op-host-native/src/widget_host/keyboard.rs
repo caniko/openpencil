@@ -1615,6 +1615,15 @@ impl WidgetHostNative {
         if self.apply_pen_escape() {
             return true;
         }
+        if self.editor_state.editor_ui.close_corner_expand() {
+            self.mark_dirty();
+            return true;
+        }
+        if self.editor_state.editor_ui.effect_add_picker_open {
+            self.editor_state.editor_ui.close_effect_add_picker();
+            self.mark_dirty();
+            return true;
+        }
         if self
             .editor_state
             .editor_ui
@@ -1708,11 +1717,6 @@ impl WidgetHostNative {
         }
         if self.editor_state.editor_ui.fill_type_picker.open {
             self.editor_state.editor_ui.close_fill_type_picker();
-            self.mark_dirty();
-            return true;
-        }
-        if self.editor_state.editor_ui.effect_add_picker_open {
-            self.editor_state.editor_ui.close_effect_add_picker();
             self.mark_dirty();
             return true;
         }

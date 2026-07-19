@@ -307,6 +307,7 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
             let offset = effect.get("offset");
             Some(PenEffect::Shadow(ShadowBody {
                 inner: Some(ty == "INNER_SHADOW"),
+                visible: None,
                 offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0) as f32,
                 offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0) as f32,
                 blur: radius,
@@ -318,8 +319,14 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
                     .unwrap_or_else(|| "#00000040".to_string()),
             }))
         }
-        "FOREGROUND_BLUR" => Some(PenEffect::Blur(BlurBody { radius })),
-        "BACKGROUND_BLUR" => Some(PenEffect::BackgroundBlur(BlurBody { radius })),
+        "FOREGROUND_BLUR" => Some(PenEffect::Blur(BlurBody {
+            radius,
+            visible: None,
+        })),
+        "BACKGROUND_BLUR" => Some(PenEffect::BackgroundBlur(BlurBody {
+            radius,
+            visible: None,
+        })),
         _ => None,
     }
 }

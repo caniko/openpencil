@@ -81,6 +81,9 @@ pub struct NodeSnapshot {
     pub rotation_deg: f32,
     /// Uniform corner radius in doc-px.
     pub corner_radius: f32,
+    /// Canonical TL/TR/BR/BL radii for the per-corner editor.
+    pub corner_radii: [f32; 4],
+    pub supports_per_corner: bool,
     /// Polygon side count, only present for Polygon selections.
     pub polygon_sides: Option<u32>,
     /// Ellipse arc controls, only present for Ellipse selections.
@@ -117,6 +120,9 @@ pub struct NodeSnapshot {
     /// fill) keep compiling unchanged. An old single-fill `.op` loads
     /// as exactly one entry.
     pub fills: Vec<FillSummary>,
+    /// Path-only fill rule. `None` means this selection is not a Path;
+    /// Path's absent schema value is surfaced as `Some(Nonzero)`.
+    pub path_fill_rule: Option<jian_ops_schema::node::path::PathFillRule>,
     pub stroke: Option<SceneStroke>,
     /// LinearGradient angle in degrees (canonical `.op` convention,
     /// 0° = bottom→top). `None` when the primary fill isn't a
@@ -363,7 +369,7 @@ pub struct GradientStopSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectKind {
     Shadow,
-    Blur,
+    LayerBlur,
     BackgroundBlur,
 }
 
@@ -371,8 +377,8 @@ impl EffectKind {
     /// Human-readable row label.
     pub fn label(self) -> &'static str {
         match self {
-            EffectKind::Shadow => "Drop Shadow",
-            EffectKind::Blur => "Layer Blur",
+            EffectKind::Shadow => "Shadow",
+            EffectKind::LayerBlur => "Layer Blur",
             EffectKind::BackgroundBlur => "Background Blur",
         }
     }
@@ -384,14 +390,13 @@ impl EffectKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectSummary {
     pub kind: EffectKind,
+    pub visible: bool,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
     pub spread: f32,
     /// Effect colour — Shadow carries an authored hex string; the
-    /// blur kinds don't have a colour field, so paint reads
-    /// `Color::TRANSPARENT` (and the colour row is hidden by the
-    /// effects-section painter when alpha is zero).
+    /// blur kinds don't have a colour field and use transparent.
     pub color: Color,
 }
 
@@ -415,6 +420,7 @@ impl EffectSummary {
         match e {
             PenEffect::Shadow(s) => EffectSummary {
                 kind: EffectKind::Shadow,
+                visible: s.visible != Some(false),
                 offset_x: s.offset_x,
                 offset_y: s.offset_y,
                 blur: s.blur,
@@ -427,7 +433,8 @@ impl EffectSummary {
                 }),
             },
             PenEffect::Blur(b) => EffectSummary {
-                kind: EffectKind::Blur,
+                kind: EffectKind::LayerBlur,
+                visible: b.visible != Some(false),
                 offset_x: 0.0,
                 offset_y: 0.0,
                 blur: b.radius,
@@ -436,6 +443,7 @@ impl EffectSummary {
             },
             PenEffect::BackgroundBlur(b) => EffectSummary {
                 kind: EffectKind::BackgroundBlur,
+                visible: b.visible != Some(false),
                 offset_x: 0.0,
                 offset_y: 0.0,
                 blur: b.radius,
@@ -515,6 +523,8 @@ impl NodeSnapshot {
             height: 0,
             rotation_deg: 0.0,
             corner_radius: 0.0,
+            corner_radii: [0.0; 4],
+            supports_per_corner: false,
             polygon_sides: None,
             ellipse_arc: None,
             flex_layout: op_editor_core::FlexLayout::Free,
@@ -537,6 +547,7 @@ impl NodeSnapshot {
             fill: None,
             fill_opacity: 1.0,
             fills: Vec::new(),
+            path_fill_rule: None,
             stroke: None,
             gradient_angle: None,
             gradient_stops: Vec::new(),
@@ -578,6 +589,8 @@ impl NodeSnapshot {
             height: bounds.h.round() as i32,
             rotation_deg: 0.0,
             corner_radius: 0.0,
+            corner_radii: [0.0; 4],
+            supports_per_corner: false,
             polygon_sides: None,
             ellipse_arc: None,
             flex_layout: op_editor_core::FlexLayout::Free,
@@ -602,6 +615,7 @@ impl NodeSnapshot {
             // Multi-select hides the Fill section (see `for_multi`),
             // so it carries no per-fill rows.
             fills: Vec::new(),
+            path_fill_rule: None,
             stroke: None,
             gradient_angle: None,
             gradient_stops: Vec::new(),
@@ -639,6 +653,7 @@ impl NodeSnapshot {
         // Corner radius — only the container variants carry one;
         // a `PerCorner` radius reports its top-left corner.
         let corner_radius = container_corner_radius(node);
+        let corner_radii = container_corner_radii(node).unwrap_or([corner_radius; 4]);
         let fill = op_editor_core::first_solid_fill_hex(node).and_then(color_from_hex);
         // A node can carry a stroke WIDTH with no solid color — e.g. set
         // via the width input before a color is chosen, where
@@ -676,6 +691,8 @@ impl NodeSnapshot {
             // schema; the snapshot's `rotation_deg` wants degrees.
             rotation_deg: base.rotation.unwrap_or(0.0) as f32,
             corner_radius,
+            corner_radii,
+            supports_per_corner: container_corner_radii(node).is_some(),
             polygon_sides: polygon_sides_of(node),
             ellipse_arc: ellipse_arc_of(node),
             flex_layout: flex_layout_of(node),
@@ -698,6 +715,13 @@ impl NodeSnapshot {
             fill,
             fill_opacity: op_editor_core::first_solid_fill_opacity(node),
             fills: fills_of(node),
+            path_fill_rule: match node {
+                PenNode::Path(path) => Some(
+                    path.fill_rule
+                        .unwrap_or(jian_ops_schema::node::path::PathFillRule::Nonzero),
+                ),
+                _ => None,
+            },
             stroke,
             gradient_angle: gradient_angle_of(node),
             gradient_stops: gradient_stops_of(node),
@@ -1233,4 +1257,20 @@ fn container_corner_radius(node: &PenNode) -> f32 {
             _ => 0.0,
         },
     }
+}
+
+fn container_corner_radii(node: &PenNode) -> Option<[f32; 4]> {
+    use jian_ops_schema::node::container::CornerRadius;
+    let radius = match node {
+        PenNode::Frame(node) => node.container.corner_radius.as_ref(),
+        PenNode::Group(node) => node.container.corner_radius.as_ref(),
+        PenNode::Rectangle(node) => node.container.corner_radius.as_ref(),
+        PenNode::Image(node) => node.corner_radius.as_ref(),
+        _ => return None,
+    };
+    Some(match radius {
+        Some(CornerRadius::Uniform(value)) => [*value as f32; 4],
+        Some(CornerRadius::PerCorner(values)) => values.map(|value| value as f32),
+        None => [0.0; 4],
+    })
 }

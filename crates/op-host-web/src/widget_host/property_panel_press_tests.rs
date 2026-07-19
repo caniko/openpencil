@@ -19,6 +19,62 @@ use op_editor_ui::{Point2D, Rect};
 const VIEWPORT_W: f32 = 1200.0;
 const VIEWPORT_H: f32 = 800.0;
 
+#[test]
+fn task9_effect_actions_dispatch_background_blur_and_visibility() {
+    let mut host = WidgetHost::new();
+    host.editor_state.set_single_selection(NodeId::new("n10"));
+    host.apply_property_action(PropertyPanelAction::AddEffect(
+        op_editor_ui::widgets::property_panel_snapshot::EffectKind::BackgroundBlur,
+    ));
+    let effects = op_editor_core::fills::node_effects(host.editor_state.selected_node().unwrap());
+    assert!(matches!(
+        effects.last(),
+        Some(jian_ops_schema::style::PenEffect::BackgroundBlur(body)) if body.radius == 10.0
+    ));
+
+    let index = effects.len() - 1;
+    host.apply_property_action(PropertyPanelAction::SetEffectVisible(index, false));
+    assert!(matches!(
+        op_editor_core::fills::node_effects(host.editor_state.selected_node().unwrap()).last(),
+        Some(jian_ops_schema::style::PenEffect::BackgroundBlur(body)) if body.visible == Some(false)
+    ));
+
+    let history_before_drag = host.editor_state.history.past.len();
+    for value in [60.0, 75.0] {
+        host.apply_property_action(PropertyPanelAction::AdjustEffectParam {
+            effect: index,
+            field: op_editor_core::EffectField::Radius,
+            new_value: value,
+        });
+    }
+    assert_eq!(
+        host.editor_state.history.past.len(),
+        history_before_drag + 1
+    );
+    assert!(matches!(
+        op_editor_core::fills::node_effects(host.editor_state.selected_node().unwrap()).last(),
+        Some(jian_ops_schema::style::PenEffect::BackgroundBlur(body)) if body.radius == 75.0
+    ));
+    assert!(host.effect_radius_drag.is_some());
+    assert!(host.apply_release_with_viewport(VIEWPORT_W, VIEWPORT_H));
+    assert!(host.effect_radius_drag.is_none());
+}
+
+#[test]
+fn task9_escape_closes_inspector_tier_before_selection() {
+    let mut host = WidgetHost::new();
+    host.editor_state.set_single_selection(NodeId::new("n10"));
+    host.editor_state.editor_ui.corner_expand_open = true;
+    assert!(host.apply_escape());
+    assert!(!host.editor_state.editor_ui.corner_expand_open);
+    assert!(!host.editor_state.selection.is_empty());
+
+    host.editor_state.editor_ui.toggle_effect_add_picker();
+    assert!(host.apply_escape());
+    assert!(!host.editor_state.editor_ui.effect_add_picker_open);
+    assert!(!host.editor_state.selection.is_empty());
+}
+
 fn seed(host: &mut WidgetHost, json: &str) {
     let doc = jian_ops_schema::load_str(json)
         .expect("fixture JSON parses")

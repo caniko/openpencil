@@ -66,11 +66,15 @@ fn text_input_selection_exposes_widget_text_rows() {
 
     let visible = visible_for(&panel);
     assert_eq!(visible.widget, Some(WidgetKind::TextInput));
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible, &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
     assert!(focuses.contains(&PropertyFocus::WidgetPlaceholder));
     assert!(focuses.contains(&PropertyFocus::WidgetValue));
 }
@@ -98,11 +102,15 @@ fn property_panel_text_input_fields_expose_icon_and_bind_rows() {
 
     let visible = visible_for(&panel);
     assert_eq!(visible.widget, Some(WidgetKind::TextInput));
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible, &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
     assert!(focuses.contains(&PropertyFocus::WidgetLeadingIcon));
     assert!(focuses.contains(&PropertyFocus::WidgetTrailingIcon));
     assert!(focuses.contains(&PropertyFocus::WidgetBindKey));
@@ -121,11 +129,15 @@ fn checkbox_selection_hides_icon_and_bind_rows() {
     state.set_single_selection(NodeId::new("cb"));
     let panel = PropertyPanel::for_selection(&state).expect("checkbox panel");
     let visible = visible_for(&panel);
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible, &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
     assert!(!focuses.contains(&PropertyFocus::WidgetLeadingIcon));
     assert!(!focuses.contains(&PropertyFocus::WidgetBindKey));
 }
@@ -150,11 +162,15 @@ fn slider_selection_exposes_widget_range_rows() {
 
     let visible = visible_for(&panel);
     assert_eq!(visible.widget, Some(WidgetKind::Slider));
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible, &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
     assert!(focuses.contains(&PropertyFocus::WidgetMin));
     assert!(focuses.contains(&PropertyFocus::WidgetMax));
     assert!(focuses.contains(&PropertyFocus::WidgetStep));
@@ -175,11 +191,15 @@ fn frame_selection_hides_widget_section() {
     let visible = visible_for(&panel);
     assert!(visible.widget.is_none(), "frame hides the Widget section");
     // No widget focuses leak into the input walker.
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible, &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible,
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
     assert!(!focuses.contains(&PropertyFocus::WidgetPlaceholder));
     assert!(!focuses.contains(&PropertyFocus::WidgetMin));
 }

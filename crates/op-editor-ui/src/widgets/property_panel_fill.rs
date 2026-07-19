@@ -27,6 +27,7 @@ use crate::widgets::property_panel_layout::fill_body_height_with_stops;
 use crate::widgets::property_panel_sections::{EditContext, PropertyLabels};
 use crate::widgets::PaintCx;
 use crate::{Color, Point2D, Rect, TextLayout};
+use jian_ops_schema::node::path::PathFillRule;
 pub use jian_widgets::components::select::SelectHit;
 use jian_widgets::components::select::{Select, SelectItem, SelectState};
 use op_editor_core::PropertyFocus;
@@ -222,7 +223,11 @@ pub fn paint_fill_section(
     width: f32,
 ) -> f32 {
     // Header row + "+" (appends a fill). One editable row per fill.
+    let header_y = y;
     let mut y = paint_section_label_with_add(cx, theme, labels.fill, x, y, width);
+    if let Some(rule) = snapshot.path_fill_rule {
+        paint_fill_rule_control(cx, theme, labels, rule, x, header_y, width);
+    }
     let primary_stop_count = snapshot.gradient_stops.len();
     for (index, fill) in snapshot.fills.iter().enumerate() {
         y = paint_one_fill(
@@ -251,6 +256,71 @@ pub fn paint_fill_section(
     y += 12.0;
     paint_section_divider(cx, theme, x, y, width);
     y + SECTION_GAP
+}
+
+pub fn fill_rule_segment_rects(x: f32, y: f32, width: f32) -> [(PathFillRule, Rect); 2] {
+    let total_w = 112.0;
+    let segment_w = total_w / 2.0;
+    let left = x + width - PAD_X - 28.0 - 6.0 - total_w;
+    [
+        (
+            PathFillRule::Nonzero,
+            Rect::xywh(left, y - 2.0, segment_w, 28.0),
+        ),
+        (
+            PathFillRule::Evenodd,
+            Rect::xywh(left + segment_w, y - 2.0, segment_w, 28.0),
+        ),
+    ]
+}
+
+fn paint_fill_rule_control(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    labels: &PropertyLabels,
+    active: PathFillRule,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let segments = fill_rule_segment_rects(x, y, width);
+    let outer = Rect::xywh(
+        segments[0].1.origin.x,
+        segments[0].1.origin.y,
+        segments[0].1.size.x + segments[1].1.size.x,
+        segments[0].1.size.y,
+    );
+    cx.backend.fill_round_rect(outer, 7.0, theme.muted);
+    cx.backend.stroke_round_rect(outer, 7.0, theme.border, 1.0);
+    for (rule, rect) in segments {
+        if rule == active {
+            cx.backend.fill_round_rect(rect, 6.0, theme.primary);
+        }
+        let label = match rule {
+            PathFillRule::Nonzero => labels.fill_rule_nonzero,
+            PathFillRule::Evenodd => labels.fill_rule_evenodd,
+        };
+        let text = TextLayout::single_run(
+            label,
+            "system-ui",
+            11.0,
+            if rule == active {
+                theme.primary_foreground
+            } else {
+                theme.muted_foreground
+            }
+            .to_jian(),
+            Point2D::new(0.0, 0.0),
+        );
+        let text_w = cx.backend.measure_text(label, 11.0);
+        cx.backend.draw_text(
+            &text,
+            Point2D::new(
+                rect.origin.x + (rect.size.x - text_w) / 2.0,
+                rect.origin.y + 18.0,
+            ),
+        );
+    }
 }
 
 /// Paint one fill row: head row (swatch + type dropdown + opacity% +

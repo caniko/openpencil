@@ -40,11 +40,15 @@ fn stroke_section_emits_edge_width_inputs() {
     let state = sided_stroke_state();
     let panel = PropertyPanel::for_selection(&state).expect("rectangle panel");
 
-    let focuses: Vec<_> =
-        sections::editable_input_rects(panel_rect(), visible_for(&panel), &panel.snapshot.fills)
-            .into_iter()
-            .map(|(focus, _)| focus)
-            .collect();
+    let focuses: Vec<_> = sections::editable_input_rects(
+        panel_rect(),
+        visible_for(&panel),
+        &panel.snapshot.fills,
+        &panel.snapshot.effects,
+    )
+    .into_iter()
+    .map(|(focus, _)| focus)
+    .collect();
 
     assert!(focuses.contains(&PropertyFocus::StrokeTopWidth));
     assert!(focuses.contains(&PropertyFocus::StrokeRightWidth));

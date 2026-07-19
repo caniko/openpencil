@@ -35,6 +35,8 @@ pub enum Icon {
     Cursor,
     /// Square — Rect tool.
     Square,
+    /// SquareRoundCorner — per-corner radius editor toggle.
+    SquareRoundCorner,
     /// ChevronDown — dropdown affordance / expanded tree row.
     ChevronDown,
     /// ChevronRight — collapsed tree row (LayerPanel collapsed
@@ -279,6 +281,7 @@ impl Icon {
         match self {
             Icon::Cursor => CURSOR,
             Icon::Square => SQUARE,
+            Icon::SquareRoundCorner => SQUARE_ROUND_CORNER,
             Icon::ChevronDown => CHEVRON_DOWN,
             Icon::ChevronRight => CHEVRON_RIGHT,
             Icon::Type => TYPE,
@@ -482,6 +485,7 @@ impl Icon {
             "circle" => Icon::Circle,
             "triangle" => Icon::Triangle,
             "square" | "rectangle" => Icon::Square,
+            "square-round-corner" => Icon::SquareRoundCorner,
             "hash" => Icon::Hash,
             "type" | "text" => Icon::Type,
             "frame" => Icon::Frame,

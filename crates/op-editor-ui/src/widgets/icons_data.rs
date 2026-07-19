@@ -17,6 +17,13 @@ pub(super) const SQUARE: &[&str] = &[
     "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
 ];
 
+pub(super) const SQUARE_ROUND_CORNER: &[&str] = &[
+    "M21 11a8 8 0 0 0-8-8",
+    "M21 15v4a2 2 0 0 1-2 2h-4",
+    "M3 13a8 8 0 0 0 8 8",
+    "M3 9V5a2 2 0 0 1 2-2h4",
+];
+
 pub(super) const CHEVRON_DOWN: &[&str] = &["m6 9 6 6 6-6"];
 
 pub(super) const CHEVRON_RIGHT: &[&str] = &["m9 18 6-6-6-6"];
