@@ -493,6 +493,11 @@ jobs:
             openpencil-desktop-${{ matrix.label }}.zip
             op-cli-${{ matrix.label }}.tar.gz
             op-cli-${{ matrix.label }}.zip
+            OpenPencil-*-mac.dmg
+            OpenPencil-*-win-setup.exe
+            OpenPencil-*-linux.AppImage
+            OpenPencil-*-linux.deb
+          if-no-files-found: ignore
       # Raw daemon binary for the platform vsix (the extension's bundled
       # runtime). No archive extension, so release-draft's flatten step
       # never picks it up as a release file on its own.
@@ -504,11 +509,6 @@ jobs:
             target/${{ matrix.target }}/release/op-host-web-server
             target/${{ matrix.target }}/release/op-host-web-server.exe
           if-no-files-found: error
-            OpenPencil-*-mac.dmg
-            OpenPencil-*-win-setup.exe
-            OpenPencil-*-linux.AppImage
-            OpenPencil-*-linux.deb
-          if-no-files-found: ignore
 
   web-docker:
     name: Build and push web Docker image
