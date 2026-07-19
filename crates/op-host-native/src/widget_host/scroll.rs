@@ -517,6 +517,9 @@ impl WidgetHostNative {
                     .agent_settings
                     .scroll_y
                     .scroll_by(-delta_y, max_scroll, 0.0);
+                // Content moved under a stationary cursor — re-derive
+                // the hover state so buttons don't keep a stale wash.
+                self.update_agent_settings_hover(x, y);
                 self.mark_dirty();
                 return true;
             }
