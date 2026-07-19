@@ -486,6 +486,9 @@ impl DesktopApp {
         // silent no-op when it finishes.
         figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
         html_import_session::cancel(&mut self.host, &mut self.current_html_import);
+        // A queued clipboard HTML decode must not land in the
+        // document that just replaced the one it was pasted into.
+        self.pending_html_paste = None;
         self.image_search.reset();
         self.saved_doc_fingerprint =
             op_host_services::doc_io::document_fingerprint(self.host.editor_state());

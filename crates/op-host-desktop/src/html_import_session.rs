@@ -17,6 +17,10 @@ use crate::figma_import_session::{PreparedImport, PumpOutcome};
 use crate::persistence::show_error_dialog_public;
 use op_host_services::doc_io::ErrorKind;
 
+/// Synthetic origin for resolving a file-import's relative resource
+/// references — same convention as `op-cli`'s `html_cli.rs`.
+const LOCAL_RESOURCE_ORIGIN: &str = "https://openpencil.local/";
+
 /// One in-flight `.html` parse — the source path (for the error
 /// dialog) plus the worker-thread receiver.
 pub struct HtmlImportSession {
@@ -54,15 +58,23 @@ fn parse_path(path: &Path) -> Result<PreparedImport, String> {
         .and_then(|s| s.to_str())
         .unwrap_or("HTML Import");
     let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    // Same-directory relative resources (stylesheets / images) load
-    // from disk; remote URLs stay unfetched (the importer records a
-    // warning) — file import never touches the network.
-    let fetcher = move |href: &str| local_resource_fetch(&base_dir, href);
+    // Relative references only resolve when the importer has a base
+    // URL, so file import uses the same synthetic local origin as the
+    // CLI (`html_cli.rs`): resolved URLs come back prefixed with the
+    // origin and are stripped to same-directory disk lookups. Real
+    // remote URLs keep their own scheme, fail the strip, and are
+    // rejected by `local_resource_fetch` — file import never touches
+    // the network (the importer records a warning instead).
+    let fetcher = move |url: &str| {
+        let href = url.strip_prefix(LOCAL_RESOURCE_ORIGIN).unwrap_or(url);
+        local_resource_fetch(&base_dir, href)
+    };
     // Down-scale embedded bitmaps exactly like the Figma import path.
     let transform =
         |bytes: &[u8]| crate::image_downscale::maybe_downscale(bytes).map(|(_mime, out)| out);
     let opts = op_html::HtmlImportOptions {
         document_name: Some(file_name.to_string()),
+        base_url: Some(format!("{LOCAL_RESOURCE_ORIGIN}document.html")),
         ..Default::default()
     };
     let result = op_html::import_html_document(&source, &opts, Some(&fetcher), Some(&transform));
@@ -170,6 +182,28 @@ fn refresh_title(window: Option<&winit::window::Window>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_path_fetches_relative_stylesheet() {
+        let dir = std::env::temp_dir().join("op_html_session_test");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("s.css"), b".x { color: #ff0000 }").unwrap();
+        std::fs::write(
+            dir.join("page.html"),
+            b"<html><head><link rel=\"stylesheet\" href=\"s.css\"></head>\
+              <body><p class=\"x\">t</p></body></html>",
+        )
+        .unwrap();
+        let prepared = parse_path(&dir.join("page.html")).expect("parse");
+        assert!(
+            prepared
+                .warnings
+                .iter()
+                .all(|w| !w.contains("external stylesheet skipped")),
+            "relative stylesheet must be fetched: {:?}",
+            prepared.warnings
+        );
+    }
 
     #[test]
     fn local_fetch_confines_to_directory() {
