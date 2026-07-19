@@ -179,7 +179,9 @@ fn bridge_handle_init_recovers_ready_without_emitting_it_directly() {
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/vscode_bridge.rs"))
             .expect("vscode_bridge source is readable");
     let handle_init = source
-        .split("fn handle_init(")
+        // Split on the bare name — `handle_init` carries generic parameters, so
+        // matching `fn handle_init(` silently stops finding the body.
+        .split("fn handle_init")
         .nth(1)
         .and_then(|body| body.split("pub(crate) fn register_late_init_hook").next())
         .expect("handle_init implementation");
