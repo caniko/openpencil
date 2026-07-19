@@ -681,9 +681,16 @@ fn export_paints_styled_text_runs_with_decorations() {
     let res = export_node_raster(&scene, "styled", &tmp, RasterFormat::Png, 1.0);
     assert!(res.is_ok(), "styled-text export failed: {res:?}");
     let decoded = decode_rgba(&std::fs::read(&tmp).unwrap());
-    // Underline strokes at baseline (top + font_size = 20) + 0.12 ×
-    // 20 ≈ doc y 22.4 → px rows ~22..24 in the tight export.
-    let band_y0 = 22;
+    // Underline strokes at the painter's metric baseline (top +
+    // ascent) + 0.12 × font_size — derive the band from the same
+    // backend metric the shared painter uses so this test tracks the
+    // ascent-based baseline instead of the retired `top + font_size`
+    // heuristic.
+    let baseline = {
+        let mut metric_backend = op_host_native::NativeBackend::with_dpi(1.0);
+        metric_backend.text_ascent_family(20.0, "", 700)
+    };
+    let band_y0 = (baseline + 0.12 * 20.0).floor() as i32 - 1;
     let mut painted_in_band = 0;
     for y in band_y0..(band_y0 + 3) {
         for x in 0..90 {

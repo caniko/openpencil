@@ -61,6 +61,7 @@ pub fn paint_node(canvas: &Canvas, node: &SceneNode) {
 pub fn paint_nodes(canvas: &Canvas, nodes: &[SceneNode]) {
     EXPORT_BACKEND.with(|cell| {
         let mut backend = cell.borrow_mut();
+        ensure_images_decoded(&mut backend, nodes);
         let mut frame = NativeFrameBackend::new(&mut backend, canvas);
         let mut cx = PaintCx {
             backend: &mut frame,
@@ -71,4 +72,45 @@ pub fn paint_nodes(canvas: &Canvas, nodes: &[SceneNode]) {
             canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
         }
     });
+}
+
+/// Headless paints have no event loop to pump the async image-decode
+/// seam, so a single pass would export the editor's placeholder art for
+/// every not-yet-rasterized image. Run discovery passes on a throwaway
+/// 1×1 surface (paint records pending decode ids + fills the byte
+/// cache), decode them synchronously into the backend's raster cache,
+/// and repeat until a pass records nothing new.
+fn ensure_images_decoded(backend: &mut NativeBackend, nodes: &[SceneNode]) {
+    use op_editor_ui::widgets::canvas_viewport_image::{
+        cached_bytes_for, mark_decode_done, take_pending_decodes,
+    };
+    // Nested subtrees can reveal new images once parents decode is not a
+    // thing (the scene is static), but the pending queue is bounded, so
+    // one discovery pass may not capture every miss — iterate.
+    for _ in 0..64 {
+        let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
+            return;
+        };
+        {
+            let mut frame = NativeFrameBackend::new(backend, surface.canvas());
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            for node in nodes.iter().rev() {
+                canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+            }
+        }
+        let pending = take_pending_decodes(usize::MAX);
+        if pending.is_empty() {
+            return;
+        }
+        for id in pending {
+            if let Some(bytes) = cached_bytes_for(id) {
+                if let Some(image) = op_host_native::decode_raster(&bytes) {
+                    backend.install_raster_image(id, image);
+                }
+            }
+            mark_decode_done(id);
+        }
+    }
 }
