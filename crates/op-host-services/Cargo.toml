@@ -22,6 +22,7 @@ mcp-debug-tools = ["op-mcp/debug-tools"]
 #     for the VS Code plugin's offline `.fig` -> `.op` convert endpoint
 #     (figma_convert.rs). ---
 op-figma = { path = "../op-figma" }
+op-html = { path = "../op-html" }
 op-editor-core = { path = "../op-editor-core" }
 op-editor-ui = { path = "../op-editor-ui" }
 op-editor-host-core = { path = "../op-editor-host-core" }

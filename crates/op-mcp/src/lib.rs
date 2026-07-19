@@ -77,6 +77,9 @@ pub mod guidelines_tools;
 pub mod import_html_tool;
 #[cfg(test)]
 mod import_html_tool_tests;
+pub mod import_snapshot_tool;
+#[cfg(test)]
+mod import_snapshot_tool_tests;
 mod insert_node_args;
 mod insert_node_data;
 pub mod json_serializer;
