@@ -1502,9 +1502,28 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 // browser's native paste fires the `paste` event. (Mirrors the
                 // skia codegen build, lib.rs.)
                 "v" if is_mod && !shift => {}
-                "z" if is_mod && !shift => consumed = b.host.apply_undo(),
-                "Z" if is_mod && shift => consumed = b.host.apply_redo(),
-                "y" if is_mod && !shift => consumed = b.host.apply_redo(),
+                // Case-insensitive: with Shift held, `key` is layout/IME
+                // dependent — macOS Chromium can report either "z" or "Z"
+                // for Cmd+Shift+Z, so branch on the shift flag alone.
+                "z" | "Z" if is_mod => {
+                    consumed = if shift {
+                        b.host.apply_redo()
+                    } else {
+                        b.host.apply_undo()
+                    };
+                }
+                "y" | "Y" if is_mod && !shift => consumed = b.host.apply_redo(),
+                "s" | "S" if is_mod && !shift => {
+                    // VS Code embed: the workbench cannot observe keystrokes
+                    // inside this cross-origin iframe, so Cmd/Ctrl+S must be
+                    // forwarded for a host-side save (extension runs the
+                    // regular workbench save → saveCustomDocument). Outside
+                    // the embed the browser default stays suppressed-by-noop.
+                    if b.host.editor_state().editor_ui.embed == op_editor_core::EmbedHost::VsCode {
+                        crate::web_clipboard::post_save_to_parent();
+                    }
+                    consumed = true;
+                }
                 _ => {
                     // No Cmd/Ctrl held: a bare letter is first offered to the
                     // single-key tool router (V/R/O/L/T/F/P/Y/H), which self-

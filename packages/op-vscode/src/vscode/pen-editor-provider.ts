@@ -15,7 +15,12 @@ import type { BridgeOutboundToPage } from "../protocol/bridge";
 import { encodeOutbound } from "../protocol/bridge";
 import { appendEmbedQuery, buildBootHtml, buildWebviewHtml } from "./webview-shell";
 import { pickRestartSource, resolveDaemonBinary, type LatestDurable } from "./restart-source";
-import { isShellControl, parseShellCopyText, parseShellReadyOrigin } from "./shell-messages";
+import {
+  isShellControl,
+  isShellSaveRequest,
+  parseShellCopyText,
+  parseShellReadyOrigin,
+} from "./shell-messages";
 import { encodeFigBytes, figSaveTargetPath, isFigPath } from "./fig-source";
 
 const SHELL_READY_TIMEOUT_MS = 5_000;
@@ -281,6 +286,13 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
         const copyText = parseShellCopyText(raw);
         if (copyText !== undefined) {
           void vscode.env.clipboard.writeText(copyText);
+          return;
+        }
+        // Cmd/Ctrl+S relay: run the regular workbench save — the custom
+        // editor tab is the active editor while the user types in it, so
+        // this lands in saveCustomDocument for THIS document.
+        if (isShellSaveRequest(raw)) {
+          void vscode.commands.executeCommand("workbench.action.files.save");
           return;
         }
         if (isShellControl(raw)) return;

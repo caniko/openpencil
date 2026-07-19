@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isShellControl, parseShellCopyText, parseShellReadyOrigin } from "./shell-messages";
+import { isShellControl, isShellSaveRequest, parseShellCopyText, parseShellReadyOrigin } from "./shell-messages";
 
 test("isShellControl matches only a top-level op-shell/ type", () => {
   expect(isShellControl(JSON.stringify({ type: "op-shell/ready", origin: "x" }))).toBe(true);
@@ -51,5 +51,14 @@ describe("parseShellCopyText", () => {
     expect(
       parseShellCopyText(JSON.stringify({ type: "op-bridge/opened", note: "op-shell/copy" })),
     ).toBeUndefined();
+  });
+});
+
+describe("isShellSaveRequest", () => {
+  test("matches only the op-shell/save control type", () => {
+    expect(isShellSaveRequest(JSON.stringify({ type: "op-shell/save" }))).toBe(true);
+    expect(isShellSaveRequest(JSON.stringify({ type: "op-shell/copy", text: "x" }))).toBe(false);
+    expect(isShellSaveRequest("not json")).toBe(false);
+    expect(isShellSaveRequest(1)).toBe(false);
   });
 });

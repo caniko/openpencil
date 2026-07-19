@@ -34,6 +34,19 @@ pub fn copy_text(text: &str) {
 /// forwards it to the extension host for `vscode.env.clipboard.writeText`.
 /// Target origin is `"*"`: the parent is the relay shell by construction,
 /// and the payload is content the user explicitly asked to copy.
+/// Relay a Cmd/Ctrl+S inside the embed to the extension host: the
+/// workbench can't observe keystrokes inside the cross-origin editor
+/// iframe, so the page forwards the intent and the extension runs the
+/// regular VS Code save (which lands in `saveCustomDocument`).
+pub fn post_save_to_parent() {
+    let Some(win) = web_sys::window() else { return };
+    let Ok(Some(parent)) = win.parent() else {
+        return;
+    };
+    let msg = r#"{"type":"op-shell/save"}"#;
+    let _ = parent.post_message(&wasm_bindgen::JsValue::from_str(msg), "*");
+}
+
 pub fn post_copy_to_parent(text: &str) {
     let Some(win) = web_sys::window() else { return };
     let Ok(Some(parent)) = win.parent() else {

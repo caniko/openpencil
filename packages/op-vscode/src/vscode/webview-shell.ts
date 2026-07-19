@@ -70,6 +70,12 @@ export function buildWebviewHtml(opts: { iframeSrc: string; nonce: string }): st
   const frame = document.getElementById("op-frame");
   const IFRAME_ORIGIN = ${JSON.stringify(iframeOrigin)};
 
+  // Keyboard shortcuts only reach the editor while the iframe holds focus —
+  // without this, keys after mount land on the shell body and die (the
+  // workbench can't see into a cross-origin iframe either).
+  frame.addEventListener("load", function () { frame.focus(); });
+  window.addEventListener("focus", function () { frame.focus(); });
+
   // The extension calls webview.postMessage(jsonString). Report ready again so
   // the extension (which ignores duplicates) knows the full shell is live.
   vscode.postMessage(JSON.stringify({ type: "op-shell/ready", origin: window.origin }));

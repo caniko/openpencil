@@ -17,6 +17,18 @@ export function isShellControl(raw: unknown): boolean {
   }
 }
 
+/** True for an op-shell/save control message — the embedded editor
+ *  forwarding a Cmd/Ctrl+S it saw inside the cross-origin iframe (the
+ *  workbench cannot observe those keystrokes itself). */
+export function isShellSaveRequest(raw: unknown): boolean {
+  if (typeof raw !== "string") return false;
+  try {
+    return (JSON.parse(raw) as { type?: unknown }).type === "op-shell/save";
+  } catch {
+    return false;
+  }
+}
+
 /** The text payload of an op-shell/copy control message, else undefined.
  *  The embedded editor relays clipboard writes through the extension host
  *  because the webview's nested-iframe permissions chain rejects
