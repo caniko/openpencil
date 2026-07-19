@@ -20,4 +20,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 op-editor-core = { path = "../op-editor-core" }
+op-editor-ui = { path = "../op-editor-ui" }
+op-host-services = { path = "../op-host-services" }
+op-pen-loader = { path = "../op-pen-loader" }
 serde_json = { workspace = true }

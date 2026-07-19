@@ -21,7 +21,7 @@ mod vector_decoder;
 #[path = "../src/zip_reader.rs"]
 mod zip_reader;
 
-use figma_types::{parse_fig_file, BlobOrString};
+use figma_types::{parse_fig_file, BlobOrString, FigMatrix};
 use kiwi::FigValue;
 use std::collections::BTreeMap;
 use tree::{build_tree, guid_to_string, TreeNode};
@@ -226,6 +226,180 @@ fn dump_named_contexts(
     visit(root, &options, None, &mut Vec::new());
 }
 
+fn layout_value(node: &FigValue, key: &str) -> String {
+    if let Some(value) = node.get_str(key) {
+        return value.to_string();
+    }
+    if let Some(value) = node.get_f64(key) {
+        return format!("{value:.2}");
+    }
+    if let Some(value) = node.get_bool(key) {
+        return value.to_string();
+    }
+    "-".to_string()
+}
+
+fn layout_dump(node: &TreeNode, depth: usize, max_depth: usize) {
+    let indent = "  ".repeat(depth);
+    let figma = &node.figma;
+    let guid = figma
+        .get("guid")
+        .and_then(guid_to_string)
+        .unwrap_or_else(|| "(none)".to_string());
+    let transform = figma.get("transform").and_then(FigMatrix::from_value);
+    let (m00, m01, m02, m10, m11, m12) = transform
+        .map(|m| (m.m00, m.m01, m.m02, m.m10, m.m11, m.m12))
+        .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
+    let size = figma.get("size");
+    let w = size.and_then(|value| value.get_f64("x")).unwrap_or(0.0);
+    let h = size.and_then(|value| value.get_f64("y")).unwrap_or(0.0);
+    let characters = figma
+        .get("textData")
+        .and_then(|data| data.get_str("characters"))
+        .unwrap_or("");
+    println!(
+        "{indent}- guid={guid} type={} name={:?} text={characters:?} children={}",
+        figma.get_str("type").unwrap_or("(none)"),
+        figma.get_str("name").unwrap_or(""),
+        node.children.len()
+    );
+    println!(
+        "{indent}  transform=[{m00:.4} {m01:.4} {m02:.2}; {m10:.4} {m11:.4} {m12:.2}] size=({w:.2},{h:.2})"
+    );
+    println!(
+        "{indent}  stackMode={} spacing={} primarySizing={} counterSizing={} primaryAlign={} counterAlign={}",
+        layout_value(figma, "stackMode"),
+        layout_value(figma, "stackSpacing"),
+        layout_value(figma, "stackPrimarySizing"),
+        layout_value(figma, "stackCounterSizing"),
+        layout_value(figma, "stackPrimaryAlignItems"),
+        layout_value(figma, "stackCounterAlignItems")
+    );
+    println!(
+        "{indent}  padding=[top:{} right:{} bottom:{} left:{} uniform:{} h:{} v:{}] textAutoResize={} constraints=({}, {})",
+        layout_value(figma, "stackPaddingTop"),
+        layout_value(figma, "stackPaddingRight"),
+        layout_value(figma, "stackPaddingBottom"),
+        layout_value(figma, "stackPaddingLeft"),
+        layout_value(figma, "stackPadding"),
+        layout_value(figma, "stackHorizontalPadding"),
+        layout_value(figma, "stackVerticalPadding"),
+        layout_value(figma, "textAutoResize"),
+        layout_value(figma, "horizontalConstraint"),
+        layout_value(figma, "verticalConstraint")
+    );
+    if figma.get_str("type") == Some("TEXT") {
+        let font_name = figma.get("fontName");
+        println!(
+            "{indent}  textStyle=family:{:?} style:{:?} size:{} lineHeight:{:?} letterSpacing:{:?} align=({},{})",
+            font_name.and_then(|value| value.get_str("family")),
+            font_name.and_then(|value| value.get_str("style")),
+            layout_value(figma, "fontSize"),
+            figma.get("lineHeight"),
+            figma.get("letterSpacing"),
+            layout_value(figma, "textAlignHorizontal"),
+            layout_value(figma, "textAlignVertical")
+        );
+    }
+    if let Some(image) = figma.get_array("fillPaints").and_then(|paints| {
+        paints
+            .iter()
+            .find(|paint| paint.get_str("type") == Some("IMAGE"))
+    }) {
+        let transform = image.get("transform").and_then(FigMatrix::from_value);
+        println!(
+            "{indent}  image mode={} original=({},{}) transform={:?}",
+            layout_value(image, "imageScaleMode"),
+            layout_value(image, "originalImageWidth"),
+            layout_value(image, "originalImageHeight"),
+            transform.map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12])
+        );
+    }
+    if depth < max_depth {
+        for child in &node.children {
+            layout_dump(child, depth + 1, max_depth);
+        }
+    }
+}
+
+struct LayoutProbeOptions<'a> {
+    page_name: &'a str,
+    targets: &'a [String],
+    guids: &'a [String],
+    target_size: Option<(f64, f64)>,
+    ancestor_levels: usize,
+    max_depth: usize,
+    match_limit: usize,
+}
+
+fn dump_layout_contexts(root: &TreeNode, options: &LayoutProbeOptions<'_>) {
+    fn visit<'a>(
+        node: &'a TreeNode,
+        options: &LayoutProbeOptions<'_>,
+        current_page: Option<&'a str>,
+        stack: &mut Vec<&'a TreeNode>,
+        matches: &mut usize,
+    ) {
+        if *matches >= options.match_limit {
+            return;
+        }
+        let current_page = if node.figma.get_str("type") == Some("CANVAS") {
+            node.figma.get_str("name")
+        } else {
+            current_page
+        };
+        stack.push(node);
+        let name = node.figma.get_str("name").unwrap_or("");
+        let characters = node
+            .figma
+            .get("textData")
+            .and_then(|data| data.get_str("characters"))
+            .unwrap_or("");
+        let guid = node.figma.get("guid").and_then(guid_to_string);
+        let size = node.figma.get("size");
+        let size_matches = options.target_size.is_some_and(|(target_w, target_h)| {
+            let w = size
+                .and_then(|value| value.get_f64("x"))
+                .unwrap_or(f64::NAN);
+            let h = size
+                .and_then(|value| value.get_f64("y"))
+                .unwrap_or(f64::NAN);
+            (w - target_w).abs() < 0.01 && (h - target_h).abs() < 0.01
+        });
+        let matched = options
+            .targets
+            .iter()
+            .any(|target| target == name || target == characters)
+            || guid
+                .as_ref()
+                .is_some_and(|guid| options.guids.iter().any(|target| target == guid))
+            || size_matches;
+        if matched && (options.page_name == "*" || current_page == Some(options.page_name)) {
+            *matches += 1;
+            let context_index = stack.len().saturating_sub(1 + options.ancestor_levels);
+            let context = stack[context_index];
+            let path = stack
+                .iter()
+                .map(|entry| entry.figma.get_str("name").unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            println!(
+                "\n== LAYOUT MATCH {} on page {:?} ==",
+                guid.as_deref().unwrap_or(name),
+                current_page.unwrap_or("(outside canvas)")
+            );
+            println!("tree path: {path}");
+            layout_dump(context, 0, options.max_depth);
+        }
+        for child in &node.children {
+            visit(child, options, current_page, stack, matches);
+        }
+        stack.pop();
+    }
+
+    visit(root, options, None, &mut Vec::new(), &mut 0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let path = args
@@ -242,6 +416,17 @@ fn main() {
         .filter(|pair| pair[0] == "--target")
         .map(|pair| pair[1].clone())
         .collect();
+    let guids: Vec<String> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--guid")
+        .map(|pair| pair[1].clone())
+        .collect();
+    let target_size = args
+        .windows(2)
+        .find(|pair| pair[0] == "--size")
+        .and_then(|pair| pair[1].split_once('x'))
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+    let layout_only = args.iter().any(|arg| arg == "--layout");
     let blob_indices: Vec<usize> = args
         .windows(2)
         .filter(|pair| pair[0] == "--blob")
@@ -257,6 +442,11 @@ fn main() {
         .find(|pair| pair[0] == "--depth")
         .and_then(|pair| pair[1].parse().ok())
         .unwrap_or(4);
+    let match_limit = args
+        .windows(2)
+        .find(|pair| pair[0] == "--limit")
+        .and_then(|pair| pair[1].parse().ok())
+        .unwrap_or(20);
     let bytes = std::fs::read(path).expect("read");
     let decoded = match parse_fig_file(&bytes) {
         Ok(d) => d,
@@ -294,6 +484,21 @@ fn main() {
                 None => println!("blob[{index}] missing"),
             }
         }
+        return;
+    }
+
+    if layout_only && (!targets.is_empty() || !guids.is_empty() || target_size.is_some()) {
+        let root = build_tree(&decoded.node_changes).expect("document tree");
+        let options = LayoutProbeOptions {
+            page_name,
+            targets: &targets,
+            guids: &guids,
+            target_size,
+            ancestor_levels,
+            max_depth,
+            match_limit,
+        };
+        dump_layout_contexts(&root, &options);
         return;
     }
 
