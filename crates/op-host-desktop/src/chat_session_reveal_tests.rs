@@ -73,7 +73,9 @@ fn pump_defers_loop_finalize_until_registered_reveals_drain() {
         Some(tool_rx),
     ));
 
-    for _ in 0..200 {
+    // Generous budget: the provider runs on a worker thread, and a loaded CI
+    // runner can take far longer than the local ~10 pumps to deliver the batch.
+    for _ in 0..4000 {
         pump(&mut host, &mut current, None, None, (1200.0, 800.0));
         if op_editor_core::agent_indicators::latest_reveal_end_ms(epoch).is_some() {
             break;
