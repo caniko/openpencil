@@ -133,13 +133,14 @@ fn load_into_host(host: &mut WidgetHostNative, path: &std::path::Path) -> Result
         state.doc.children.len(),
         bb
     );
-    *host.editor_state_mut() = state;
+    host.replace_editor_state(state);
     host.editor_state_mut().mark_saved_revision();
     // The loaded document restarts at revision 0 / page 0, so its LayerPanel
     // row-model-cache key aliases the replaced document's — rotate the owner so
     // the next paint rebuilds instead of serving the old document's rows.
     host.force_rotate_layer_panel_owner();
     host.mark_editor_state_dirty();
+    host.arm_missing_fonts_detection();
     Ok(())
 }
 
@@ -253,7 +254,7 @@ pub fn run_action(
         FileAction::New => {
             let mut state = EditorState::starter();
             preserve_app_preferences(host.editor_state(), &mut state);
-            *host.editor_state_mut() = state;
+            host.replace_editor_state(state);
             let (vw, vh) = viewport_size_for_window(window);
             host.fit_content_to_viewport(vw, vh);
             host.editor_state_mut().mark_saved_revision();

@@ -204,11 +204,16 @@ struct DesktopApp {
     current_html_import: Option<html_import_session::HtmlImportSession>,
     /// In-flight Figma CLIPBOARD paste decode (Cmd+V) — worker sends
     /// the parsed nodes; the redraw path pumps + inserts them.
-    pending_figma_paste: Option<std::sync::mpsc::Receiver<Vec<jian_ops_schema::node::PenNode>>>,
+    pending_figma_paste: Option<(
+        u64,
+        std::sync::mpsc::Receiver<Vec<jian_ops_schema::node::PenNode>>,
+    )>,
     /// In-flight clipboard HTML decode (non-Figma `text/html` paste):
     /// worker thread sends `(nodes, warnings)`.
-    pending_html_paste:
-        Option<std::sync::mpsc::Receiver<(Vec<jian_ops_schema::node::PenNode>, Vec<String>)>>,
+    pending_html_paste: Option<(
+        u64,
+        std::sync::mpsc::Receiver<(Vec<jian_ops_schema::node::PenNode>, Vec<String>)>,
+    )>,
     /// Background AI-model discovery — probes the installed CLIs
     /// on a worker thread; its result is drained into
     /// `chat.available_models` on a later frame.
@@ -486,9 +491,12 @@ impl DesktopApp {
         // silent no-op when it finishes.
         figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
         html_import_session::cancel(&mut self.host, &mut self.current_html_import);
-        // A queued clipboard HTML decode must not land in the
-        // document that just replaced the one it was pasted into.
-        self.pending_html_paste = None;
+        // Pending clipboard-paste decodes are NOT cancelled here: this
+        // runs on plain Save too, and a save must not discard a paste
+        // the user is mid-way through. Attribution to the right
+        // document is handled by the document-epoch guard in
+        // `pump_*_clipboard_paste` — a paste decoded for a document
+        // that a later Open / New / import replaced is dropped there.
         self.image_search.reset();
         self.saved_doc_fingerprint =
             op_host_services::doc_io::document_fingerprint(self.host.editor_state());

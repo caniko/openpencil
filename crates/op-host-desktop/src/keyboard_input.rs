@@ -510,7 +510,10 @@ impl DesktopApp {
                 .unwrap_or_default();
             let _ = tx.send(nodes);
         });
-        self.pending_figma_paste = Some(rx);
+        // Capture the document epoch so a decode that finishes after
+        // the user opens / creates / imports another document is
+        // dropped instead of landing in the wrong document.
+        self.pending_figma_paste = Some((self.host.document_epoch(), rx));
         // Consumed — the paste lands asynchronously (or decodes to
         // nothing and is silently dropped, never raw-HTML-pasted).
         Some(true)
@@ -519,13 +522,17 @@ impl DesktopApp {
     /// Drain a finished clipboard decode — inserts the nodes centred
     /// on the viewport. Called once per frame by the redraw path.
     pub(crate) fn pump_figma_clipboard_paste(&mut self) -> bool {
-        let Some(rx) = self.pending_figma_paste.as_ref() else {
+        let Some((epoch, rx)) = self.pending_figma_paste.as_ref() else {
             return false;
         };
+        let epoch = *epoch;
         match rx.try_recv() {
             Ok(nodes) => {
                 self.pending_figma_paste = None;
-                !nodes.is_empty()
+                // Drop the result if the document was replaced while
+                // the worker was decoding.
+                epoch == self.host.document_epoch()
+                    && !nodes.is_empty()
                     && self
                         .host
                         .paste_figma_nodes(nodes, self.viewport_width, self.viewport_height)
@@ -553,7 +560,8 @@ impl DesktopApp {
             let result = op_html::import_html(&html, &op_html::HtmlImportOptions::default());
             let _ = tx.send((result.nodes, result.warnings));
         });
-        self.pending_html_paste = Some(rx);
+        // Epoch-guard the decode (see `try_figma_clipboard_paste`).
+        self.pending_html_paste = Some((self.host.document_epoch(), rx));
         // Consumed — the paste lands asynchronously (or decodes to
         // nothing and is silently dropped, never raw-HTML-pasted).
         Some(true)
@@ -562,16 +570,20 @@ impl DesktopApp {
     /// Drain a finished HTML decode — inserts the nodes centred on
     /// the viewport. Called once per frame by the redraw path.
     pub(crate) fn pump_html_clipboard_paste(&mut self) -> bool {
-        let Some(rx) = self.pending_html_paste.as_ref() else {
+        let Some((epoch, rx)) = self.pending_html_paste.as_ref() else {
             return false;
         };
+        let epoch = *epoch;
         match rx.try_recv() {
             Ok((nodes, warnings)) => {
                 self.pending_html_paste = None;
                 for warning in &warnings {
                     eprintln!("[import-html] warning: {warning}");
                 }
-                !nodes.is_empty()
+                // Drop the result if the document was replaced while
+                // the worker was decoding.
+                epoch == self.host.document_epoch()
+                    && !nodes.is_empty()
                     && self
                         .host
                         .paste_figma_nodes(nodes, self.viewport_width, self.viewport_height)

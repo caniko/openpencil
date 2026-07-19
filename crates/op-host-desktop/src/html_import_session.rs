@@ -105,7 +105,14 @@ pub(crate) fn local_resource_fetch(dir: &Path, href: &str) -> Option<Vec<u8>> {
     {
         return None;
     }
-    let candidate = dir.join(href);
+    // Strip a `?query` / `#fragment` — cache-busting suffixes like
+    // `style.css?v=1` name a real file on disk once the suffix is
+    // dropped (mirrors `html_cli.rs`'s local fetch).
+    let rel = href.split_once(['?', '#']).map_or(href, |(path, _)| path);
+    if rel.is_empty() {
+        return None;
+    }
+    let candidate = dir.join(rel);
     let resolved = candidate.canonicalize().ok()?;
     let dir_resolved = dir.canonicalize().ok()?;
     if !resolved.starts_with(&dir_resolved) {
@@ -218,6 +225,15 @@ mod tests {
         assert_eq!(
             local_resource_fetch(&dir, "sub/b.css").as_deref(),
             Some(b"y".as_ref())
+        );
+        // Cache-busting query / fragment suffixes still resolve to the file.
+        assert_eq!(
+            local_resource_fetch(&dir, "a.css?v=2").as_deref(),
+            Some(b"x".as_ref())
+        );
+        assert_eq!(
+            local_resource_fetch(&dir, "a.css#top").as_deref(),
+            Some(b"x".as_ref())
         );
         assert!(local_resource_fetch(&dir, "../outside.css").is_none());
         assert!(local_resource_fetch(&dir, "/etc/hosts").is_none());

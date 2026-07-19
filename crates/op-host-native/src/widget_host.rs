@@ -78,6 +78,8 @@ mod design_md_press;
 #[cfg(test)]
 mod design_md_press_tests;
 #[cfg(test)]
+mod document_epoch_tests;
+#[cfg(test)]
 mod figma_import_tests;
 #[cfg(test)]
 mod font_generation_scene_tests;
@@ -104,6 +106,7 @@ mod input_tests;
 #[cfg(test)]
 mod instance_panel_tests;
 mod keyboard;
+mod missing_fonts_dispatch;
 mod mode_transition_host;
 #[cfg(test)]
 mod overlay_cursor_tests;
@@ -213,6 +216,14 @@ pub struct WidgetHostNative {
     /// rebuild of `layout_scene` — `refresh_layout_scene()` rebuilds
     /// + clears the flag, so a sequence of mutations re-derives once.
     pub(in crate::widget_host) editor_state_dirty: bool,
+    /// Monotonic counter bumped every time the WHOLE `editor_state` is
+    /// replaced (Open / New / import) — never on an in-place edit or a
+    /// save. Async work captured against a document (e.g. a clipboard
+    /// paste decode on a worker thread) reads this at dispatch and
+    /// re-checks it before applying its result, so a result decoded
+    /// for a document that has since been replaced is dropped instead
+    /// of landing in the wrong document.
+    pub(in crate::widget_host) document_epoch: u64,
     /// The `jian_skia` font-registry generation the current `layout_scene`
     /// was built against. A runtime font import/removal bumps that
     /// generation WITHOUT dirtying `editor_state`, so `refresh_layout_scene`
@@ -666,6 +677,7 @@ impl WidgetHostNative {
             layout_transition: None,
             scene_cache: op_pen_loader::SceneBuildCache::new(),
             editor_state_dirty: false,
+            document_epoch: 0,
             layout_scene_font_generation,
             theme: Theme::dark(),
             drag: None,
@@ -1215,6 +1227,27 @@ impl WidgetHostNative {
         self.editor_state_dirty = true;
     }
 
+    /// The current document epoch — bumped on every whole-document
+    /// replacement (Open / New / import), never on save or in-place
+    /// edit. Async work captures this at dispatch and re-checks it
+    /// before applying, so a result decoded for a since-replaced
+    /// document is dropped. See [`Self::document_epoch`] field docs.
+    pub fn document_epoch(&self) -> u64 {
+        self.document_epoch
+    }
+
+    /// Replace the whole editor state (Open / New) and bump the
+    /// document epoch. Use this instead of assigning through
+    /// `editor_state_mut()` whenever a fresh document supersedes the
+    /// current one, so epoch-guarded async work can detect the swap.
+    /// (`install_imported_state` is the import-specific analogue and
+    /// bumps the epoch itself.)
+    pub fn replace_editor_state(&mut self, state: op_editor_core::EditorState) {
+        self.editor_state = state;
+        self.document_epoch = self.document_epoch.wrapping_add(1);
+        self.editor_state_dirty = true;
+    }
+
     /// Install a Figma-imported editor state. The worker only parses
     /// into canonical data; layout scene construction stays on the
     /// normal host path so the worker never touches Skia / FontMgr.
@@ -1234,6 +1267,10 @@ impl WidgetHostNative {
         state.editor_ui = preserved;
 
         let old_state = std::mem::replace(&mut self.editor_state, state);
+        // Whole-document replacement — bump the epoch so any async
+        // work captured against the previous document (e.g. a pending
+        // clipboard paste decode) is dropped instead of applied here.
+        self.document_epoch = self.document_epoch.wrapping_add(1);
         let old_scene = std::mem::take(&mut self.layout_scene);
         std::thread::Builder::new()
             .name("op-import-drop".into())
@@ -1256,6 +1293,7 @@ impl WidgetHostNative {
         // build's inputs — otherwise the canvas would stay blank.
         self.scene_cache.invalidate();
         self.editor_state_dirty = true;
+        self.arm_missing_fonts_detection();
     }
 
     /// Drain a queued Component-Browser insert: place the chosen
