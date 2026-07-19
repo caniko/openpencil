@@ -12,12 +12,20 @@ on:
     tags: ['v*']
     paths:
       - 'packages/op-vscode/**'
+      # op-vscode is a member of the packages/ Bun workspace: its
+      # dependency graph is locked at the WORKSPACE root, so a root
+      # package.json / bun.lock bump changes this extension's deps
+      # without touching packages/op-vscode/**.
+      - 'packages/package.json'
+      - 'packages/bun.lock'
       # build.mjs extracts the bundled AI skill from the CLI's asset.
       - 'crates/op-cli/assets/skill-bundle.json'
       - '.github/workflows/vscode-extension.yml'
   pull_request:
     paths:
       - 'packages/op-vscode/**'
+      - 'packages/package.json'
+      - 'packages/bun.lock'
       - 'crates/op-cli/assets/skill-bundle.json'
       - '.github/workflows/vscode-extension.yml'
 
@@ -36,8 +44,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        working-directory: packages/op-vscode
+      - name: Install dependencies (workspace root — bun.lock lives there)
+        working-directory: packages
         run: bun install --frozen-lockfile
 
       - name: Type check
