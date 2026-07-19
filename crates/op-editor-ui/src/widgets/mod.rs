@@ -264,6 +264,7 @@ pub mod icon_picker_panel;
 pub mod ime_preedit_overlay;
 pub mod locale_picker;
 pub mod login_modal;
+pub mod missing_fonts_panel;
 mod property_panel_color_variables;
 pub mod shape_picker;
 pub mod status_bar;
@@ -317,6 +318,7 @@ pub use icon_picker_panel::{
     ICON_PICKER_PANEL_W,
 };
 pub use locale_picker::{LocalePicker, LOCALE_PICKER_WIDTH};
+pub use missing_fonts_panel::{MissingFontsHit, MissingFontsPanel};
 pub use shape_picker::{ShapeChoice, ShapePicker, SHAPE_PICKER_WIDTH};
 pub use status_bar::{StatusBar, STATUS_BAR_HEIGHT, STATUS_BAR_WIDTH};
 pub use top_bar::{TopBar, TopBarHit, TOP_BAR_HEIGHT};
