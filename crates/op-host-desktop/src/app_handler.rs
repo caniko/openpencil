@@ -1214,17 +1214,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 // Font import / removal raised by the property-panel
                 // font picker — open the rfd dialog / run FontStore IO,
                 // then refresh the picker's imported-family snapshot.
-                let font_request_ran = crate::font_import_host::drain_font_requests(&mut self.host);
-                if font_request_ran {
-                    self.host.refresh_missing_fonts_prompt();
-                    self.request_redraw(true);
-                }
-                let missing_fonts_detection_ready = {
-                    let ui = &self.host.editor_state().editor_ui;
-                    ui.missing_fonts_pending_detect && ui.system_fonts_loaded
-                };
-                if missing_fonts_detection_ready {
-                    self.host.arm_missing_fonts_detection();
+                if crate::font_import_host::drain_font_requests(&mut self.host) {
                     self.request_redraw(true);
                 }
                 if let Some(action) = self
