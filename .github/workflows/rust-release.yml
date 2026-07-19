@@ -31,6 +31,10 @@ name: Rust release artifacts
 #                                                bundles usr/bin/op
 #           openpencil-desktop-<label>.tar.gz    raw binary (kept)
 #           op-cli-<label>.tar.gz                standalone CLI
+#   all     openpencil-vscode-<v>.vsix           VS Code extension (platform-
+#                                                neutral; daemon binary not
+#                                                embedded yet — packaging
+#                                                Plan 3)
 #
 # Branding: productName "OpenPencil" everywhere (parity with
 # electron-builder.yml). The macOS bundle id stays com.zseven-w.openpencil
@@ -636,9 +640,46 @@ jobs:
           path: sdk-packages/*.tgz
           if-no-files-found: error
 
+  vsix:
+    name: Package VS Code extension
+    needs: version
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      OP_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install package workspace dependencies
+        working-directory: packages
+        run: bun install --frozen-lockfile
+      - name: Check, build, and package
+        working-directory: packages/op-vscode
+        shell: bash
+        run: |
+          set -euo pipefail
+          bunx tsc -p tsconfig.json --noEmit
+          bun test src
+          node build.mjs
+          # Stamp the release version into the manifest (runtime-only — the
+          # extension is not in the sync-version managed set yet).
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.OP_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          cp ../../LICENSE LICENSE
+          bunx @vscode/vsce package --no-dependencies --allow-missing-repository \
+            --out "openpencil-vscode-${OP_VERSION}.vsix"
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpencil-vscode-vsix
+          path: packages/op-vscode/*.vsix
+          if-no-files-found: error
+
   release-draft:
     name: Create / update GitHub prerelease
-    needs: [version, build, web-docker, sdk-packages]
+    needs: [version, build, web-docker, sdk-packages, vsix]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     env:
@@ -658,13 +699,14 @@ jobs:
           find dist -type f \
             \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.dmg" \
                -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" \
-               -o -name "*.tgz" \) \
+               -o -name "*.tgz" -o -name "*.vsix" \) \
             -exec cp {} release-files/ \;
           ls -la release-files
           shopt -s nullglob
           native=(release-files/OpenPencil-* release-files/openpencil-desktop-*)
           cli=(release-files/op-cli-*)
           sdk=(release-files/*.tgz)
+          vsix=(release-files/*.vsix)
           if [ "${#native[@]}" -eq 0 ]; then
             echo "::error::missing native desktop artifacts"
             exit 1
@@ -675,6 +717,10 @@ jobs:
           fi
           if [ "${#sdk[@]}" -ne 3 ]; then
             echo "::error::expected 3 SDK tarballs, found ${#sdk[@]}"
+            exit 1
+          fi
+          if [ "${#vsix[@]}" -ne 1 ]; then
+            echo "::error::expected 1 VS Code extension .vsix, found ${#vsix[@]}"
             exit 1
           fi
       - name: Generate CLI install scripts
