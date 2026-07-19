@@ -7,6 +7,7 @@ use crate::figma_types::{BlobOrString, FigMatrix};
 use crate::kiwi::FigValue;
 use crate::mappers::{map_height_sizing, map_width_sizing};
 use crate::tree::TreeNode;
+use crate::vector_decoder::{INSTANCE_GEOMETRY_SCALE_X, INSTANCE_GEOMETRY_SCALE_Y};
 use jian_ops_schema::node::base::{NumberOrExpression, PenNodeBase};
 use jian_ops_schema::node::container::CornerRadius;
 use jian_ops_schema::sizing::SizingBehavior;
@@ -305,47 +306,120 @@ pub fn resolve_height(
     }
 }
 
-/// Recursively rescale a SYMBOL subtree to fit a differently-sized
-/// instance. Only translation (`m02`/`m12`) + size + stroke weight
-/// scale; the rotation/scale matrix cells are untouched.
-pub fn scale_tree_children(children: &[TreeNode], sx: f64, sy: f64) -> Vec<TreeNode> {
-    if (sx - 1.0).abs() < 0.001 && (sy - 1.0).abs() < 0.001 {
-        return children.to_vec();
+/// Private markers consumed by the vector decoder after a component
+/// instance scales node-local command geometry. Vector-network paths
+/// derive their scale from `size / normalizedSize` and do not use it.
+fn scale_number_field(figma: &mut FigValue, key: &str, scale: f64) {
+    if let Some(value) = figma.get_f64(key) {
+        figma.set(key, FigValue::Float(round2(value * scale) as f32));
     }
-    let stroke_scale = sx.min(sy);
+}
+
+fn has_command_geometry(figma: &FigValue) -> bool {
+    ["fillGeometry", "strokeGeometry"].iter().any(|key| {
+        figma
+            .get_array(key)
+            .is_some_and(|geometry| !geometry.is_empty())
+    })
+}
+
+fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
+    let metric_scale = sx.abs().min(sy.abs());
+    let figma = &mut child.figma;
+    if let Some(mut transform) = figma.get("transform").cloned() {
+        let m02 = transform.get_f64("m02").unwrap_or(0.0) * sx;
+        let m12 = transform.get_f64("m12").unwrap_or(0.0) * sy;
+        transform.set("m02", FigValue::Float(m02 as f32));
+        transform.set("m12", FigValue::Float(m12 as f32));
+        figma.set("transform", transform);
+    }
+    // An auto-growing text box is sized by its content at its authored
+    // font size, not by the instance ratio — scaling it squeezes the
+    // label (a 0.4-scaled button pinched a 24 px "搜索" box to 9.6 px
+    // while its font stayed 12). Only a fixed box (`textAutoResize:
+    // NONE`) follows the instance scale on the axis it fixes.
+    let (scale_w, scale_h) = match figma.get_str("textAutoResize") {
+        Some("WIDTH_AND_HEIGHT") => (false, false),
+        Some("HEIGHT") => (true, false),
+        _ => (true, true),
+    };
+    if let Some(mut size) = figma.get("size").cloned() {
+        if scale_w {
+            let x = size.get_f64("x").unwrap_or(0.0) * sx.abs();
+            size.set("x", FigValue::Float(x as f32));
+        }
+        if scale_h {
+            let y = size.get_f64("y").unwrap_or(0.0) * sy.abs();
+            size.set("y", FigValue::Float(y as f32));
+        }
+        figma.set("size", size);
+    }
+    // Stroke weights and corner radii follow the box: an icon symbol
+    // authored at 120 px and instanced at 40 px reads as a 1/3-scale
+    // drawing, strokes included. Text metrics deliberately do NOT
+    // scale — resizing an instance in Figma reflows the text box and
+    // leaves `fontSize` / line-height / letter-spacing as authored
+    // (only the Scale tool rewrites those, and it bakes the new values
+    // into the file, so they arrive here already correct).
+    for key in [
+        "strokeWeight",
+        "borderTopWeight",
+        "borderRightWeight",
+        "borderBottomWeight",
+        "borderLeftWeight",
+        "cornerRadius",
+        "rectangleTopLeftCornerRadius",
+        "rectangleTopRightCornerRadius",
+        "rectangleBottomRightCornerRadius",
+        "rectangleBottomLeftCornerRadius",
+    ] {
+        scale_number_field(figma, key, metric_scale);
+    }
+
+    if has_command_geometry(figma) {
+        let accumulated_x = figma.get_f64(INSTANCE_GEOMETRY_SCALE_X).unwrap_or(1.0) * sx;
+        let accumulated_y = figma.get_f64(INSTANCE_GEOMETRY_SCALE_Y).unwrap_or(1.0) * sy;
+        figma.set(
+            INSTANCE_GEOMETRY_SCALE_X,
+            FigValue::Float(accumulated_x as f32),
+        );
+        figma.set(
+            INSTANCE_GEOMETRY_SCALE_Y,
+            FigValue::Float(accumulated_y as f32),
+        );
+    }
+
+    // Stop at nested instances. Their own resolution pass rescales
+    // their subtree against their (already-scaled) box, and their
+    // derived entries are recorded in nested-instance space — letting
+    // an ancestor's ratio recurse past this point applies it twice
+    // (a 0.4-scaled outer instance squeezed a nested button's label
+    // box from 24 px to 9.6 px while its derived font size stayed 12).
+    let is_nested_instance = child.figma.get_str("type") == Some("INSTANCE")
+        || child.figma.get("symbolData").is_some();
+    if !is_nested_instance {
+        child.children = scale_tree_children_owned(child.children, sx, sy);
+    }
+    child
+}
+
+/// Recursively rescale a SYMBOL subtree to fit a differently-sized
+/// instance. Translation, size, vector geometry, stroke width, and
+/// corner radii scale; text metrics and the rotation matrix cells stay
+/// as authored. Nested calls accumulate the command-geometry scale.
+pub fn scale_tree_children(children: &[TreeNode], sx: f64, sy: f64) -> Vec<TreeNode> {
+    scale_tree_children_owned(children.to_vec(), sx, sy)
+}
+
+/// Owned variant used after derived data has already materialised a
+/// fresh subtree, avoiding a second deep clone for instance-heavy files.
+fn scale_tree_children_owned(children: Vec<TreeNode>, sx: f64, sy: f64) -> Vec<TreeNode> {
+    if (sx - 1.0).abs() < 0.001 && (sy - 1.0).abs() < 0.001 {
+        return children;
+    }
     children
-        .iter()
-        .map(|child| {
-            let mut figma = child.figma.clone();
-            if let Some(t) = figma.get("transform").cloned() {
-                let mut t = t;
-                let m02 = t.get_f64("m02").unwrap_or(0.0) * sx;
-                let m12 = t.get_f64("m12").unwrap_or(0.0) * sy;
-                t.set("m02", FigValue::Float(m02 as f32));
-                t.set("m12", FigValue::Float(m12 as f32));
-                figma.set("transform", t);
-            }
-            if let Some(size) = figma.get("size").cloned() {
-                let mut size = size;
-                let x = size.get_f64("x").unwrap_or(0.0) * sx;
-                let y = size.get_f64("y").unwrap_or(0.0) * sy;
-                size.set("x", FigValue::Float(x as f32));
-                size.set("y", FigValue::Float(y as f32));
-                figma.set("size", size);
-            }
-            if let Some(sw) = figma.get_f64("strokeWeight") {
-                if stroke_scale < 0.99 {
-                    figma.set(
-                        "strokeWeight",
-                        FigValue::Float(round2(sw * stroke_scale) as f32),
-                    );
-                }
-            }
-            TreeNode {
-                figma,
-                children: scale_tree_children(&child.children, sx, sy),
-            }
-        })
+        .into_iter()
+        .map(|child| scale_tree_node(child, sx, sy))
         .collect()
 }
 

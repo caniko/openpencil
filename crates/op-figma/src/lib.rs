@@ -6,6 +6,7 @@
 //! [`node_mapper`]). Clipboard-JSON (`.fig.json`) keeps the
 //! hand-rolled shallow extractor below.
 
+mod boolean_fallback;
 mod clipboard;
 mod color;
 mod common;

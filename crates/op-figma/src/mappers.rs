@@ -201,6 +201,8 @@ fn normalize_image_transform(m: FigMatrix) -> Option<ImageTransform> {
 fn map_scale_mode(mode: Option<&str>) -> ImageFillMode {
     match mode {
         Some("FIT") => ImageFillMode::Fit,
+        Some("CROP") => ImageFillMode::Crop,
+        Some("TILE") => ImageFillMode::Tile,
         Some("STRETCH") => ImageFillMode::Stretch,
         _ => ImageFillMode::Fill,
     }

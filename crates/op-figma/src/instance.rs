@@ -660,7 +660,7 @@ pub fn apply_instance_overrides_cached(
         }
         let empty: HashMap<String, FigValue> = HashMap::new();
         return rescaled
-            .iter()
+            .into_iter()
             .map(|c| {
                 apply_to_node(
                     c,
@@ -709,9 +709,11 @@ pub fn apply_instance_overrides_cached(
         }
     }
 
-    symbol_node
-        .children
-        .iter()
+    // Scale authored component-space geometry first. Derived size,
+    // transform, and font fields are already in instance space, so
+    // they overwrite this base rather than being scaled twice.
+    rescale_only(symbol_node, instance_size)
+        .into_iter()
         .map(|c| {
             apply_to_node(
                 c,

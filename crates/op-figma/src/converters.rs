@@ -2,6 +2,7 @@
 //! per-type converter modules. Walks the [`TreeNode`] tree and emits
 //! canonical `PenNode`s.
 
+use crate::boolean_fallback::convert_empty_boolean_group;
 use crate::common::{
     common_props, extract_position, lookup_icon_by_name, map_corner_radius, map_corner_smoothing,
     normalize_angle, resolve_height, resolve_width, round2, round3, ConversionContext,
@@ -664,6 +665,9 @@ fn convert_vector(
     }
 
     if !has_non_degenerate_vector_geometry(figma, ctx) {
+        if let Some(group) = convert_empty_boolean_group(tree, parent_stack_mode, id.clone(), ctx) {
+            return group;
+        }
         ctx.warnings.push(format!(
             "Vector node \"{}\" imported as invisible path (empty geometry)",
             figma.get_str("name").unwrap_or("")
@@ -779,5 +783,9 @@ fn build_icon_path_node(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_boolean_fallback;
+#[cfg(test)]
+mod tests_instance_scale;
 #[cfg(test)]
 mod tests_vector_regressions;

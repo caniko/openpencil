@@ -110,7 +110,7 @@ fn merge_entry_lists(existing: Vec<FigValue>, forwarded: &[FigValue]) -> Vec<Fig
 }
 
 pub(super) fn apply_to_node(
-    node: &TreeNode,
+    node: TreeNode,
     node_override: &HashMap<String, FigValue>,
     node_derived: &HashMap<String, FigValue>,
     nested_override: &HashMap<String, Vec<FigValue>>,
@@ -125,16 +125,19 @@ pub(super) fn apply_to_node(
     let ov = node_override.get(&key);
     let nested_ov = nested_override.get(&key);
     let nested_d = nested_derived.get(&key);
+    let TreeNode {
+        mut figma,
+        children,
+    } = node;
 
     if d.is_none() && ov.is_none() && nested_ov.is_none() && nested_d.is_none() {
         return TreeNode {
-            figma: node.figma.clone(),
-            children: node
-                .children
-                .iter()
-                .map(|c| {
+            figma,
+            children: children
+                .into_iter()
+                .map(|child| {
                     apply_to_node(
-                        c,
+                        child,
                         node_override,
                         node_derived,
                         nested_override,
@@ -145,13 +148,11 @@ pub(super) fn apply_to_node(
         };
     }
 
-    let mut figma = node.figma.clone();
-
     // Derived data — scale stroke weight before overwriting size.
     if let Some(d) = d {
         if let (Some(dsize), Some(nsize)) = (
             d.get("size").and_then(FigVec2::from_value),
-            node.figma.get("size").and_then(FigVec2::from_value),
+            figma.get("size").and_then(FigVec2::from_value),
         ) {
             if let Some(sw) = figma.get_f64("strokeWeight") {
                 if nsize.x != 0.0 && nsize.y != 0.0 {
@@ -225,12 +226,11 @@ pub(super) fn apply_to_node(
 
     TreeNode {
         figma,
-        children: node
-            .children
-            .iter()
-            .map(|c| {
+        children: children
+            .into_iter()
+            .map(|child| {
                 apply_to_node(
-                    c,
+                    child,
                     node_override,
                     node_derived,
                     nested_override,

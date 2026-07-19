@@ -17,6 +17,10 @@ use crate::kiwi::FigValue;
 use jian_ops_schema::node::PathFillRule;
 use std::collections::HashMap;
 
+/// Private raw-tree markers written by the instance subtree scaler.
+pub(crate) const INSTANCE_GEOMETRY_SCALE_X: &str = "__opInstanceGeometryScaleX";
+pub(crate) const INSTANCE_GEOMETRY_SCALE_Y: &str = "__opInstanceGeometryScaleY";
+
 /// Approximate path bounding box (control points included).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathBounds {
@@ -67,6 +71,101 @@ fn r(n: f64) -> String {
     }
     let rounded: f64 = format!("{n:.4}").parse().unwrap_or(n);
     format!("{rounded}")
+}
+
+fn path_param_scale(command: char, index: usize, sx: f64, sy: f64) -> Option<f64> {
+    match command.to_ascii_uppercase() {
+        'M' | 'L' | 'T' => Some(if index.is_multiple_of(2) { sx } else { sy }),
+        'H' => Some(sx),
+        'V' => Some(sy),
+        'C' => Some(if index.is_multiple_of(2) { sx } else { sy }),
+        'S' | 'Q' => Some(if index.is_multiple_of(2) { sx } else { sy }),
+        'A' => match index % 7 {
+            0 | 5 => Some(sx),
+            1 | 6 => Some(sy),
+            // Rotation and the two arc flags are unitless.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Axis-aware SVG path scaler for instance-derived command geometry.
+/// Figma command blobs decode to absolute M/L/Q/C today, while the
+/// complete command table keeps this safe for future decoder growth.
+fn scale_command_path(d: &str, sx: f64, sy: f64) -> String {
+    if (sx - 1.0).abs() < 0.001 && (sy - 1.0).abs() < 0.001 {
+        return d.to_string();
+    }
+
+    let bytes = d.as_bytes();
+    let mut out = String::with_capacity(d.len());
+    let mut command = ' ';
+    let mut parameter = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let current = bytes[index] as char;
+        if current.is_ascii_alphabetic() {
+            command = current;
+            parameter = 0;
+            out.push(current);
+            index += 1;
+            continue;
+        }
+        if current.is_ascii_whitespace() || current == ',' {
+            out.push(current);
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        if matches!(current, '-' | '+') {
+            index += 1;
+        }
+        let mut has_digits = false;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            has_digits = true;
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'.' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                has_digits = true;
+                index += 1;
+            }
+        }
+        if has_digits && index < bytes.len() && matches!(bytes[index], b'e' | b'E') {
+            let exponent = index;
+            index += 1;
+            if index < bytes.len() && matches!(bytes[index], b'-' | b'+') {
+                index += 1;
+            }
+            let exponent_digits = index;
+            while index < bytes.len() && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            if exponent_digits == index {
+                index = exponent;
+            }
+        }
+        if !has_digits {
+            out.push(current);
+            index = start + 1;
+            continue;
+        }
+
+        let token = &d[start..index];
+        let scaled = token.parse::<f64>().ok().and_then(|value| {
+            path_param_scale(command, parameter, sx, sy).map(|scale| value * scale)
+        });
+        if let Some(value) = scaled {
+            out.push_str(&r(value));
+        } else {
+            out.push_str(token);
+        }
+        parameter += 1;
+    }
+    out
 }
 
 fn f32_le(blob: &[u8], off: usize) -> Option<f64> {
@@ -296,9 +395,14 @@ pub fn decode_figma_vector_path(
     if path_parts.is_empty() {
         return decode_vector_network_blob(node, blobs);
     }
-    // Geometry coords are already node-local — no scaling.
+    // Command geometry is node-local, so an inlined instance must
+    // apply the accumulated component→instance scale explicitly.
+    // Vector-network geometry takes the other branch and derives this
+    // naturally from the scaled `size / normalizedSize` ratio.
+    let sx = node.get_f64(INSTANCE_GEOMETRY_SCALE_X).unwrap_or(1.0);
+    let sy = node.get_f64(INSTANCE_GEOMETRY_SCALE_Y).unwrap_or(1.0);
     Some(DecodedVectorPath {
-        d: path_parts.join(" "),
+        d: scale_command_path(&path_parts.join(" "), sx, sy),
         fill_rule: fill_geometry_rule(node),
         // A geometry stream is already the paint-specific shape Figma
         // selected (fillGeometry or expanded strokeGeometry).

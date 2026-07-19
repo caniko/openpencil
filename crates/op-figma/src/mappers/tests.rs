@@ -83,6 +83,24 @@ fn image_fill_hash_url() {
 }
 
 #[test]
+fn image_fill_maps_crop_and_tile_scale_modes() {
+    for (figma_mode, expected) in [("CROP", ImageFillMode::Crop), ("TILE", ImageFillMode::Tile)] {
+        let paints = [obj(vec![
+            ("type", FigValue::Str("IMAGE".into())),
+            (
+                "image",
+                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            ),
+            ("imageScaleMode", FigValue::Str(figma_mode.into())),
+        ])];
+        match &map_figma_fills(Some(&paints)).unwrap()[0] {
+            PenFill::Image(image) => assert_eq!(image.mode, Some(expected)),
+            _ => panic!("expected image fill"),
+        }
+    }
+}
+
+#[test]
 fn stroke_uniform_thickness() {
     let node = obj(vec![
         (

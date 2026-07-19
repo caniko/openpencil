@@ -68,7 +68,17 @@ fn render(v: &FigValue) -> String {
     // Compound: render one level of scalar fields.
     let mut parts = Vec::new();
     for key in [
-        "x", "y", "m00", "m01", "m02", "m10", "m11", "m12", "position", "guid", "sessionID",
+        "x",
+        "y",
+        "m00",
+        "m01",
+        "m02",
+        "m10",
+        "m11",
+        "m12",
+        "position",
+        "guid",
+        "sessionID",
         "localID",
     ] {
         if let Some(inner) = v.get(key) {
@@ -110,7 +120,9 @@ fn main() {
 
     let bytes = std::fs::read(&path).expect("read fig");
     let parsed = parse_fig_file(&bytes).expect("parse fig");
-    let tree = build_tree(&parsed.node_changes).into_iter().collect::<Vec<_>>();
+    let tree = build_tree(&parsed.node_changes)
+        .into_iter()
+        .collect::<Vec<_>>();
 
     let mut hits = Vec::new();
     for root in &tree {
