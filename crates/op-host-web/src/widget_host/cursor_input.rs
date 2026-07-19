@@ -332,6 +332,28 @@ impl WidgetHost {
                 .hover_image_gen_provider_option = image_provider_option_hover;
             changed = true;
         }
+        let new_missing_hover = if matches!(
+            self.editor_state.editor_ui.agent_settings.tab,
+            AgentSettingsTab::Fonts
+        ) {
+            let panel = AgentSettingsPanel::for_editor(&self.editor_state);
+            let panel_rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
+            match panel.hit_test(panel_rect, point) {
+                AgentSettingsHit::MissingFontChooseFile(row) => {
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row))
+                }
+                AgentSettingsHit::RemoveImportedFont(row) => {
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if new_missing_hover != self.editor_state.editor_ui.missing_fonts_hover {
+            self.editor_state.editor_ui.missing_fonts_hover = new_missing_hover;
+            changed = true;
+        }
         if changed {
             self.mark_dirty();
         }

@@ -164,7 +164,14 @@ pub(super) fn paint_fonts_tab(
             theme.foreground,
         );
         let remove = imported_remove_rect(content, ui, row);
-        cx.backend.fill_round_rect(remove, 6.0, theme.muted);
+        let remove_hovered = ui.missing_fonts_hover
+            == Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row));
+        let remove_bg = if remove_hovered {
+            theme.accent
+        } else {
+            theme.muted
+        };
+        cx.backend.fill_round_rect(remove, 6.0, remove_bg);
         paint_text(
             cx,
             translate(ui, "common.delete"),
