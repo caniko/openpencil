@@ -66,6 +66,13 @@ fn canvaskit_clip_ops_use_intersect_clips_without_canvas2d_paths() {
         .find("canvas.clipRRect(CK.RRectXY")
         .expect("clipRoundRect uses CanvasKit clipRRect")
         + clip_round;
+    let clip_per_corner = source
+        .find("clipRoundRectPerCorner(x, y, w, h, tl, tr, br, bl)")
+        .expect("CanvasKit per-corner clip bridge marker exists");
+    let per_corner_op = source[clip_per_corner..]
+        .find("canvas.clipRRect(rr, CK.ClipOp.Intersect, true)")
+        .expect("per-corner clip uses CanvasKit clipRRect")
+        + clip_per_corner;
 
     assert!(
         clip_rect < rect_op
@@ -73,6 +80,10 @@ fn canvaskit_clip_ops_use_intersect_clips_without_canvas2d_paths() {
             && intersect < clip_round
             && clip_round < round_op,
         "CanvasKit clips must use explicit intersect clip ops, not stale Canvas2D paths"
+    );
+    assert!(
+        clip_per_corner < per_corner_op,
+        "CanvasKit per-corner clips must intersect an RRect"
     );
 }
 

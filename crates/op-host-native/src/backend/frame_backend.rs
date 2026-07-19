@@ -45,6 +45,11 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.clip_round_rect(self.canvas, rect, radius);
     }
 
+    fn clip_round_rect_per_corner(&mut self, rect: Rect, radii: [f32; 4]) {
+        self.inner
+            .clip_round_rect_per_corner(self.canvas, rect, radii);
+    }
+
     fn save(&mut self) {
         let _ = self.inner.save(self.canvas);
     }
@@ -366,6 +371,28 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         );
     }
 
+    fn fill_round_rect_linear_gradient_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        stops: &[(f32, Color)],
+        angle_deg: f32,
+        opacity: f32,
+    ) {
+        let _ = self.inner.save(self.canvas);
+        self.inner
+            .clip_round_rect_per_corner(self.canvas, rect, radii);
+        self.inner.fill_round_rect_linear_gradient(
+            self.canvas,
+            rect,
+            0.0,
+            stops,
+            angle_deg,
+            opacity,
+        );
+        self.inner.restore(self.canvas);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn fill_round_rect_radial_gradient(
         &mut self,
@@ -389,6 +416,33 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn fill_round_rect_radial_gradient_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        stops: &[(f32, Color)],
+        cx_frac: f32,
+        cy_frac: f32,
+        radius_frac: f32,
+        opacity: f32,
+    ) {
+        let _ = self.inner.save(self.canvas);
+        self.inner
+            .clip_round_rect_per_corner(self.canvas, rect, radii);
+        self.inner.fill_round_rect_radial_gradient(
+            self.canvas,
+            rect,
+            0.0,
+            stops,
+            cx_frac,
+            cy_frac,
+            radius_frac,
+            opacity,
+        );
+        self.inner.restore(self.canvas);
+    }
+
     fn fill_round_rect_mesh_gradient(
         &mut self,
         rect: Rect,
@@ -409,6 +463,30 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         );
     }
 
+    fn fill_round_rect_mesh_gradient_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        rows: u32,
+        cols: u32,
+        colors: &[Color],
+        opacity: f32,
+    ) {
+        let _ = self.inner.save(self.canvas);
+        self.inner
+            .clip_round_rect_per_corner(self.canvas, rect, radii);
+        self.inner.fill_round_rect_mesh_gradient(
+            self.canvas,
+            rect,
+            0.0,
+            rows,
+            cols,
+            colors,
+            opacity,
+        );
+        self.inner.restore(self.canvas);
+    }
+
     fn fill_round_rect_shader(
         &mut self,
         rect: Rect,
@@ -427,6 +505,30 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             opacity,
             fallback,
         );
+    }
+
+    fn fill_round_rect_shader_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        sksl: &str,
+        uniforms: &[(&str, &[f32])],
+        opacity: f32,
+        fallback: Color,
+    ) {
+        let _ = self.inner.save(self.canvas);
+        self.inner
+            .clip_round_rect_per_corner(self.canvas, rect, radii);
+        self.inner.fill_round_rect_shader(
+            self.canvas,
+            rect,
+            0.0,
+            sksl,
+            uniforms,
+            opacity,
+            fallback,
+        );
+        self.inner.restore(self.canvas);
     }
 
     fn resize(&mut self, _width: u32, _height: u32) {}

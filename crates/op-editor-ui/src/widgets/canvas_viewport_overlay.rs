@@ -115,23 +115,28 @@ pub fn paint_fill_then_stroke(
 ) {
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
-    let per_corner = node.corner_radii.map(|radii| radii.map(|v| v * zoom)).filter(
-        |radii| {
-            radii
-                .iter()
-                .skip(1)
-                .any(|radius| (*radius - radii[0]).abs() > f32::EPSILON)
-        },
-    );
+    let per_corner = scaled_non_uniform_corner_radii(node, zoom);
     // A native SkSL shader fill wins over everything (gradient / solid)
     // when present. Gradients in turn win over solid `fill`. The scene
     // builder leaves the first stop's / fallback colour in `fill` for
     // paint paths that don't grok the richer body, so the shader / gradient
     // body is the more faithful representation here.
     if let Some(shader) = node.shader.as_ref() {
-        paint_shader_rect(cx, shader, world_rect, if use_round { r } else { 0.0 });
+        paint_shader_rect(
+            cx,
+            shader,
+            world_rect,
+            if use_round { r } else { 0.0 },
+            per_corner,
+        );
     } else if let Some(gradient) = node.gradient.as_ref() {
-        paint_gradient_rect(cx, gradient, world_rect, if use_round { r } else { 0.0 });
+        paint_gradient_rect(
+            cx,
+            gradient,
+            world_rect,
+            if use_round { r } else { 0.0 },
+            per_corner,
+        );
     } else if let Some(fill) = fill {
         if use_round {
             if let Some(radii) = per_corner {
@@ -171,22 +176,25 @@ pub fn paint_fill_then_stroke(
     }
 }
 
-fn align_corner_radii(
-    radii: [f32; 4],
-    width: f32,
-    align: SceneStrokeAlign,
-) -> [f32; 4] {
+pub(crate) fn scaled_non_uniform_corner_radii(node: &SceneNode, zoom: f32) -> Option<[f32; 4]> {
+    node.corner_radii
+        .map(|radii| radii.map(|value| value * zoom))
+        .filter(|radii| {
+            radii
+                .iter()
+                .skip(1)
+                .any(|radius| (*radius - radii[0]).abs() > f32::EPSILON)
+        })
+}
+
+fn align_corner_radii(radii: [f32; 4], width: f32, align: SceneStrokeAlign) -> [f32; 4] {
     let half = width / 2.0;
     match align {
         SceneStrokeAlign::Center => radii,
         SceneStrokeAlign::Inside => radii.map(|radius| (radius - half).max(0.0)),
-        SceneStrokeAlign::Outside => radii.map(|radius| {
-            if radius > 0.0 {
-                radius + half
-            } else {
-                0.0
-            }
-        }),
+        SceneStrokeAlign::Outside => {
+            radii.map(|radius| if radius > 0.0 { radius + half } else { 0.0 })
+        }
     }
 }
 
@@ -288,6 +296,7 @@ pub(crate) fn paint_gradient_rect(
     gradient: &SceneGradient,
     rect: Rect,
     corner_radius: f32,
+    corner_radii: Option<[f32; 4]>,
 ) {
     match gradient {
         SceneGradient::Linear {
@@ -296,13 +305,19 @@ pub(crate) fn paint_gradient_rect(
             stops,
         } => {
             let flat: Vec<(f32, Color)> = stops.iter().map(|s| (s.offset, s.color)).collect();
-            cx.backend.fill_round_rect_linear_gradient(
-                rect,
-                corner_radius,
-                &flat,
-                *angle_deg,
-                *opacity,
-            );
+            if let Some(radii) = corner_radii {
+                cx.backend.fill_round_rect_linear_gradient_per_corner(
+                    rect, radii, &flat, *angle_deg, *opacity,
+                );
+            } else {
+                cx.backend.fill_round_rect_linear_gradient(
+                    rect,
+                    corner_radius,
+                    &flat,
+                    *angle_deg,
+                    *opacity,
+                );
+            }
         }
         SceneGradient::Radial {
             cx: gx,
@@ -312,15 +327,21 @@ pub(crate) fn paint_gradient_rect(
             stops,
         } => {
             let flat: Vec<(f32, Color)> = stops.iter().map(|s| (s.offset, s.color)).collect();
-            cx.backend.fill_round_rect_radial_gradient(
-                rect,
-                corner_radius,
-                &flat,
-                *gx,
-                *cy,
-                *radius,
-                *opacity,
-            );
+            if let Some(radii) = corner_radii {
+                cx.backend.fill_round_rect_radial_gradient_per_corner(
+                    rect, radii, &flat, *gx, *cy, *radius, *opacity,
+                );
+            } else {
+                cx.backend.fill_round_rect_radial_gradient(
+                    rect,
+                    corner_radius,
+                    &flat,
+                    *gx,
+                    *cy,
+                    *radius,
+                    *opacity,
+                );
+            }
         }
         SceneGradient::Mesh {
             rows,
@@ -328,14 +349,20 @@ pub(crate) fn paint_gradient_rect(
             colors,
             opacity,
         } => {
-            cx.backend.fill_round_rect_mesh_gradient(
-                rect,
-                corner_radius,
-                *rows,
-                *cols,
-                colors,
-                *opacity,
-            );
+            if let Some(radii) = corner_radii {
+                cx.backend.fill_round_rect_mesh_gradient_per_corner(
+                    rect, radii, *rows, *cols, colors, *opacity,
+                );
+            } else {
+                cx.backend.fill_round_rect_mesh_gradient(
+                    rect,
+                    corner_radius,
+                    *rows,
+                    *cols,
+                    colors,
+                    *opacity,
+                );
+            }
         }
     }
 }
@@ -349,20 +376,32 @@ pub(crate) fn paint_shader_rect(
     shader: &SceneShader,
     rect: Rect,
     corner_radius: f32,
+    corner_radii: Option<[f32; 4]>,
 ) {
     let uniforms: Vec<(&str, &[f32])> = shader
         .uniforms
         .iter()
         .map(|u| (u.name.as_str(), u.values.as_slice()))
         .collect();
-    cx.backend.fill_round_rect_shader(
-        rect,
-        corner_radius,
-        &shader.sksl,
-        &uniforms,
-        shader.opacity,
-        shader.fallback,
-    );
+    if let Some(radii) = corner_radii {
+        cx.backend.fill_round_rect_shader_per_corner(
+            rect,
+            radii,
+            &shader.sksl,
+            &uniforms,
+            shader.opacity,
+            shader.fallback,
+        );
+    } else {
+        cx.backend.fill_round_rect_shader(
+            rect,
+            corner_radius,
+            &shader.sksl,
+            &uniforms,
+            shader.opacity,
+            shader.fallback,
+        );
+    }
 }
 
 /// Greedy line-wrap for canvas text nodes with explicit width.

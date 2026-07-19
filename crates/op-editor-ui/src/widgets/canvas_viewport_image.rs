@@ -1,4 +1,5 @@
 use crate::layout_scene::{stable_image_source_id, SceneNode};
+use crate::widgets::canvas_viewport_overlay::scaled_non_uniform_corner_radii;
 use crate::widgets::PaintCx;
 use crate::Rect;
 use crate::{Color, Point2D};
@@ -278,9 +279,13 @@ pub(super) fn paint_image_node(
     let bytes = image_source_bytes(src, node.image_src_id);
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
+    let per_corner = scaled_non_uniform_corner_radii(node, zoom);
     if bytes.is_none() {
         if let Some(fill) = node.fill {
-            if use_round {
+            if let Some(radii) = per_corner {
+                cx.backend
+                    .fill_round_rect_per_corner(world_rect, radii, fill);
+            } else if use_round {
                 cx.backend.fill_round_rect(world_rect, r, fill);
             } else {
                 cx.backend.fill_rect(world_rect, fill);
@@ -315,13 +320,16 @@ pub(super) fn paint_image_node(
         // below: clip the placeholder art into the rounded rect (the
         // dashed edges lose their corner segments, which reads as a
         // rounded dashed border without a dashed-arc primitive).
-        if use_round {
+        if let Some(radii) = per_corner {
+            cx.backend.save();
+            cx.backend.clip_round_rect_per_corner(world_rect, radii);
+        } else if use_round {
             cx.backend.save();
             cx.backend.clip_round_rect(world_rect, r);
         }
         super::canvas_viewport::paint_dashed_rect(cx, world_rect, placeholder, 1.0);
         paint_picture_glyph(cx, world_rect, placeholder);
-        if use_round {
+        if per_corner.is_some() || use_round {
             cx.backend.restore();
         }
     }
@@ -331,6 +339,10 @@ pub(super) fn paint_image_node(
         } else {
             node.image_src_id
         };
+        if let Some(radii) = per_corner {
+            cx.backend.save();
+            cx.backend.clip_round_rect_per_corner(world_rect, radii);
+        }
         cx.backend.draw_image_with_options(
             world_rect,
             id,
@@ -338,12 +350,22 @@ pub(super) fn paint_image_node(
             node.image_fit.to_draw_mode(),
             node.image_adjustments,
             node.opacity,
-            if use_round { r } else { 0.0 },
+            if per_corner.is_none() && use_round {
+                r
+            } else {
+                0.0
+            },
         );
+        if per_corner.is_some() {
+            cx.backend.restore();
+        }
     }
     if let Some(stroke) = node.stroke {
         let width = stroke.width * zoom;
-        if use_round {
+        if let Some(radii) = per_corner {
+            cx.backend
+                .stroke_round_rect_per_corner(world_rect, radii, stroke.color, width);
+        } else if use_round {
             cx.backend
                 .stroke_round_rect(world_rect, r, stroke.color, width);
         } else {
@@ -428,6 +450,8 @@ fn paint_picture_glyph(cx: &mut PaintCx<'_>, rect: Rect, color: Color) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout_scene::NodeKind;
+    use crate::{ImageAdjustments, ImageDrawMode, RenderBackend, TextLayout};
 
     /// The caches + registry are process-wide statics; serialize the
     /// tests that mutate them so parallel test threads don't race.
@@ -438,6 +462,69 @@ mod tests {
         clear_data_url_cache_for_tests();
         clear_remote_registry_for_tests();
         guard
+    }
+
+    #[derive(Default)]
+    struct ImageRadiusCaptureBackend {
+        clips: Vec<[f32; 4]>,
+        image_corner_radii: Vec<f32>,
+    }
+
+    impl RenderBackend for ImageRadiusCaptureBackend {
+        fn begin_frame(&mut self) {}
+        fn end_frame(&mut self) {}
+        fn fill_rect(&mut self, _: Rect, _: Color) {}
+        fn stroke_rect(&mut self, _: Rect, _: Color, _: f32) {}
+        fn draw_text(&mut self, _: &TextLayout, _: Point2D) {}
+        fn clip_rect(&mut self, _: Rect) {}
+        fn clip_round_rect_per_corner(&mut self, _: Rect, radii: [f32; 4]) {
+            self.clips.push(radii);
+        }
+        fn save(&mut self) {}
+        fn restore(&mut self) {}
+        fn translate(&mut self, _: Point2D) {}
+        fn stroke_line(&mut self, _: Point2D, _: Point2D, _: Color, _: f32) {}
+        fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {}
+        fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
+        fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
+        fn draw_image_with_options(
+            &mut self,
+            _: Rect,
+            _: u64,
+            _: &[u8],
+            _: ImageDrawMode,
+            _: ImageAdjustments,
+            _: f32,
+            corner_radius: f32,
+        ) {
+            self.image_corner_radii.push(corner_radius);
+        }
+        fn resize(&mut self, _: u32, _: u32) {}
+        fn dpi_scale(&self) -> f32 {
+            1.0
+        }
+    }
+
+    #[test]
+    fn image_fill_uses_per_corner_clip_instead_of_scalar_radius() {
+        let _guard = lock_statics();
+        let mut node = SceneNode::leaf("image", NodeKind::Rect);
+        node.corner_radius = 8.0;
+        node.corner_radii = Some([8.0, 0.0, 8.0, 0.0]);
+        let mut backend = ImageRadiusCaptureBackend::default();
+
+        paint_image_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Rect::xywh(0.0, 0.0, 100.0, 50.0),
+            1.0,
+            "data:image/png;base64,QUJD",
+        );
+
+        assert_eq!(backend.clips, vec![[8.0, 0.0, 8.0, 0.0]]);
+        assert_eq!(backend.image_corner_radii, vec![0.0]);
     }
 
     #[test]

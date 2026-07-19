@@ -304,6 +304,17 @@ impl NativeBackend {
         canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
     }
 
+    pub fn clip_round_rect_per_corner(
+        &self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        radii: [f32; 4],
+    ) {
+        let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
+        let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
+        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+    }
+
     /// Stroke a single line segment. Step 4 visual lift addition —
     /// `jian_core::render::DrawOp` lacks a `Line` variant, so this
     /// bypasses jian and calls `Canvas::draw_line` directly. Same

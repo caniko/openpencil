@@ -17,7 +17,9 @@ use crate::layout_scene::{regular_polygon_points, SceneGradient, SceneNode};
 use crate::layout_scene::{Effect, NodeKind};
 use crate::widgets::canvas_viewport::EditCaret;
 use crate::widgets::canvas_viewport_image::paint_image_node;
-use crate::widgets::canvas_viewport_overlay::{align_stroke_rect, paint_fill_then_stroke};
+use crate::widgets::canvas_viewport_overlay::{
+    align_stroke_rect, paint_fill_then_stroke, scaled_non_uniform_corner_radii,
+};
 use crate::widgets::canvas_viewport_text::paint_text_node;
 use crate::widgets::canvas_viewport_widget::paint_widget_visual;
 use crate::widgets::PaintCx;
@@ -225,7 +227,13 @@ fn push_clip_content(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: Rect, z
     cx.backend.save();
     // TS flattener: `cr = Math.min(crRaw, nodeH / 2)`.
     let radius = node.corner_radius.min(node.bounds.size.y / 2.0).max(0.0) * zoom;
-    if radius > 0.5 {
+    let per_corner = scaled_non_uniform_corner_radii(node, zoom).map(|radii| {
+        let max_radius = world_rect.size.y / 2.0;
+        radii.map(|value| value.min(max_radius).max(0.0))
+    });
+    if let Some(radii) = per_corner {
+        cx.backend.clip_round_rect_per_corner(world_rect, radii);
+    } else if radius > 0.5 {
         cx.backend.clip_round_rect(world_rect, radius);
     } else {
         cx.backend.clip_rect(world_rect);
@@ -537,8 +545,21 @@ fn paint_node_inner<'a>(
             cx.backend
                 .fill_rect(world_rect, blue.with_alpha(0.08 * ramp));
             if radius > 0.5 {
-                cx.backend
-                    .stroke_round_rect(world_rect, radius, blue.with_alpha(0.8 * ramp), 1.0);
+                if let Some(radii) = scaled_non_uniform_corner_radii(node, zoom) {
+                    cx.backend.stroke_round_rect_per_corner(
+                        world_rect,
+                        radii,
+                        blue.with_alpha(0.8 * ramp),
+                        1.0,
+                    );
+                } else {
+                    cx.backend.stroke_round_rect(
+                        world_rect,
+                        radius,
+                        blue.with_alpha(0.8 * ramp),
+                        1.0,
+                    );
+                }
             } else {
                 cx.backend
                     .stroke_rect(world_rect, blue.with_alpha(0.8 * ramp), 1.0);
@@ -615,16 +636,18 @@ fn paint_node_inner<'a>(
         Effect::BackgroundBlur { radius } if *radius > 0.0 => Some(*radius * 0.5 * zoom),
         _ => None,
     });
-    let background_blur_pushed = if let Some(sigma) = background_blur_sigma.filter(|_| {
-        world_rect.size.x > 0.0 && world_rect.size.y > 0.0
-    }) {
+    let background_blur_pushed = if let Some(sigma) =
+        background_blur_sigma.filter(|_| world_rect.size.x > 0.0 && world_rect.size.y > 0.0)
+    {
         cx.backend.save();
         let radius = if node.kind == NodeKind::Ellipse {
             world_rect.size.x.min(world_rect.size.y) / 2.0
         } else {
             node.corner_radius * zoom
         };
-        if radius > 0.5 {
+        if let Some(radii) = scaled_non_uniform_corner_radii(node, zoom) {
+            cx.backend.clip_round_rect_per_corner(world_rect, radii);
+        } else if radius > 0.5 {
             cx.backend.clip_round_rect(world_rect, radius);
         } else {
             cx.backend.clip_rect(world_rect);

@@ -281,6 +281,18 @@ extern "C" {
     fn clip_rect(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
     #[wasm_bindgen(method, js_name = clipRoundRect)]
     fn clip_round_rect(this: &OpCk, x: f32, y: f32, w: f32, h: f32, rad: f32);
+    #[wasm_bindgen(method, js_name = clipRoundRectPerCorner)]
+    fn clip_round_rect_per_corner(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top_left: f32,
+        top_right: f32,
+        bottom_right: f32,
+        bottom_left: f32,
+    );
     #[wasm_bindgen(method)]
     fn save(this: &OpCk);
     #[wasm_bindgen(method, js_name = pushBackdropBlurLayer)]
@@ -822,6 +834,18 @@ impl RenderBackend for CanvasKitBackend {
             rect.size.x,
             rect.size.y,
             radius,
+        );
+    }
+    fn clip_round_rect_per_corner(&mut self, rect: Rect, radii: [f32; 4]) {
+        self.ck.clip_round_rect_per_corner(
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            radii[0],
+            radii[1],
+            radii[2],
+            radii[3],
         );
     }
     fn save(&mut self) {

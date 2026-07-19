@@ -826,6 +826,10 @@ export async function opCkInit(canvasId) {
 
     clipRect(x, y, w, h) { canvas.clipRect(CK.LTRBRect(x, y, x + w, y + h), CK.ClipOp.Intersect, true); },
     clipRoundRect(x, y, w, h, rad) { canvas.clipRRect(CK.RRectXY(CK.LTRBRect(x, y, x + w, y + h), rad, rad), CK.ClipOp.Intersect, true); },
+    clipRoundRectPerCorner(x, y, w, h, tl, tr, br, bl) {
+      const rr = Float32Array.of(x, y, x + w, y + h, tl, tl, tr, tr, br, br, bl, bl);
+      canvas.clipRRect(rr, CK.ClipOp.Intersect, true);
+    },
     save() { canvas.save(); },
     pushBackdropBlurLayer(sigma) {
       if (!(sigma > 0) || !CK.ImageFilter || !CK.ImageFilter.MakeBlur) {
