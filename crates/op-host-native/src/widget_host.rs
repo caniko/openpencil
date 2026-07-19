@@ -106,7 +106,6 @@ mod input_tests;
 #[cfg(test)]
 mod instance_panel_tests;
 mod keyboard;
-mod missing_fonts_dispatch;
 mod mode_transition_host;
 #[cfg(test)]
 mod overlay_cursor_tests;
@@ -1293,7 +1292,6 @@ impl WidgetHostNative {
         // build's inputs — otherwise the canvas would stay blank.
         self.scene_cache.invalidate();
         self.editor_state_dirty = true;
-        self.arm_missing_fonts_detection();
     }
 
     /// Drain a queued Component-Browser insert: place the chosen
