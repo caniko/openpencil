@@ -13,8 +13,11 @@ pub mod dom;
 pub mod length;
 pub mod mapper;
 pub mod resources;
+pub mod snapshot;
 pub mod special;
 pub mod text;
+
+pub use snapshot::{import_snapshot, import_snapshot_document};
 
 #[cfg(test)]
 mod e2e_tests;
@@ -177,7 +180,10 @@ pub fn import_html_document(
     fetcher: Option<&resources::ResourceFetcher<'_>>,
     transform: Option<&resources::ImageTransform<'_>>,
 ) -> HtmlDocumentResult {
-    let imported = import_html_with_resources(source, opts, fetcher, transform);
+    wrap_imported_document(import_html_with_resources(source, opts, fetcher, transform))
+}
+
+pub(crate) fn wrap_imported_document(imported: HtmlImportResult) -> HtmlDocumentResult {
     let name = imported.nodes.first().and_then(|node| match node {
         PenNode::Frame(frame) => frame.base.name.clone(),
         _ => None,
@@ -205,7 +211,7 @@ pub fn import_html_document(
 }
 
 const MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_OUTPUT_NODES: usize = 20_000;
+pub(crate) const MAX_OUTPUT_NODES: usize = 20_000;
 
 fn truncate_source<'a>(source: &'a str, warnings: &mut Vec<String>) -> &'a str {
     if source.len() <= MAX_INPUT_BYTES {

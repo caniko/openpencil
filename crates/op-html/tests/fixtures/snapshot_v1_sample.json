@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "source": "https://example.com/page",
+  "title": "Page Title",
+  "viewport": { "width": 1440, "height": 900 },
+  "root": {
+    "kind": "element",
+    "tag": "body",
+    "rect": { "x": 0, "y": 0, "w": 1440, "h": 2400 },
+    "styles": { "background-color": "rgb(255, 255, 255)" },
+    "children": [
+      {
+        "kind": "element",
+        "tag": "div",
+        "rect": { "x": 24, "y": 24, "w": 300, "h": 80 },
+        "styles": {
+          "background-color": "rgba(16, 32, 48, 1)",
+          "border-radius": "8px",
+          "box-shadow": "rgba(0, 0, 0, 0.25) 0px 4px 8px 0px",
+          "border": "1px solid rgb(255, 0, 0)",
+          "opacity": "1",
+          "overflow": "hidden",
+          "background-image": "none",
+          "transform": "none"
+        },
+        "children": [
+          {
+            "kind": "text",
+            "rect": { "x": 40, "y": 48, "w": 120, "h": 24 },
+            "text": "Hello world",
+            "styles": {
+              "color": "rgb(255, 255, 255)",
+              "font-family": "Inter, sans-serif",
+              "font-size": "16px",
+              "font-weight": "700",
+              "font-style": "normal",
+              "line-height": "24px",
+              "letter-spacing": "normal",
+              "text-align": "left"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "image",
+        "tag": "img",
+        "rect": { "x": 24, "y": 128, "w": 200, "h": 150 },
+        "src": "data:image/png;base64,iVBORw0KGgo=",
+        "styles": { "border-radius": "4px", "object-fit": "cover" }
+      }
+    ]
+  }
+}
