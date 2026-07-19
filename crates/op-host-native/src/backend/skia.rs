@@ -344,6 +344,20 @@ impl NativeBackend {
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
+    pub fn fill_round_rect_per_corner(
+        &self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        radii: [f32; 4],
+        color: Color,
+    ) {
+        let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
+        let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
+        let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
+        paint.set_anti_alias(true);
+        canvas.draw_rrect(rrect, &paint);
+    }
+
     /// Drop shadow — a gaussian-blurred filled rounded rectangle.
     /// `blur` is the CSS-style blur radius (doc-px × zoom, applied
     /// by the caller); skia's mask-filter takes a sigma, and the
@@ -385,6 +399,24 @@ impl NativeBackend {
         paint.set_stroke_width(width);
         paint.set_anti_alias(true);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+    }
+
+
+    pub fn stroke_round_rect_per_corner(
+        &self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        radii: [f32; 4],
+        color: Color,
+        width: f32,
+    ) {
+        let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
+        let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
+        let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
+        paint.set_stroke(true);
+        paint.set_stroke_width(width);
+        paint.set_anti_alias(true);
+        canvas.draw_rrect(rrect, &paint);
     }
 
     /// Filled ellipse inscribed in `bounds`. Uses skia's native
@@ -512,6 +544,26 @@ impl NativeBackend {
             paint.set_image_filter(f);
         }
         let rec = skia_safe::canvas::SaveLayerRec::default().paint(&paint);
+        canvas.save_layer(&rec);
+    }
+
+    /// Begin a layer initialized from a Gaussian-filtered copy of the
+    /// already-painted canvas. The caller establishes the node clip
+    /// before this call and balances the layer with `restore`.
+    pub fn push_backdrop_blur_layer(&self, canvas: &skia_safe::Canvas, sigma: f32) {
+        if sigma <= 0.0 {
+            canvas.save();
+            return;
+        }
+        let Some(filter) =
+            skia_safe::image_filters::blur((sigma, sigma), skia_safe::TileMode::Clamp, None, None)
+        else {
+            canvas.save();
+            return;
+        };
+        let rec = skia_safe::canvas::SaveLayerRec::default()
+            .backdrop(&filter)
+            .backdrop_tile_mode(skia_safe::TileMode::Clamp);
         canvas.save_layer(&rec);
     }
 

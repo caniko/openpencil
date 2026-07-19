@@ -394,6 +394,7 @@ pub fn make_path(id: String, name: &str, first: (f64, f64)) -> PenNode {
             point_type: None,
         }]),
         closed: None,
+        fill_rule: None,
         width: None,
         height: None,
         fill: None,

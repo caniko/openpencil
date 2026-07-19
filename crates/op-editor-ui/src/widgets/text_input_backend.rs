@@ -58,8 +58,23 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
         self.inner.fill_round_rect(rect, radius, color);
     }
 
+    fn fill_round_rect_per_corner(&mut self, rect: Rect, radii: [f32; 4], color: Color) {
+        self.inner.fill_round_rect_per_corner(rect, radii, color);
+    }
+
     fn stroke_round_rect(&mut self, rect: Rect, radius: f32, color: Color, width: f32) {
         self.inner.stroke_round_rect(rect, radius, color, width);
+    }
+
+    fn stroke_round_rect_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        color: Color,
+        width: f32,
+    ) {
+        self.inner
+            .stroke_round_rect_per_corner(rect, radii, color, width);
     }
 
     fn stroke_svg_path(&mut self, d: &str, top_left: Point2D, size: f32, color: Color, width: f32) {
@@ -70,8 +85,32 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
         self.inner.fill_svg_path(d, top_left, size, viewbox, color);
     }
 
+    fn fill_svg_path_with_fill_rule(
+        &mut self,
+        d: &str,
+        top_left: Point2D,
+        size: f32,
+        viewbox: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.inner
+            .fill_svg_path_with_fill_rule(d, top_left, size, viewbox, color, even_odd);
+    }
+
     fn fill_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color) {
         self.inner.fill_svg_path_in_rect(d, rect, color);
+    }
+
+    fn fill_svg_path_in_rect_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.inner
+            .fill_svg_path_in_rect_with_fill_rule(d, rect, color, even_odd);
     }
 
     fn stroke_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color, width: f32) {
@@ -91,6 +130,22 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        angle_deg: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
+        self.inner
+            .fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+                d, rect, stops, angle_deg, opacity, even_odd,
+            );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn fill_inner_shadow_svg_path(
         &mut self,
         d: &str,
@@ -102,6 +157,22 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
     ) {
         self.inner
             .fill_inner_shadow_svg_path(d, rect, offset_x, offset_y, blur, color);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_inner_shadow_svg_path_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.inner.fill_inner_shadow_svg_path_with_fill_rule(
+            d, rect, offset_x, offset_y, blur, color, even_odd,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -124,6 +195,31 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
             radius_frac,
             opacity,
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        cx_frac: f32,
+        cy_frac: f32,
+        radius_frac: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
+        self.inner
+            .fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+                d,
+                rect,
+                stops,
+                cx_frac,
+                cy_frac,
+                radius_frac,
+                opacity,
+                even_odd,
+            );
     }
 
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
@@ -249,6 +345,14 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
 
     fn save(&mut self) {
         self.inner.save();
+    }
+
+    fn push_blur_layer(&mut self, sigma: f32) {
+        self.inner.push_blur_layer(sigma);
+    }
+
+    fn push_backdrop_blur_layer(&mut self, sigma: f32) {
+        self.inner.push_backdrop_blur_layer(sigma);
     }
 
     fn restore(&mut self) {

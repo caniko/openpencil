@@ -169,6 +169,32 @@ fn path_anchors_absolutize_to_canvas_coords() {
 }
 
 #[test]
+fn path_payload_carries_even_odd_fill_rule() {
+    let src = r#"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"path","id":"ring","width":100,"height":100,
+         "d":"M0 0H100V100H0Z M25 25H75V75H25Z","fillRule":"evenodd"}
+      ]}],"children":[]
+    }"#;
+    let loaded = load(src);
+    assert!(loaded.payload.pages[0].children[0].even_odd_fill);
+}
+
+#[test]
+fn per_corner_radius_payload_keeps_array_and_legacy_maximum() {
+    let src = r#"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"rectangle","id":"r","width":100,"height":50,
+         "cornerRadius":[8,0,6,2]}
+      ]}],"children":[]
+    }"#;
+    let loaded = load(src);
+    let rect = &loaded.payload.pages[0].children[0];
+    assert_eq!(rect.corner_radii, Some([8.0, 0.0, 6.0, 2.0]));
+    assert_eq!(rect.corner_radius, 8.0);
+}
+
+#[test]
 fn path_bounds_include_bezier_curve_extrema() {
     // Two anchors at y=0 with NEGATIVE-y handles (handle.y=-60).
     // The cubic Bezier reaches y=-45 at t=0.5, so native bbox is

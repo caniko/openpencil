@@ -6,7 +6,7 @@
 //!  B (fig2sketch):      u32 V; u32 S; u32 R; V*(u32 styleID,f32 x,f32 y);
 //!                       S*(u32 styleID,u32 start,f32 tsx,f32 tsy,u32 end,f32 tex,f32 tey); regions...
 //!
-//! Usage: cargo run -p op-figma --example probe_vn -- <canvas.fig> [--dump-smallest N]
+//! Usage: cargo run -p op-figma --example probe_vn -- <canvas.fig> [--dump-smallest N] [--dump-regions]
 
 #[path = "../src/container.rs"]
 mod container;
@@ -39,6 +39,67 @@ fn keys(v: &FigValue) -> Vec<String> {
     }
 }
 
+fn dump_region_records(blob: &[u8], blob_index: usize, name: &str) -> bool {
+    let (Some(vertices), Some(segments), Some(regions)) =
+        (u32_le(blob, 0), u32_le(blob, 4), u32_le(blob, 8))
+    else {
+        return false;
+    };
+    if regions == 0 {
+        return false;
+    }
+    let Some(mut off) = 12usize
+        .checked_add(vertices as usize * 12)
+        .and_then(|value| value.checked_add(segments as usize * 28))
+    else {
+        return false;
+    };
+    let region_start = off;
+    let mut decoded = Vec::new();
+    for region_index in 0..regions as usize {
+        let Some(winding) = u32_le(blob, off) else {
+            return false;
+        };
+        let Some(loop_count) = u32_le(blob, off + 4) else {
+            return false;
+        };
+        off += 8;
+        let mut loops = Vec::new();
+        for _ in 0..loop_count as usize {
+            let Some(index_count) = u32_le(blob, off) else {
+                return false;
+            };
+            off += 4;
+            let mut indices = Vec::with_capacity(index_count as usize);
+            for _ in 0..index_count as usize {
+                let Some(segment_index) = u32_le(blob, off) else {
+                    return false;
+                };
+                if segment_index >= segments {
+                    return false;
+                }
+                indices.push(segment_index);
+                off += 4;
+            }
+            loops.push(indices);
+        }
+        decoded.push((region_index, winding, loops));
+    }
+    let Some(raw) = blob.get(region_start..off) else {
+        return false;
+    };
+    println!(
+        "REGION SAMPLE blobIdx={blob_index} node={name:?} V={vertices} S={segments} R={regions} regionOffset={region_start} parsedEnd={off} blobLen={}",
+        blob.len()
+    );
+    println!("  raw region bytes: {raw:02x?}");
+    for (region_index, winding, loops) in decoded {
+        println!("  region[{region_index}] winding={winding} loops={loops:?}");
+    }
+    println!("  exact consumption: {}", off == blob.len());
+    true
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dump_smallest = args
@@ -46,6 +107,7 @@ fn main() {
         .find(|pair| pair[0] == "--dump-smallest")
         .and_then(|pair| pair[1].parse::<usize>().ok())
         .unwrap_or(0);
+    let dump_regions = args.iter().any(|arg| arg == "--dump-regions");
     let path = args
         .iter()
         .find(|arg| !arg.starts_with("--") && arg.parse::<usize>().is_err())
@@ -59,6 +121,7 @@ fn main() {
     let mut total = 0usize;
     let mut printed = 0usize;
     let mut failing_blobs: Vec<(usize, usize, String, Vec<u8>)> = Vec::new();
+    let mut region_samples = 0usize;
 
     for nc in &decoded.node_changes {
         let ty = nc.get_str("type").unwrap_or("");
@@ -74,6 +137,24 @@ fn main() {
         let Some(BlobOrString::Bytes(blob)) = decoded.blobs.get(idx as usize) else {
             continue;
         };
+
+        if dump_regions
+            && region_samples < 5
+            && dump_region_records(
+                blob,
+                idx as usize,
+                nc.get_str("name").unwrap_or(""),
+            )
+        {
+            let fill_rules: Vec<&str> = nc
+                .get_array("fillGeometry")
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|geometry| geometry.get_str("windingRule"))
+                .collect();
+            println!("  fillGeometry windingRule values: {fill_rules:?}");
+            region_samples += 1;
+        }
 
         // Only look at nodes the current pipeline FAILS on (no geometry decode).
         let ok = decode_figma_vector_path(nc, &decoded.blobs)

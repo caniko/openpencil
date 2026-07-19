@@ -18,6 +18,7 @@ pub(super) struct SvgPathCacheEntry {
 pub(super) struct SvgRasterKey {
     path_key: u64,
     d_len: usize,
+    even_odd: bool,
     color_rgba: u32,
     size_bits: u32,
     viewbox_bits: u32,
@@ -115,6 +116,7 @@ impl NativeBackend {
         let key = SvgRasterKey {
             path_key,
             d_len,
+            even_odd,
             color_rgba: color_key(color),
             size_bits: size.to_bits(),
             viewbox_bits: viewbox.to_bits(),
@@ -228,9 +230,46 @@ impl NativeBackend {
         viewbox: f32,
         color: Color,
     ) {
-        let Some((path_key, path, even_odd)) = self.cached_svg_path(d) else {
+        self.fill_svg_path_impl(canvas, d, top_left, size, viewbox, color, None);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_svg_path_with_fill_rule(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        top_left: Point2D,
+        size: f32,
+        viewbox: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.fill_svg_path_impl(
+            canvas,
+            d,
+            top_left,
+            size,
+            viewbox,
+            color,
+            Some(even_odd),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_svg_path_impl(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        top_left: Point2D,
+        size: f32,
+        viewbox: f32,
+        color: Color,
+        explicit_even_odd: Option<bool>,
+    ) {
+        let Some((path_key, path, inferred_even_odd)) = self.cached_svg_path(d) else {
             return;
         };
+        let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
         if let Some(raster) = self.cached_raster_svg_path(SvgRasterRequest {
             path_key,
             d_len: d.len(),
@@ -271,9 +310,32 @@ impl NativeBackend {
         rect: Rect,
         color: Color,
     ) {
-        let Some((_, path, even_odd)) = self.cached_svg_path(d) else {
+        self.fill_svg_path_in_rect_impl(canvas, d, rect, color, None);
+    }
+
+    pub fn fill_svg_path_in_rect_with_fill_rule(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.fill_svg_path_in_rect_impl(canvas, d, rect, color, Some(even_odd));
+    }
+
+    fn fill_svg_path_in_rect_impl(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        color: Color,
+        explicit_even_odd: Option<bool>,
+    ) {
+        let Some((_, path, inferred_even_odd)) = self.cached_svg_path(d) else {
             return;
         };
+        let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
         let mut path = fit_path_to_rect(&path, rect);
         if even_odd {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
@@ -298,10 +360,48 @@ impl NativeBackend {
         angle_deg: f32,
         opacity: f32,
     ) {
+        self.fill_svg_path_in_rect_linear_gradient_impl(
+            canvas, d, rect, stops, angle_deg, opacity, None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        angle_deg: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
+        self.fill_svg_path_in_rect_linear_gradient_impl(
+            canvas,
+            d,
+            rect,
+            stops,
+            angle_deg,
+            opacity,
+            Some(even_odd),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_svg_path_in_rect_linear_gradient_impl(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        angle_deg: f32,
+        opacity: f32,
+        explicit_even_odd: Option<bool>,
+    ) {
         if stops.is_empty() {
             return;
         }
-        let Some(path) = self.fitted_svg_path(d, rect) else {
+        let Some(path) = self.fitted_svg_path(d, rect, explicit_even_odd) else {
             return;
         };
         let (start, end) = super::gradient::linear_gradient_endpoints(rect, angle_deg);
@@ -335,10 +435,62 @@ impl NativeBackend {
         radius_frac: f32,
         opacity: f32,
     ) {
+        self.fill_svg_path_in_rect_radial_gradient_impl(
+            canvas,
+            d,
+            rect,
+            stops,
+            cx_frac,
+            cy_frac,
+            radius_frac,
+            opacity,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        cx_frac: f32,
+        cy_frac: f32,
+        radius_frac: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
+        self.fill_svg_path_in_rect_radial_gradient_impl(
+            canvas,
+            d,
+            rect,
+            stops,
+            cx_frac,
+            cy_frac,
+            radius_frac,
+            opacity,
+            Some(even_odd),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_svg_path_in_rect_radial_gradient_impl(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        cx_frac: f32,
+        cy_frac: f32,
+        radius_frac: f32,
+        opacity: f32,
+        explicit_even_odd: Option<bool>,
+    ) {
         if stops.is_empty() {
             return;
         }
-        let Some(path) = self.fitted_svg_path(d, rect) else {
+        let Some(path) = self.fitted_svg_path(d, rect, explicit_even_odd) else {
             return;
         };
         let center = skia_safe::Point::new(
@@ -364,8 +516,14 @@ impl NativeBackend {
 
     /// Resolve `d` to a path fitted into `rect`, honouring the cached
     /// even-odd fill rule. `None` when the path string fails to parse.
-    fn fitted_svg_path(&mut self, d: &str, rect: Rect) -> Option<skia_safe::Path> {
-        let (_, path, even_odd) = self.cached_svg_path(d)?;
+    pub(super) fn fitted_svg_path(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        explicit_even_odd: Option<bool>,
+    ) -> Option<skia_safe::Path> {
+        let (_, path, inferred_even_odd) = self.cached_svg_path(d)?;
+        let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
         let mut path = fit_path_to_rect(&path, rect);
         if even_odd {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
@@ -416,7 +574,48 @@ impl NativeBackend {
         blur: f32,
         color: Color,
     ) {
-        let Some(path) = self.fitted_svg_path(d, rect) else {
+        self.fill_inner_shadow_svg_path_impl(
+            canvas, d, rect, offset_x, offset_y, blur, color, None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_inner_shadow_svg_path_with_fill_rule(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
+        self.fill_inner_shadow_svg_path_impl(
+            canvas,
+            d,
+            rect,
+            offset_x,
+            offset_y,
+            blur,
+            color,
+            Some(even_odd),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fill_inner_shadow_svg_path_impl(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        explicit_even_odd: Option<bool>,
+    ) {
+        let Some(path) = self.fitted_svg_path(d, rect, explicit_even_odd) else {
             return;
         };
         // Standard inset-shadow recipe, isolated in its own layer so

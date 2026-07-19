@@ -31,6 +31,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         flip_y: base.flip_y.unwrap_or(false),
         opacity: base_opacity(base),
         corner_radius: 0.0,
+        corner_radii: None,
         clip_content: false,
         arc_start_angle: None,
         arc_sweep_angle: None,
@@ -45,6 +46,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         points: Vec::new(),
         path_anchors: Vec::new(),
         path_closed: false,
+        even_odd_fill: false,
         svg_path: None,
         font_size: 0.0,
         font_weight: 0,
@@ -59,6 +61,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         text_wrap: false,
         effects: Vec::new(),
         layer_blur: None,
+        background_blur: None,
         image_src: None,
         image_fit: None,
         image_adjustments: None,
@@ -82,9 +85,15 @@ pub(crate) fn apply_container_style(
 ) {
     assign_first_fill(p, fill);
     p.stroke = stroke_to_payload(stroke);
+    p.corner_radii = match corner_radius {
+        Some(CornerRadius::PerCorner(corners)) => Some(corners.map(|radius| radius as f32)),
+        _ => None,
+    };
     p.corner_radius = match corner_radius {
         Some(CornerRadius::Uniform(r)) => *r as f32,
-        Some(CornerRadius::PerCorner(corners)) => corners[0] as f32,
+        Some(CornerRadius::PerCorner(corners)) => {
+            corners.iter().copied().fold(0.0_f64, f64::max) as f32
+        }
         None => 0.0,
     };
 }

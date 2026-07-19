@@ -140,6 +140,18 @@ fn svg_path_export_matches_canvas_tight_bounds_fitting() {
 }
 
 #[test]
+fn even_odd_path_export_emits_fill_rule() {
+    let mut path = SceneNode::leaf("ring", NodeKind::Path);
+    path.bounds = Rect::xywh(0.0, 0.0, 100.0, 100.0);
+    path.fill = Some(Color::BLACK);
+    path.svg_path = Some("M0 0H100V100H0Z M25 25H75V75H25Z".into());
+    path.even_odd_fill = true;
+
+    let body = serialize_node_svg(&scene_with(vec![path]), "ring").expect("svg");
+    assert!(body.contains(r#"fill-rule="evenodd""#), "{body}");
+}
+
+#[test]
 fn fitted_svg_path_keeps_stroke_width_in_document_space() {
     let mut path = SceneNode::leaf("stroked-scaled-path", NodeKind::Path);
     path.bounds = Rect::xywh(100.0, 200.0, 80.0, 40.0);

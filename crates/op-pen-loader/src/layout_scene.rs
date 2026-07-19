@@ -249,13 +249,7 @@ fn node_payload_to_scene(
         flip_x: node.flip_x,
         flip_y: node.flip_y,
         corner_radius: node.corner_radius,
-        // Per-corner radius overrides + even-odd path fill are new jian
-        // scene fields (responsive-m1a merge); `NodePayload` doesn't carry
-        // authored per-corner radii or a path fill-rule yet, so this stays
-        // on the pre-merge uniform-corner-radius / nonzero-winding
-        // behavior until a follow-up threads them through the loader.
-        corner_radii: None,
-        even_odd_fill: false,
+        corner_radii: node.corner_radii,
         clip_content: node.clip_content,
         // Paint-time `$ref` resolution: a registered fill ref wins,
         // else the node's own fill. Same precedence as the canvas
@@ -307,6 +301,7 @@ fn node_payload_to_scene(
             .collect(),
         path_anchors: node.path_anchors.iter().map(anchor_to_scene).collect(),
         path_closed: node.path_closed,
+        even_odd_fill: node.even_odd_fill,
         svg_path: node.svg_path.clone(),
         arc_start_angle: node.arc_start_angle,
         arc_sweep_angle: node.arc_sweep_angle,
@@ -323,6 +318,9 @@ fn node_payload_to_scene(
         effects: crate::effects::effects_from_payload_ref(&node.effects)
             .into_iter()
             .chain(crate::effects::blur_effect_from_payload(node.layer_blur))
+            .chain(crate::effects::background_blur_effect_from_payload(
+                node.background_blur,
+            ))
             .map(|e| scale_effect_opacity(e, cum_opacity))
             .collect(),
         hidden: node.hidden,

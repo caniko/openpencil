@@ -54,6 +54,22 @@ extern "C" {
         b: f32,
         a: f32,
     );
+    #[wasm_bindgen(method, js_name = fillRoundRectPerCorner)]
+    fn fill_round_rect_per_corner(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top_left: f32,
+        top_right: f32,
+        bottom_right: f32,
+        bottom_left: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    );
     #[wasm_bindgen(method, js_name = strokeRoundRect)]
     fn stroke_round_rect(
         this: &OpCk,
@@ -62,6 +78,23 @@ extern "C" {
         w: f32,
         h: f32,
         rad: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        sw: f32,
+    );
+    #[wasm_bindgen(method, js_name = strokeRoundRectPerCorner)]
+    fn stroke_round_rect_per_corner(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top_left: f32,
+        top_right: f32,
+        bottom_right: f32,
+        bottom_left: f32,
         r: f32,
         g: f32,
         b: f32,
@@ -250,6 +283,8 @@ extern "C" {
     fn clip_round_rect(this: &OpCk, x: f32, y: f32, w: f32, h: f32, rad: f32);
     #[wasm_bindgen(method)]
     fn save(this: &OpCk);
+    #[wasm_bindgen(method, js_name = pushBackdropBlurLayer)]
+    fn push_backdrop_blur_layer(this: &OpCk, sigma: f32);
     #[wasm_bindgen(method)]
     fn restore(this: &OpCk);
     #[wasm_bindgen(method)]
@@ -410,6 +445,22 @@ impl RenderBackend for CanvasKitBackend {
             color.a,
         );
     }
+    fn fill_round_rect_per_corner(&mut self, rect: Rect, radii: [f32; 4], color: Color) {
+        self.ck.fill_round_rect_per_corner(
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            radii[0],
+            radii[1],
+            radii[2],
+            radii[3],
+            color.r,
+            color.g,
+            color.b,
+            color.a,
+        );
+    }
     fn stroke_round_rect(&mut self, rect: Rect, radius: f32, color: Color, width: f32) {
         self.ck.stroke_round_rect(
             rect.origin.x,
@@ -417,6 +468,29 @@ impl RenderBackend for CanvasKitBackend {
             rect.size.x,
             rect.size.y,
             radius,
+            color.r,
+            color.g,
+            color.b,
+            color.a,
+            width,
+        );
+    }
+    fn stroke_round_rect_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        color: Color,
+        width: f32,
+    ) {
+        self.ck.stroke_round_rect_per_corner(
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            radii[0],
+            radii[1],
+            radii[2],
+            radii[3],
             color.r,
             color.g,
             color.b,
@@ -482,6 +556,17 @@ impl RenderBackend for CanvasKitBackend {
     }
     fn fill_svg_path(&mut self, d: &str, top_left: Point2D, size: f32, viewbox: f32, color: Color) {
         let even_odd = svg_path_even_odd(d);
+        self.fill_svg_path_with_fill_rule(d, top_left, size, viewbox, color, even_odd);
+    }
+    fn fill_svg_path_with_fill_rule(
+        &mut self,
+        d: &str,
+        top_left: Point2D,
+        size: f32,
+        viewbox: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
         self.ck.fill_svg_path(
             d,
             top_left.x,
@@ -496,6 +581,15 @@ impl RenderBackend for CanvasKitBackend {
     }
     fn fill_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color) {
         let even_odd = svg_path_even_odd(d);
+        self.fill_svg_path_in_rect_with_fill_rule(d, rect, color, even_odd);
+    }
+    fn fill_svg_path_in_rect_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        color: Color,
+        even_odd: bool,
+    ) {
         self.ck.fill_svg_path_in_rect(
             d,
             rect.origin.x,
@@ -531,6 +625,24 @@ impl RenderBackend for CanvasKitBackend {
         angle_deg: f32,
         opacity: f32,
     ) {
+        self.fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+            d,
+            rect,
+            stops,
+            angle_deg,
+            opacity,
+            svg_path_even_odd(d),
+        );
+    }
+    fn fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        angle_deg: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
         if stops.is_empty() {
             return;
         }
@@ -541,7 +653,7 @@ impl RenderBackend for CanvasKitBackend {
             rect.origin.y,
             rect.size.x,
             rect.size.y,
-            svg_path_even_odd(d),
+            even_odd,
             &flat,
             angle_deg,
             opacity,
@@ -557,6 +669,28 @@ impl RenderBackend for CanvasKitBackend {
         radius_frac: f32,
         opacity: f32,
     ) {
+        self.fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+            d,
+            rect,
+            stops,
+            cx_frac,
+            cy_frac,
+            radius_frac,
+            opacity,
+            svg_path_even_odd(d),
+        );
+    }
+    fn fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        stops: &[(f32, Color)],
+        cx_frac: f32,
+        cy_frac: f32,
+        radius_frac: f32,
+        opacity: f32,
+        even_odd: bool,
+    ) {
         if stops.is_empty() {
             return;
         }
@@ -567,7 +701,7 @@ impl RenderBackend for CanvasKitBackend {
             rect.origin.y,
             rect.size.x,
             rect.size.y,
-            svg_path_even_odd(d),
+            even_odd,
             &flat,
             cx_frac,
             cy_frac,
@@ -584,13 +718,33 @@ impl RenderBackend for CanvasKitBackend {
         blur: f32,
         color: Color,
     ) {
+        self.fill_inner_shadow_svg_path_with_fill_rule(
+            d,
+            rect,
+            offset_x,
+            offset_y,
+            blur,
+            color,
+            svg_path_even_odd(d),
+        );
+    }
+    fn fill_inner_shadow_svg_path_with_fill_rule(
+        &mut self,
+        d: &str,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        even_odd: bool,
+    ) {
         self.ck.fill_inner_shadow_svg_path(
             d,
             rect.origin.x,
             rect.origin.y,
             rect.size.x,
             rect.size.y,
-            svg_path_even_odd(d),
+            even_odd,
             offset_x,
             offset_y,
             blur,
@@ -672,6 +826,9 @@ impl RenderBackend for CanvasKitBackend {
     }
     fn save(&mut self) {
         self.ck.save();
+    }
+    fn push_backdrop_blur_layer(&mut self, sigma: f32) {
+        self.ck.push_backdrop_blur_layer(sigma);
     }
     fn restore(&mut self) {
         self.ck.restore();

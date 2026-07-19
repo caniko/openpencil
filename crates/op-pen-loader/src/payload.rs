@@ -69,6 +69,10 @@ pub struct NodePayload {
     pub opacity: f32,
     #[serde(default)]
     pub corner_radius: f32,
+    /// Per-corner radii in top-left, top-right, bottom-right,
+    /// bottom-left order. `corner_radius` remains the legacy maximum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radii: Option<[f32; 4]>,
     /// Container clips its children to its bounds (canonical
     /// `clipContent`). The page builders also force this on for root
     /// frames, which clip like artboards (TS flattener parity).
@@ -119,6 +123,9 @@ pub struct NodePayload {
     /// back to the first).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub path_closed: bool,
+    /// Whether SVG path fills use the even-odd winding rule.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub even_odd_fill: bool,
     /// Preserved SVG path data for imported path nodes. Coordinates
     /// are local doc-px relative to the node origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +173,9 @@ pub struct NodePayload {
     /// shadow-only) so the save format stays additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_blur: Option<f32>,
+    /// Gaussian backdrop-blur radius (doc px).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_blur: Option<f32>,
     /// Source URL (`data:image/...;base64,...` or file path) when the
     /// node is an `Image` — the canvas painter decodes the inline
     /// bytes and draws them with `RenderBackend::draw_image`. `None`

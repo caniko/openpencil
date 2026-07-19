@@ -430,6 +430,7 @@ fn build_path_node(
         d: None,       // TODO: icon resolver
         anchors: None,
         closed: None,
+        fill_rule: None,
         width,
         height,
         fill: Some(vec![]), // stroke-style: empty fill

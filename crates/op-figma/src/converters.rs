@@ -19,7 +19,9 @@ use crate::node_build::{
 };
 use crate::text_mapper::map_figma_text_props;
 use crate::tree::{guid_to_string, TreeNode};
-use crate::vector_decoder::{compute_svg_path_bounds, decode_figma_vector_path};
+use crate::vector_decoder::{
+    compute_svg_path_bounds, decode_figma_vector_path, DecodedVectorPath,
+};
 use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::ContainerProps;
 use jian_ops_schema::node::PenNode;
@@ -542,7 +544,8 @@ fn convert_vector(
         return build_icon_path_node(figma, id, parent_stack_mode, ctx, icon);
     }
 
-    let path_d = decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
+    let DecodedVectorPath { d: path_d, fill_rule } =
+        decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
 
     if !path_d.is_empty() {
         let mut base = common_props(figma, id);
@@ -596,6 +599,7 @@ fn convert_vector(
                 base,
                 Some(path_d),
                 None,
+                fill_rule,
                 width,
                 height,
                 map_figma_fills(figma.get_array("strokePaints")),
@@ -607,6 +611,7 @@ fn convert_vector(
             base,
             Some(path_d),
             None,
+            fill_rule,
             width,
             height,
             map_figma_fills(figma.get_array("fillPaints")),
@@ -622,6 +627,7 @@ fn convert_vector(
         ));
         return path_node(
             common_props(figma, id),
+            None,
             None,
             None,
             resolve_width(figma, parent_stack_mode, ctx),
@@ -719,6 +725,7 @@ fn build_icon_path_node(
         common_props(figma, id),
         Some(icon.d),
         icon.icon_id,
+        None,
         icon_w,
         icon_h,
         fill,

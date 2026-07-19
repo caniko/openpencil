@@ -5,6 +5,7 @@
 
 use crate::figma_types::BlobOrString;
 use crate::kiwi::FigValue;
+use jian_ops_schema::node::PathFillRule;
 use std::collections::HashMap;
 
 /// Approximate path bounding box (control points included).
@@ -14,6 +15,28 @@ pub struct PathBounds {
     pub min_y: f64,
     pub max_x: f64,
     pub max_y: f64,
+}
+
+/// SVG geometry decoded from a Figma vector plus the fill rule that
+/// must be used when painting its subpaths.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DecodedVectorPath {
+    pub d: String,
+    pub fill_rule: Option<PathFillRule>,
+}
+
+impl std::ops::Deref for DecodedVectorPath {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.d
+    }
+}
+
+impl std::fmt::Display for DecodedVectorPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.d)
+    }
 }
 
 /// Format a coordinate: snap near-zero to `0`, else 4-decimal round
@@ -211,7 +234,10 @@ fn any_visible(paints: Option<&[FigValue]>) -> bool {
 /// Decode a Figma vector node into an SVG path string. Prefers
 /// geometry blobs (stroke centerline for stroke-only shapes), falling
 /// back to the vector-network table.
-pub fn decode_figma_vector_path(node: &FigValue, blobs: &[BlobOrString]) -> Option<String> {
+pub fn decode_figma_vector_path(
+    node: &FigValue,
+    blobs: &[BlobOrString],
+) -> Option<DecodedVectorPath> {
     let has_fills = any_visible(node.get_array("fillPaints"));
     let has_strokes = any_visible(node.get_array("strokePaints"));
 
@@ -243,7 +269,18 @@ pub fn decode_figma_vector_path(node: &FigValue, blobs: &[BlobOrString]) -> Opti
         return decode_vector_network_blob(node, blobs);
     }
     // Geometry coords are already node-local — no scaling.
-    Some(path_parts.join(" "))
+    Some(DecodedVectorPath {
+        d: path_parts.join(" "),
+        fill_rule: fill_geometry_rule(node),
+    })
+}
+
+fn fill_geometry_rule(node: &FigValue) -> Option<PathFillRule> {
+    node.get_array("fillGeometry")?
+        .iter()
+        .filter_map(|geometry| geometry.get_str("windingRule"))
+        .any(|rule| rule.eq_ignore_ascii_case("ODD"))
+        .then_some(PathFillRule::Evenodd)
 }
 
 struct VnSegment {
@@ -256,7 +293,10 @@ struct VnSegment {
 /// Decode the vertex/segment vector-network blob — the fallback when
 /// no geometry blob is present. Coordinates are scaled by
 /// `nodeSize / normalizedSize`; tangents are start/end-relative.
-pub fn decode_vector_network_blob(node: &FigValue, blobs: &[BlobOrString]) -> Option<String> {
+pub fn decode_vector_network_blob(
+    node: &FigValue,
+    blobs: &[BlobOrString],
+) -> Option<DecodedVectorPath> {
     let vector_data = node.get("vectorData")?;
     let blob_idx = vector_data.get_f64("vectorNetworkBlob")? as usize;
     let BlobOrString::Bytes(blob) = blobs.get(blob_idx)? else {
@@ -362,7 +402,10 @@ pub fn decode_vector_network_blob(node: &FigValue, blobs: &[BlobOrString]) -> Op
     if result.is_empty() {
         None
     } else {
-        Some(result)
+        Some(DecodedVectorPath {
+            d: result,
+            fill_rule: None,
+        })
     }
 }
 

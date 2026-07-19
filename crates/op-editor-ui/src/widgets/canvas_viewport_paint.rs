@@ -607,6 +607,34 @@ fn paint_node_inner<'a>(
     let is_hovered = options.hovered == Some(node.id.as_str());
     let mut hits = PaintNodeHits::for_node(node, options, transforms, parent_hovered);
 
+    // Background blur filters content already painted behind this
+    // node, clipped to the node silhouette. Keep the backdrop layer
+    // open while the node paints so translucent fills and children
+    // composite over the filtered copy.
+    let background_blur_sigma = node.effects.iter().find_map(|effect| match effect {
+        Effect::BackgroundBlur { radius } if *radius > 0.0 => Some(*radius * 0.5 * zoom),
+        _ => None,
+    });
+    let background_blur_pushed = if let Some(sigma) = background_blur_sigma.filter(|_| {
+        world_rect.size.x > 0.0 && world_rect.size.y > 0.0
+    }) {
+        cx.backend.save();
+        let radius = if node.kind == NodeKind::Ellipse {
+            world_rect.size.x.min(world_rect.size.y) / 2.0
+        } else {
+            node.corner_radius * zoom
+        };
+        if radius > 0.5 {
+            cx.backend.clip_round_rect(world_rect, radius);
+        } else {
+            cx.backend.clip_rect(world_rect);
+        }
+        cx.backend.push_backdrop_blur_layer(sigma);
+        true
+    } else {
+        false
+    };
+
     // Gaussian layer blur (Figma "Layer blur"): capture the node's
     // whole rendered output — shadows, fill, stroke, children — into
     // an offscreen layer and blur it on the matching `restore`. The
@@ -801,6 +829,10 @@ fn paint_node_inner<'a>(
                 if blur_sigma.is_some() {
                     cx.backend.restore();
                 }
+                if background_blur_pushed {
+                    cx.backend.restore();
+                    cx.backend.restore();
+                }
                 if transformed {
                     cx.backend.restore();
                 }
@@ -866,6 +898,10 @@ fn paint_node_inner<'a>(
     if blur_sigma.is_some() {
         cx.backend.restore();
     }
+    if background_blur_pushed {
+        cx.backend.restore();
+        cx.backend.restore();
+    }
     if transformed {
         cx.backend.restore();
     }
@@ -925,7 +961,14 @@ pub(crate) fn paint_svg_path_node(
             let flat: Vec<(f32, crate::Color)> =
                 stops.iter().map(|s| (s.offset, s.color)).collect();
             cx.backend
-                .fill_svg_path_in_rect_linear_gradient(d, world_rect, &flat, *angle_deg, *opacity);
+                .fill_svg_path_in_rect_linear_gradient_with_fill_rule(
+                    d,
+                    world_rect,
+                    &flat,
+                    *angle_deg,
+                    *opacity,
+                    node.even_odd_fill,
+                );
         }
         Some(SceneGradient::Radial {
             cx: gx,
@@ -936,9 +979,17 @@ pub(crate) fn paint_svg_path_node(
         }) => {
             let flat: Vec<(f32, crate::Color)> =
                 stops.iter().map(|s| (s.offset, s.color)).collect();
-            cx.backend.fill_svg_path_in_rect_radial_gradient(
-                d, world_rect, &flat, *gx, *cy, *radius, *opacity,
-            );
+            cx.backend
+                .fill_svg_path_in_rect_radial_gradient_with_fill_rule(
+                    d,
+                    world_rect,
+                    &flat,
+                    *gx,
+                    *cy,
+                    *radius,
+                    *opacity,
+                    node.even_odd_fill,
+                );
         }
         // Mesh gradients are a round-rect-only feature in v1 — there's
         // no per-vertex SVG-path fill path. Degrade to the node's
@@ -946,7 +997,12 @@ pub(crate) fn paint_svg_path_node(
         // mesh-filled path still paints.
         Some(SceneGradient::Mesh { .. }) | None => {
             if let Some(fill) = node.fill {
-                cx.backend.fill_svg_path_in_rect(d, world_rect, fill);
+                cx.backend.fill_svg_path_in_rect_with_fill_rule(
+                    d,
+                    world_rect,
+                    fill,
+                    node.even_odd_fill,
+                );
             }
         }
     }
@@ -958,13 +1014,14 @@ pub(crate) fn paint_svg_path_node(
             continue;
         };
         if s.inner {
-            cx.backend.fill_inner_shadow_svg_path(
+            cx.backend.fill_inner_shadow_svg_path_with_fill_rule(
                 d,
                 world_rect,
                 s.offset_x * zoom,
                 s.offset_y * zoom,
                 s.blur * zoom,
                 s.color,
+                node.even_odd_fill,
             );
         }
     }

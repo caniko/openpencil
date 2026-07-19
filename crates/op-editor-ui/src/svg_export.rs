@@ -620,9 +620,14 @@ fn emit_path(out: &mut String, n: &SceneNode) {
     } else {
         ""
     };
+    let fill_rule = if n.even_odd_fill {
+        r#" fill-rule="evenodd""#
+    } else {
+        ""
+    };
     let _ = write!(
         out,
-        r#"<path id="{}" d="{}"{transform}{vector_effect}{}/>"#,
+        r#"<path id="{}" d="{}"{transform}{vector_effect}{fill_rule}{}/>"#,
         xml_escape(&n.id),
         xml_escape(&d),
         attrs

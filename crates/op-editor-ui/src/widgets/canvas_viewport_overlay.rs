@@ -115,6 +115,14 @@ pub fn paint_fill_then_stroke(
 ) {
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
+    let per_corner = node.corner_radii.map(|radii| radii.map(|v| v * zoom)).filter(
+        |radii| {
+            radii
+                .iter()
+                .skip(1)
+                .any(|radius| (*radius - radii[0]).abs() > f32::EPSILON)
+        },
+    );
     // A native SkSL shader fill wins over everything (gradient / solid)
     // when present. Gradients in turn win over solid `fill`. The scene
     // builder leaves the first stop's / fallback colour in `fill` for
@@ -126,7 +134,12 @@ pub fn paint_fill_then_stroke(
         paint_gradient_rect(cx, gradient, world_rect, if use_round { r } else { 0.0 });
     } else if let Some(fill) = fill {
         if use_round {
-            cx.backend.fill_round_rect(world_rect, r, fill);
+            if let Some(radii) = per_corner {
+                cx.backend
+                    .fill_round_rect_per_corner(world_rect, radii, fill);
+            } else {
+                cx.backend.fill_round_rect(world_rect, r, fill);
+            }
         } else {
             cx.backend.fill_rect(world_rect, fill);
         }
@@ -141,11 +154,39 @@ pub fn paint_fill_then_stroke(
             let w = stroke.width * zoom;
             let (rect, r) = align_stroke_rect(world_rect, r, w, stroke.align);
             if use_round {
-                cx.backend.stroke_round_rect(rect, r, stroke.color, w);
+                if let Some(radii) = per_corner {
+                    cx.backend.stroke_round_rect_per_corner(
+                        rect,
+                        align_corner_radii(radii, w, stroke.align),
+                        stroke.color,
+                        w,
+                    );
+                } else {
+                    cx.backend.stroke_round_rect(rect, r, stroke.color, w);
+                }
             } else {
                 cx.backend.stroke_rect(rect, stroke.color, w);
             }
         }
+    }
+}
+
+fn align_corner_radii(
+    radii: [f32; 4],
+    width: f32,
+    align: SceneStrokeAlign,
+) -> [f32; 4] {
+    let half = width / 2.0;
+    match align {
+        SceneStrokeAlign::Center => radii,
+        SceneStrokeAlign::Inside => radii.map(|radius| (radius - half).max(0.0)),
+        SceneStrokeAlign::Outside => radii.map(|radius| {
+            if radius > 0.0 {
+                radius + half
+            } else {
+                0.0
+            }
+        }),
     }
 }
 

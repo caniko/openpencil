@@ -98,9 +98,52 @@ fn vector_path_from_fill_geometry() {
     ]);
     let blobs = [BlobOrString::Bytes(blob)];
     assert_eq!(
-        decode_figma_vector_path(&node, &blobs).as_deref(),
+        decode_figma_vector_path(&node, &blobs)
+            .as_ref()
+            .map(|decoded| decoded.d.as_str()),
         Some("M0 0 L8 0")
     );
+}
+
+#[test]
+fn fill_geometry_winding_rule_is_exposed_on_decode_result() {
+    let mut blob = Vec::new();
+    blob.push(0x01);
+    push_f32(&mut blob, 0.0);
+    push_f32(&mut blob, 0.0);
+    blob.push(0x02);
+    push_f32(&mut blob, 8.0);
+    push_f32(&mut blob, 0.0);
+    let geometry = |winding_rule: Option<&str>| {
+        let mut fields = vec![("commandsBlob", FigValue::Uint(0))];
+        if let Some(rule) = winding_rule {
+            fields.push(("windingRule", FigValue::Str(rule.into())));
+        }
+        obj(fields)
+    };
+
+    for (winding_rule, expected) in [
+        (
+            Some("ODD"),
+            Some(jian_ops_schema::node::PathFillRule::Evenodd),
+        ),
+        (Some("NONZERO"), None),
+        (None, None),
+    ] {
+        let node = obj(vec![
+            (
+                "fillPaints",
+                FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+            ),
+            (
+                "fillGeometry",
+                FigValue::Array(vec![geometry(winding_rule)]),
+            ),
+        ]);
+        let decoded = decode_figma_vector_path(&node, &[BlobOrString::Bytes(blob.clone())])
+            .expect("geometry decodes");
+        assert_eq!(decoded.fill_rule, expected);
+    }
 }
 
 fn vector_network_node(blob: &[u8]) -> (FigValue, Vec<BlobOrString>) {
@@ -137,7 +180,7 @@ fn vn_layout_header_and_strides_decode() {
         path.contains('L') || path.contains('C'),
         "emits the segment: {path}"
     );
-    assert_eq!(path, "M0 0 L10 0");
+    assert_eq!(path.d, "M0 0 L10 0");
 }
 
 #[test]

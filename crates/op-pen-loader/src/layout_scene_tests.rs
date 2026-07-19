@@ -1,6 +1,33 @@
 //! Unit tests for [`editor_state_to_layout_scene`].
 
 use super::*;
+
+#[test]
+fn layout_scene_carries_even_odd_path_fill_rule() {
+    let src = r#"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"path","id":"ring","width":100,"height":100,
+         "d":"M0 0H100V100H0Z M25 25H75V75H25Z","fillRule":"evenodd"}
+      ]}],"children":[]
+    }"#;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    assert!(scene.active_page().unwrap().children[0].even_odd_fill);
+}
+
+#[test]
+fn layout_scene_carries_per_corner_radii() {
+    let src = r#"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"rectangle","id":"r","width":100,"height":50,
+         "cornerRadius":[8,0,6,2]}
+      ]}],"children":[]
+    }"#;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    assert_eq!(
+        scene.active_page().unwrap().children[0].corner_radii,
+        Some([8.0, 0.0, 6.0, 2.0])
+    );
+}
 use op_editor_core::EditorState;
 
 /// Build an `EditorState` from a `.op` JSON source — mirrors how the

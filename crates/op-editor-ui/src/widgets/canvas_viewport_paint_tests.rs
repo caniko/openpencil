@@ -334,6 +334,7 @@ mod text_tests {
     #[derive(Default)]
     struct SvgCaptureBackend {
         fill_rects: Vec<Rect>,
+        fill_rules: Vec<bool>,
     }
 
     impl RenderBackend for SvgCaptureBackend {
@@ -352,6 +353,16 @@ mod text_tests {
         fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
         fn fill_svg_path_in_rect(&mut self, _: &str, rect: Rect, _: Color) {
             self.fill_rects.push(rect);
+        }
+        fn fill_svg_path_in_rect_with_fill_rule(
+            &mut self,
+            _: &str,
+            rect: Rect,
+            _: Color,
+            even_odd: bool,
+        ) {
+            self.fill_rects.push(rect);
+            self.fill_rules.push(even_odd);
         }
         fn draw_image(&mut self, _: Rect, _: u64, _: &[u8]) {}
         fn draw_image_with_mode(&mut self, _: Rect, _: u64, _: &[u8], _: ImageDrawMode) {}
@@ -374,6 +385,29 @@ mod text_tests {
         paint_svg_path_node(&mut cx, &node, rect, 1.0, "M10 0 L0 -5 L0 5 Z");
 
         assert_eq!(backend.fill_rects, vec![rect]);
+        assert_eq!(backend.fill_rules, vec![false]);
+    }
+
+    #[test]
+    fn svg_path_node_forwards_even_odd_fill_rule() {
+        let mut node = SceneNode::leaf("ring", NodeKind::Path);
+        node.fill = Some(Color::BLACK);
+        node.even_odd_fill = true;
+        let rect = Rect::xywh(10.0, 20.0, 28.0, 28.0);
+        let mut backend = SvgCaptureBackend::default();
+        let mut cx = PaintCx {
+            backend: &mut backend,
+        };
+
+        paint_svg_path_node(
+            &mut cx,
+            &node,
+            rect,
+            1.0,
+            "M0 0H28V28H0Z M7 7H21V21H7Z",
+        );
+
+        assert_eq!(backend.fill_rules, vec![true]);
     }
 
     #[derive(Default)]
@@ -843,5 +877,169 @@ mod stroke_align_tests {
     fn center_stroke_keeps_rect() {
         let strokes = paint(&stroked_rect(SceneStrokeAlign::Center));
         assert_eq!(strokes, vec![(0.0, 0.0, 100.0, 50.0, 4.0)]);
+    }
+}
+
+
+mod per_corner_radius_tests {
+    use crate::layout_scene::{NodeKind, SceneNode, SceneStroke, SceneStrokeAlign};
+    use crate::widgets::canvas_viewport_overlay::paint_fill_then_stroke;
+    use crate::widgets::PaintCx;
+    use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
+
+    #[derive(Default)]
+    struct RadiusCaptureBackend {
+        uniform_fills: usize,
+        per_corner_fills: Vec<[f32; 4]>,
+        uniform_strokes: usize,
+        per_corner_strokes: Vec<[f32; 4]>,
+    }
+
+    impl RenderBackend for RadiusCaptureBackend {
+        fn begin_frame(&mut self) {}
+        fn end_frame(&mut self) {}
+        fn fill_rect(&mut self, _: Rect, _: Color) {}
+        fn stroke_rect(&mut self, _: Rect, _: Color, _: f32) {}
+        fn draw_text(&mut self, _: &TextLayout, _: Point2D) {}
+        fn clip_rect(&mut self, _: Rect) {}
+        fn save(&mut self) {}
+        fn restore(&mut self) {}
+        fn translate(&mut self, _: Point2D) {}
+        fn stroke_line(&mut self, _: Point2D, _: Point2D, _: Color, _: f32) {}
+        fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {
+            self.uniform_fills += 1;
+        }
+        fn fill_round_rect_per_corner(&mut self, _: Rect, radii: [f32; 4], _: Color) {
+            self.per_corner_fills.push(radii);
+        }
+        fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {
+            self.uniform_strokes += 1;
+        }
+        fn stroke_round_rect_per_corner(
+            &mut self,
+            _: Rect,
+            radii: [f32; 4],
+            _: Color,
+            _: f32,
+        ) {
+            self.per_corner_strokes.push(radii);
+        }
+        fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
+        fn resize(&mut self, _: u32, _: u32) {}
+        fn dpi_scale(&self) -> f32 {
+            1.0
+        }
+    }
+
+    fn painted(radii: [f32; 4]) -> RadiusCaptureBackend {
+        let mut node = SceneNode::leaf("r", NodeKind::Rect);
+        node.corner_radius = radii.iter().copied().fold(0.0, f32::max);
+        node.corner_radii = Some(radii);
+        node.fill = Some(Color::BLACK);
+        node.stroke = Some(SceneStroke {
+            color: Color::RED,
+            width: 2.0,
+            sides: None,
+            align: SceneStrokeAlign::Center,
+        });
+        let mut backend = RadiusCaptureBackend::default();
+        paint_fill_then_stroke(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Rect::xywh(0.0, 0.0, 100.0, 50.0),
+            1.0,
+            node.fill,
+        );
+        backend
+    }
+
+    #[test]
+    fn differing_radii_use_per_corner_backend_calls() {
+        let backend = painted([8.0, 0.0, 8.0, 0.0]);
+        assert_eq!(backend.per_corner_fills, vec![[8.0, 0.0, 8.0, 0.0]]);
+        assert_eq!(backend.per_corner_strokes, vec![[8.0, 0.0, 8.0, 0.0]]);
+        assert_eq!((backend.uniform_fills, backend.uniform_strokes), (0, 0));
+    }
+
+    #[test]
+    fn equal_radii_keep_uniform_backend_calls() {
+        let backend = painted([8.0; 4]);
+        assert!(backend.per_corner_fills.is_empty());
+        assert!(backend.per_corner_strokes.is_empty());
+        assert_eq!((backend.uniform_fills, backend.uniform_strokes), (1, 1));
+    }
+}
+
+
+mod background_blur_tests {
+    use crate::layout_scene::{Effect, NodeKind, SceneNode};
+    use crate::widgets::canvas_viewport_paint::paint_node;
+    use crate::widgets::PaintCx;
+    use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
+
+    #[derive(Default)]
+    struct BackdropCaptureBackend {
+        ops: Vec<&'static str>,
+    }
+
+    impl RenderBackend for BackdropCaptureBackend {
+        fn begin_frame(&mut self) {}
+        fn end_frame(&mut self) {}
+        fn fill_rect(&mut self, _: Rect, _: Color) {
+            self.ops.push("fill");
+        }
+        fn stroke_rect(&mut self, _: Rect, _: Color, _: f32) {}
+        fn draw_text(&mut self, _: &TextLayout, _: Point2D) {}
+        fn clip_rect(&mut self, _: Rect) {
+            self.ops.push("clip");
+        }
+        fn clip_round_rect(&mut self, _: Rect, _: f32) {
+            self.ops.push("clip_round");
+        }
+        fn save(&mut self) {
+            self.ops.push("save");
+        }
+        fn restore(&mut self) {
+            self.ops.push("restore");
+        }
+        fn push_backdrop_blur_layer(&mut self, _: f32) {
+            self.ops.push("backdrop");
+        }
+        fn translate(&mut self, _: Point2D) {}
+        fn stroke_line(&mut self, _: Point2D, _: Point2D, _: Color, _: f32) {}
+        fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {
+            self.ops.push("fill");
+        }
+        fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
+        fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
+        fn resize(&mut self, _: u32, _: u32) {}
+        fn dpi_scale(&self) -> f32 {
+            1.0
+        }
+    }
+
+    #[test]
+    fn background_blur_clips_and_filters_before_node_fill() {
+        let mut node = SceneNode::leaf("glass", NodeKind::Rect);
+        node.bounds = Rect::xywh(0.0, 0.0, 100.0, 60.0);
+        node.corner_radius = 8.0;
+        node.fill = Some(Color::BLACK);
+        node.effects = vec![Effect::BackgroundBlur { radius: 12.0 }];
+        let mut backend = BackdropCaptureBackend::default();
+        paint_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Point2D::ZERO,
+            1.0,
+            Rect::xywh(-100.0, -100.0, 1000.0, 1000.0),
+        );
+        assert_eq!(
+            backend.ops,
+            vec!["save", "clip_round", "backdrop", "fill", "restore", "restore"]
+        );
     }
 }

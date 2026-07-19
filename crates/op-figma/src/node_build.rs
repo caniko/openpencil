@@ -6,8 +6,8 @@
 use crate::text_mapper::TextProps;
 use jian_ops_schema::node::text::{FontStyleKind as TextFontStyle, FontWeight};
 use jian_ops_schema::node::{
-    ContainerProps, EllipseNode, FrameNode, GroupNode, LineNode, PathNode, PenNode, PenNodeBase,
-    RectangleNode, RefNode, TextNode,
+    ContainerProps, EllipseNode, FrameNode, GroupNode, LineNode, PathFillRule, PathNode, PenNode,
+    PenNodeBase, RectangleNode, RefNode, TextNode,
 };
 use jian_ops_schema::sizing::SizingBehavior;
 use jian_ops_schema::style::{FontStyleKind as StyleFontStyle, PenEffect, PenFill, PenStroke};
@@ -136,6 +136,7 @@ pub fn path_node(
     base: PenNodeBase,
     d: Option<String>,
     icon_id: Option<String>,
+    fill_rule: Option<PathFillRule>,
     width: SizingBehavior,
     height: SizingBehavior,
     fill: Option<Vec<PenFill>>,
@@ -148,6 +149,7 @@ pub fn path_node(
         d,
         anchors: None,
         closed: None,
+        fill_rule,
         width: Some(width),
         height: Some(height),
         fill,

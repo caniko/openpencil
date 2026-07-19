@@ -582,7 +582,15 @@ export async function opCkInit(canvasId) {
     fillRect(x, y, w, h, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeRect(x, y, w, h, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
     fillRoundRect(x, y, w, h, rad, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawRRect(CK.RRectXY(CK.LTRBRect(x, y, x + w, y + h), rad, rad), p); },
+    fillRoundRectPerCorner(x, y, w, h, tl, tr, br, bl, r, g, b, a) {
+      const rr = Float32Array.of(x, y, x + w, y + h, tl, tl, tr, tr, br, br, bl, bl);
+      const p = fillPaint(r, g, b, a); canvas.drawRRect(rr, p);
+    },
     strokeRoundRect(x, y, w, h, rad, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawRRect(CK.RRectXY(CK.LTRBRect(x, y, x + w, y + h), rad, rad), p); },
+    strokeRoundRectPerCorner(x, y, w, h, tl, tr, br, bl, r, g, b, a, sw) {
+      const rr = Float32Array.of(x, y, x + w, y + h, tl, tl, tr, tr, br, br, bl, bl);
+      const p = strokePaint(r, g, b, a, sw); canvas.drawRRect(rr, p);
+    },
     fillOval(x, y, w, h, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawOval(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeOval(x, y, w, h, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawOval(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeLine(x1, y1, x2, y2, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawLine(x1, y1, x2, y2, p); },
@@ -819,6 +827,19 @@ export async function opCkInit(canvasId) {
     clipRect(x, y, w, h) { canvas.clipRect(CK.LTRBRect(x, y, x + w, y + h), CK.ClipOp.Intersect, true); },
     clipRoundRect(x, y, w, h, rad) { canvas.clipRRect(CK.RRectXY(CK.LTRBRect(x, y, x + w, y + h), rad, rad), CK.ClipOp.Intersect, true); },
     save() { canvas.save(); },
+    pushBackdropBlurLayer(sigma) {
+      if (!(sigma > 0) || !CK.ImageFilter || !CK.ImageFilter.MakeBlur) {
+        canvas.save();
+        return;
+      }
+      const filter = CK.ImageFilter.MakeBlur(sigma, sigma, CK.TileMode.Clamp, null);
+      if (!filter) {
+        canvas.save();
+        return;
+      }
+      canvas.saveLayer(null, null, filter, 0, CK.TileMode.Clamp);
+      if (filter.delete) filter.delete();
+    },
     restore() { canvas.restore(); },
     translate(x, y) { canvas.translate(x, y); },
     scale(sx, sy) { canvas.scale(sx, sy); },

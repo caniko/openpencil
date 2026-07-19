@@ -55,6 +55,17 @@ pub fn blur_from_canonical(node: &PenNode) -> Option<f32> {
         })
 }
 
+/// Extract a canonical node's Gaussian background-blur radius.
+pub fn background_blur_from_canonical(node: &PenNode) -> Option<f32> {
+    canonical_node_effects(node)?
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            PenEffect::BackgroundBlur(b) if b.radius > 0.0 => Some(b.radius),
+            _ => None,
+        })
+}
+
 /// Rebuild a node's `effects` from payload form.
 pub fn effects_from_payload(payload: Vec<ShadowPayload>) -> Vec<Effect> {
     payload.iter().map(shadow_payload_to_effect).collect()
@@ -73,6 +84,13 @@ pub fn blur_effect_from_payload(layer_blur: Option<f32>) -> Option<Effect> {
     layer_blur
         .filter(|r| *r > 0.0)
         .map(|radius| Effect::Blur(jian_scene::layout_scene::BlurEffect { radius }))
+}
+
+/// Append a backdrop blur scene effect for a positive payload radius.
+pub fn background_blur_effect_from_payload(radius: Option<f32>) -> Option<Effect> {
+    radius
+        .filter(|radius| *radius > 0.0)
+        .map(|radius| Effect::BackgroundBlur { radius })
 }
 
 fn shadow_payload_to_effect(s: &ShadowPayload) -> Effect {
@@ -283,6 +301,13 @@ mod tests {
         serde_json::from_str(&json).expect("ellipse-with-blur JSON parses")
     }
 
+    fn rectangle_with_background_blur(radius: f32) -> PenNode {
+        let json = format!(
+            r#"{{"type":"rectangle","id":"r1","width":20,"height":20,"effects":[{{"type":"background_blur","radius":{radius}}}]}}"#
+        );
+        serde_json::from_str(&json).expect("rectangle-with-background-blur JSON parses")
+    }
+
     #[test]
     fn canonical_layer_blur_extracts_radius() {
         assert_eq!(blur_from_canonical(&ellipse_with_blur(40.0)), Some(40.0));
@@ -301,6 +326,19 @@ mod tests {
         }
         assert!(blur_effect_from_payload(None).is_none());
         assert!(blur_effect_from_payload(Some(0.0)).is_none());
+    }
+
+    #[test]
+    fn canonical_background_blur_maps_to_scene_effect() {
+        assert_eq!(
+            background_blur_from_canonical(&rectangle_with_background_blur(12.0)),
+            Some(12.0)
+        );
+        assert_eq!(
+            background_blur_effect_from_payload(Some(12.0)),
+            Some(Effect::BackgroundBlur { radius: 12.0 })
+        );
+        assert!(background_blur_effect_from_payload(Some(0.0)).is_none());
     }
 
     #[test]

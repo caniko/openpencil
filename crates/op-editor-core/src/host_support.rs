@@ -391,6 +391,7 @@ impl EditorState {
             d: Some(d.to_string()),
             anchors: None,
             closed: None,
+            fill_rule: None,
             width: Some(SizingBehavior::Number(SIZE)),
             height: Some(SizingBehavior::Number(SIZE)),
             fill: Some(vec![jian_ops_schema::style::PenFill::Solid(
@@ -589,6 +590,7 @@ impl EditorState {
             d: Some(d),
             anchors: None,
             closed: Some(true),
+            fill_rule: None,
             width: Some(SizingBehavior::Number(width)),
             height: Some(SizingBehavior::Number(height)),
             fill: style.fill,

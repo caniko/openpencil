@@ -558,9 +558,10 @@ fn node_to_payload_with_text_context(
     // Carry canonical drop-shadow effects across — without this a
     // `.op` authored with shadows lost them on import (codex
     // stop-gate). Gaussian layer blur is carried via `layer_blur`;
-    // background (backdrop) blur is still skipped.
+    // backdrop blur is carried separately via `background_blur`.
     p.effects = crate::effects::shadows_from_canonical(node);
     p.layer_blur = crate::effects::blur_from_canonical(node);
+    p.background_blur = crate::effects::background_blur_from_canonical(node);
     p
 }
 
@@ -856,6 +857,10 @@ fn polygon_to_payload(n: &PolygonNode) -> NodePayload {
 fn path_to_payload(n: &PathNode) -> NodePayload {
     let mut p = base_payload(&n.base, "path");
     p.path_closed = n.closed.unwrap_or(false);
+    p.even_odd_fill = matches!(
+        n.fill_rule,
+        Some(jian_ops_schema::node::PathFillRule::Evenodd)
+    );
     p.w = sizing_to_f32(&n.width);
     p.h = sizing_to_f32(&n.height);
     assign_first_fill(&mut p, n.fill.as_deref());

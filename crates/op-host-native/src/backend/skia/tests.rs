@@ -409,6 +409,59 @@ fn svg_path_cache_reuses_parsed_paths() {
 }
 
 #[test]
+fn explicit_even_odd_rule_sets_skia_path_fill_type() {
+    let mut be = NativeBackend::with_dpi(1.0);
+    let d = "M0 0H20V20H0Z M5 5H15V15H5Z";
+    let rect = Rect::xywh(0.0, 0.0, 20.0, 20.0);
+
+    let nonzero = be
+        .fitted_svg_path(d, rect, Some(false))
+        .expect("nonzero path");
+    let evenodd = be
+        .fitted_svg_path(d, rect, Some(true))
+        .expect("even-odd path");
+
+    assert_eq!(nonzero.fill_type(), skia_safe::PathFillType::Winding);
+    assert_eq!(evenodd.fill_type(), skia_safe::PathFillType::EvenOdd);
+}
+
+#[test]
+fn native_backdrop_blur_changes_pixels_inside_clip() {
+    fn render(blur: bool) -> Vec<u8> {
+        let backend = NativeBackend::with_dpi(1.0);
+        let mut surface = skia_safe::surfaces::raster_n32_premul((64, 32)).unwrap();
+        let canvas = surface.canvas();
+        canvas.clear(skia_safe::Color::WHITE);
+        for x in (0..64).step_by(8) {
+            let color = if (x / 8) % 2 == 0 {
+                skia_safe::Color::RED
+            } else {
+                skia_safe::Color::BLUE
+            };
+            let color4f = skia_safe::Color4f::from(color);
+            let paint = skia_safe::Paint::new(color4f, None);
+            canvas.draw_rect(skia_safe::Rect::from_xywh(x as f32, 0.0, 8.0, 32.0), &paint);
+        }
+        if blur {
+            canvas.save();
+            backend.clip_round_rect(canvas, Rect::xywh(8.0, 4.0, 48.0, 24.0), 6.0);
+            backend.push_backdrop_blur_layer(canvas, 4.0);
+            canvas.restore();
+            canvas.restore();
+        }
+        let image = surface.image_snapshot();
+        image
+            .peek_pixels()
+            .expect("raster pixels")
+            .bytes()
+            .expect("pixel bytes")
+            .to_vec()
+    }
+
+    assert_ne!(render(false), render(true));
+}
+
+#[test]
 fn complex_svg_fill_uses_raster_cache_after_first_paint() {
     let mut be = NativeBackend::with_dpi(1.0);
     let mut surface = skia_safe::surfaces::raster_n32_premul((128, 128)).unwrap();

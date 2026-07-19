@@ -163,6 +163,43 @@ fn degenerate_boolean_without_geometry_imports_as_invisible_path() {
 }
 
 #[test]
+fn odd_fill_geometry_sets_evenodd_path_fill_rule() {
+    let _g = LOOKUP_GUARD.lock().unwrap();
+    set_icon_lookup(|_| None);
+
+    let mut tree = vector_node("ring");
+    let FigValue::Object(pairs) = &mut tree.figma else {
+        unreachable!();
+    };
+    pairs.push((
+        "fillGeometry".into(),
+        FigValue::Array(vec![obj(vec![
+            ("commandsBlob", FigValue::Uint(0)),
+            ("windingRule", FigValue::Str("ODD".into())),
+        ])]),
+    ));
+    let mut blob = vec![0x01];
+    blob.extend_from_slice(&0.0f32.to_le_bytes());
+    blob.extend_from_slice(&0.0f32.to_le_bytes());
+    blob.push(0x02);
+    blob.extend_from_slice(&10.0f32.to_le_bytes());
+    blob.extend_from_slice(&0.0f32.to_le_bytes());
+    let mut ctx = fresh_ctx();
+    ctx.blobs = vec![BlobOrString::Bytes(blob)];
+
+    let node = convert_vector(&tree, None, &mut ctx);
+    let PenNode::Path(path) = node else {
+        panic!("expected Path");
+    };
+    assert_eq!(
+        path.fill_rule,
+        Some(jian_ops_schema::node::PathFillRule::Evenodd)
+    );
+
+    clear_icon_lookup();
+}
+
+#[test]
 fn icon_stroke_thickness_scales_for_small_icons() {
     let _g = LOOKUP_GUARD.lock().unwrap();
     set_icon_lookup(|_| {
