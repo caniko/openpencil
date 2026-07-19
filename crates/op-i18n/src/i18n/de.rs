@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Bilder",
+        "settings.tab.fonts" => "Schriftarten",
         "settings.tab.system" => "System",
+        "missingFonts.title" => "Fehlende Schriftarten",
+        "missingFonts.subtitle" => {
+            "Diese Schriftarten sind nicht installiert; Text wird mit einer Ersatzschrift dargestellt."
+        }
+        "missingFonts.usage" => "{n} Verwendungen",
+        "missingFonts.chooseFile" => "Schriftdatei auswählen…",
+        "missingFonts.resolved" => "Hinzugefügt",
+        "missingFonts.dismiss" => "Jetzt nicht",
+        "missingFonts.mismatch" => "Die Datei enthält {actual}, nicht {expected}",
+        "missingFonts.importedSection" => "Importierte Schriftarten",
+        "missingFonts.noneMissing" => "Alle Dokument-Schriftarten sind verfügbar.",
         "settings.agents.builtin" => "Integrierte Anbieter",
         "settings.agents.builtinSubtitle" => "API-Schlüssel direkt konfigurieren — keine CLI-Tools erforderlich.",
         "settings.agents.builtinEmpty" => "Keine integrierten Anbieter konfiguriert.",

@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Hình ảnh",
+        "settings.tab.fonts" => "Phông chữ",
         "settings.tab.system" => "Hệ thống",
+        "missingFonts.title" => "Phông chữ bị thiếu",
+        "missingFonts.subtitle" => {
+            "Các phông chữ này chưa được cài đặt; văn bản đang hiển thị bằng phông chữ thay thế."
+        }
+        "missingFonts.usage" => "Được dùng ở {n} chỗ",
+        "missingFonts.chooseFile" => "Chọn tệp phông chữ…",
+        "missingFonts.resolved" => "Đã thêm",
+        "missingFonts.dismiss" => "Để sau",
+        "missingFonts.mismatch" => "Tệp này là {actual}, không phải {expected}",
+        "missingFonts.importedSection" => "Phông chữ đã nhập",
+        "missingFonts.noneMissing" => "Tất cả phông chữ trong tài liệu đều khả dụng.",
         "settings.agents.builtin" => "Nhà cung cấp tích hợp",
         "settings.agents.builtinSubtitle" => "Cấu hình khóa API trực tiếp — không cần công cụ CLI.",
         "settings.agents.builtinEmpty" => "Chưa cấu hình nhà cung cấp tích hợp nào.",

@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Агенты",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Изображения",
+        "settings.tab.fonts" => "Шрифты",
         "settings.tab.system" => "Система",
+        "missingFonts.title" => "Отсутствующие шрифты",
+        "missingFonts.subtitle" => {
+            "Эти шрифты не установлены, поэтому текст отображается запасным шрифтом."
+        }
+        "missingFonts.usage" => "Использований: {n}",
+        "missingFonts.chooseFile" => "Выбрать файл шрифта…",
+        "missingFonts.resolved" => "Добавлен",
+        "missingFonts.dismiss" => "Не сейчас",
+        "missingFonts.mismatch" => "В файле шрифт {actual}, а не {expected}",
+        "missingFonts.importedSection" => "Импортированные шрифты",
+        "missingFonts.noneMissing" => "Все шрифты документа доступны.",
         "settings.agents.builtin" => "Встроенные провайдеры",
         "settings.agents.builtinSubtitle" => "Настройте ключи API напрямую — инструменты CLI не нужны.",
         "settings.agents.builtinEmpty" => "Встроенные провайдеры не настроены.",

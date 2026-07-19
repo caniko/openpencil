@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Ajanlar",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Görseller",
+        "settings.tab.fonts" => "Yazı tipleri",
         "settings.tab.system" => "Sistem",
+        "missingFonts.title" => "Eksik yazı tipleri",
+        "missingFonts.subtitle" => {
+            "Bu yazı tipleri yüklü değil; metin yedek bir yazı tipiyle görüntüleniyor."
+        }
+        "missingFonts.usage" => "{n} kullanım",
+        "missingFonts.chooseFile" => "Yazı tipi dosyası seç…",
+        "missingFonts.resolved" => "Eklendi",
+        "missingFonts.dismiss" => "Şimdi değil",
+        "missingFonts.mismatch" => "Dosya {expected} değil, {actual} yazı tipini içeriyor",
+        "missingFonts.importedSection" => "İçe aktarılan yazı tipleri",
+        "missingFonts.noneMissing" => "Belgedeki tüm yazı tipleri kullanılabilir.",
         "settings.agents.builtin" => "Yerleşik sağlayıcılar",
         "settings.agents.builtinSubtitle" => "API anahtarlarını doğrudan yapılandırın — CLI araçlarına gerek yok.",
         "settings.agents.builtinEmpty" => "Yapılandırılmış yerleşik sağlayıcı yok.",

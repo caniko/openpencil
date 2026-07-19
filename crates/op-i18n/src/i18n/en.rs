@@ -527,7 +527,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Images",
+        "settings.tab.fonts" => "Fonts",
         "settings.tab.system" => "System",
+        "missingFonts.title" => "Missing fonts",
+        "missingFonts.subtitle" => {
+            "These fonts are not installed; text renders with a fallback."
+        }
+        "missingFonts.usage" => "{n} uses",
+        "missingFonts.chooseFile" => "Choose font file…",
+        "missingFonts.resolved" => "Added",
+        "missingFonts.dismiss" => "Not now",
+        "missingFonts.mismatch" => "File is {actual}, not {expected}",
+        "missingFonts.importedSection" => "Imported fonts",
+        "missingFonts.noneMissing" => "All document fonts are available.",
         "settings.tab.account" => "Account",
         "settings.account.title" => "Account",
         "settings.account.notSignedIn" => "You're not signed in.",

@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "画像",
+        "settings.tab.fonts" => "フォント",
         "settings.tab.system" => "システム",
+        "missingFonts.title" => "不足しているフォント",
+        "missingFonts.subtitle" => {
+            "これらのフォントはインストールされていないため、テキストは代替フォントで表示されています。"
+        }
+        "missingFonts.usage" => "{n} か所で使用",
+        "missingFonts.chooseFile" => "フォントファイルを選択…",
+        "missingFonts.resolved" => "追加済み",
+        "missingFonts.dismiss" => "後で",
+        "missingFonts.mismatch" => "このファイルは {actual} です。{expected} ではありません",
+        "missingFonts.importedSection" => "インポート済みフォント",
+        "missingFonts.noneMissing" => "ドキュメント内のフォントはすべて利用できます。",
         "settings.agents.builtin" => "組み込みプロバイダー",
         "settings.agents.builtinSubtitle" => "API キーを直接設定 — CLI ツールは不要です。",
         "settings.agents.builtinEmpty" => "組み込みプロバイダーが設定されていません。",

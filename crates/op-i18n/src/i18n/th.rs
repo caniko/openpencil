@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "รูปภาพ",
+        "settings.tab.fonts" => "แบบอักษร",
         "settings.tab.system" => "ระบบ",
+        "missingFonts.title" => "แบบอักษรที่ขาดหาย",
+        "missingFonts.subtitle" => {
+            "ยังไม่ได้ติดตั้งแบบอักษรเหล่านี้ ข้อความจึงแสดงด้วยแบบอักษรสำรอง"
+        }
+        "missingFonts.usage" => "ใช้งาน {n} จุด",
+        "missingFonts.chooseFile" => "เลือกไฟล์แบบอักษร…",
+        "missingFonts.resolved" => "เพิ่มแล้ว",
+        "missingFonts.dismiss" => "ไว้ภายหลัง",
+        "missingFonts.mismatch" => "ไฟล์นี้เป็นแบบอักษร {actual} ไม่ใช่ {expected}",
+        "missingFonts.importedSection" => "แบบอักษรที่นำเข้า",
+        "missingFonts.noneMissing" => "แบบอักษรทั้งหมดในเอกสารพร้อมใช้งาน",
         "settings.agents.builtin" => "ผู้ให้บริการในตัว",
         "settings.agents.builtinSubtitle" => "กำหนดค่าคีย์ API โดยตรง — ไม่ต้องใช้เครื่องมือ CLI",
         "settings.agents.builtinEmpty" => "ยังไม่ได้กำหนดค่าผู้ให้บริการในตัว",

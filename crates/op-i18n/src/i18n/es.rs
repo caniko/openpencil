@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agentes",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Imágenes",
+        "settings.tab.fonts" => "Fuentes",
         "settings.tab.system" => "Sistema",
+        "missingFonts.title" => "Fuentes que faltan",
+        "missingFonts.subtitle" => {
+            "Estas fuentes no están instaladas; el texto se muestra con una fuente alternativa."
+        }
+        "missingFonts.usage" => "{n} usos",
+        "missingFonts.chooseFile" => "Elegir archivo de fuente…",
+        "missingFonts.resolved" => "Añadida",
+        "missingFonts.dismiss" => "Ahora no",
+        "missingFonts.mismatch" => "El archivo contiene {actual}, no {expected}",
+        "missingFonts.importedSection" => "Fuentes importadas",
+        "missingFonts.noneMissing" => "Todas las fuentes del documento están disponibles.",
         "settings.agents.builtin" => "Proveedores integrados",
         "settings.agents.builtinSubtitle" => "Configura las claves de API directamente — no se necesitan herramientas CLI.",
         "settings.agents.builtinEmpty" => "No hay proveedores integrados configurados.",

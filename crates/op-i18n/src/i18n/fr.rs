@@ -500,7 +500,19 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "settings.tab.agents" => "Agents",
         "settings.tab.mcp" => "MCP",
         "settings.tab.images" => "Images",
+        "settings.tab.fonts" => "Polices",
         "settings.tab.system" => "Système",
+        "missingFonts.title" => "Polices manquantes",
+        "missingFonts.subtitle" => {
+            "Ces polices ne sont pas installées ; le texte s’affiche avec une police de remplacement."
+        }
+        "missingFonts.usage" => "{n} utilisations",
+        "missingFonts.chooseFile" => "Choisir un fichier de police…",
+        "missingFonts.resolved" => "Ajoutée",
+        "missingFonts.dismiss" => "Plus tard",
+        "missingFonts.mismatch" => "Ce fichier contient {actual}, et non {expected}",
+        "missingFonts.importedSection" => "Polices importées",
+        "missingFonts.noneMissing" => "Toutes les polices du document sont disponibles.",
         "settings.agents.builtin" => "Fournisseurs intégrés",
         "settings.agents.builtinSubtitle" => "Configurez les clés API directement — aucun outil CLI requis.",
         "settings.agents.builtinEmpty" => "Aucun fournisseur intégré configuré.",
