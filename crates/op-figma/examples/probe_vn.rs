@@ -118,6 +118,65 @@ fn dump_region_records(blob: &[u8], blob_index: usize, name: &str) -> bool {
     true
 }
 
+fn dump_full_network(blob: &[u8], blob_index: usize, node: &FigValue, blobs: &[BlobOrString]) {
+    let name = node.get_str("name").unwrap_or("");
+    let ty = node.get_str("type").unwrap_or("");
+    let (Some(vertices), Some(segments), Some(regions)) =
+        (u32_le(blob, 0), u32_le(blob, 4), u32_le(blob, 8))
+    else {
+        println!("TARGET NETWORK blobIdx={blob_index} node={name:?} type={ty} invalid header");
+        return;
+    };
+    println!(
+        "\nTARGET NETWORK blobIdx={blob_index} node={name:?} type={ty} len={} V={vertices} S={segments} R={regions}",
+        blob.len()
+    );
+    println!("  raw bytes: {blob:02x?}");
+    let mut off = 12usize;
+    for vertex_index in 0..vertices as usize {
+        println!(
+            "  vertex[{vertex_index}] style={} point=({:?},{:?})",
+            u32_le(blob, off).unwrap_or_default(),
+            f32_le(blob, off + 4),
+            f32_le(blob, off + 8)
+        );
+        off += 12;
+    }
+    for segment_index in 0..segments as usize {
+        println!(
+            "  segment[{segment_index}] style={} start={} tangent=({:?},{:?}) end={} tangent=({:?},{:?})",
+            u32_le(blob, off).unwrap_or_default(),
+            u32_le(blob, off + 4).unwrap_or_default(),
+            f32_le(blob, off + 8),
+            f32_le(blob, off + 12),
+            u32_le(blob, off + 16).unwrap_or_default(),
+            f32_le(blob, off + 20),
+            f32_le(blob, off + 24)
+        );
+        off += 28;
+    }
+    match parse_region_records(blob) {
+        Some((region_start, parsed_end, records)) => {
+            println!("  region bytes: {:02x?}", &blob[region_start..parsed_end]);
+            for (region_index, region) in records.iter().enumerate() {
+                println!(
+                    "  region[{region_index}] raw={} styleID={} lowBit={} loops={:?}",
+                    region.raw_style_and_winding,
+                    region.raw_style_and_winding >> 1,
+                    region.raw_style_and_winding & 1,
+                    region.loops
+                );
+            }
+            println!("  exact consumption: {}", parsed_end == blob.len());
+        }
+        None => println!("  region parse: failed"),
+    }
+    println!(
+        "  current decode: {:?}",
+        decode_figma_vector_path(node, blobs)
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dump_smallest = args
@@ -126,6 +185,16 @@ fn main() {
         .and_then(|pair| pair[1].parse::<usize>().ok())
         .unwrap_or(0);
     let dump_regions = args.iter().any(|arg| arg == "--dump-regions");
+    let targets: Vec<String> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--target")
+        .map(|pair| pair[1].clone())
+        .collect();
+    let target_blobs: Vec<usize> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--blob")
+        .filter_map(|pair| pair[1].parse().ok())
+        .collect();
     let path = args
         .iter()
         .find(|arg| !arg.starts_with("--") && arg.parse::<usize>().is_err())
@@ -158,6 +227,18 @@ fn main() {
             continue;
         };
         let ty = nc.get_str("type").unwrap_or("");
+        let name = nc.get_str("name").unwrap_or("");
+
+        if (!targets.is_empty() || !target_blobs.is_empty())
+            && !targets.iter().any(|target| target == name)
+            && !target_blobs.contains(&(idx as usize))
+        {
+            continue;
+        }
+
+        if !targets.is_empty() || !target_blobs.is_empty() {
+            dump_full_network(blob, idx as usize, nc, &decoded.blobs);
+        }
 
         if let (Some((_, _, regions)), Some(fill_geometry)) =
             (parse_region_records(blob), nc.get_array("fillGeometry"))

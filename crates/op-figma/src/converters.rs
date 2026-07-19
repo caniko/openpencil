@@ -21,6 +21,7 @@ use crate::node_build::{
 use crate::text_mapper::map_figma_text_props;
 use crate::tree::{guid_to_string, TreeNode};
 use crate::vector_decoder::{compute_svg_path_bounds, decode_figma_vector_path, DecodedVectorPath};
+use crate::vector_fallback::decode_single_child_boolean;
 use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::ContainerProps;
 use jian_ops_schema::node::PenNode;
@@ -575,6 +576,7 @@ fn convert_vector(
     let DecodedVectorPath {
         d: path_d,
         fill_rule,
+        allows_fill,
     } = decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
 
     if !path_d.is_empty() {
@@ -616,10 +618,6 @@ fn convert_vector(
         let is_stroke_only = !has_visible_fills
             && has_visible_strokes
             && figma
-                .get_array("fillGeometry")
-                .map(|g| g.is_empty())
-                .unwrap_or(true)
-            && figma
                 .get_array("strokeGeometry")
                 .map(|g| !g.is_empty())
                 .unwrap_or(false);
@@ -644,8 +642,24 @@ fn convert_vector(
             fill_rule,
             width,
             height,
-            map_figma_fills(figma.get_array("fillPaints")),
+            allows_fill
+                .then(|| map_figma_fills(figma.get_array("fillPaints")))
+                .flatten(),
             map_figma_stroke(figma),
+            map_figma_effects(figma.get_array("effects")),
+        );
+    }
+
+    if let Some((decoded, stroke)) = decode_single_child_boolean(tree, &ctx.blobs) {
+        return path_node(
+            common_props(figma, id),
+            Some(decoded.d),
+            None,
+            decoded.fill_rule,
+            resolve_width(figma, parent_stack_mode, ctx),
+            resolve_height(figma, parent_stack_mode, ctx),
+            None,
+            Some(stroke),
             map_figma_effects(figma.get_array("effects")),
         );
     }

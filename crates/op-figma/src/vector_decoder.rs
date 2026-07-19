@@ -32,6 +32,10 @@ pub struct PathBounds {
 pub struct DecodedVectorPath {
     pub d: String,
     pub fill_rule: Option<PathFillRule>,
+    /// Whether the decoded geometry contains a region that Figma
+    /// intends to paint as a fill. Open vector-network chains have no
+    /// fill region even when the node carries a fill paint.
+    pub allows_fill: bool,
 }
 
 impl std::ops::Deref for DecodedVectorPath {
@@ -241,8 +245,8 @@ fn any_visible(paints: Option<&[FigValue]>) -> bool {
 }
 
 /// Decode a Figma vector node into an SVG path string. Prefers
-/// geometry blobs (stroke centerline for stroke-only shapes), falling
-/// back to the vector-network table.
+/// geometry blobs (expanded stroke outlines for stroke-only shapes),
+/// falling back to the vector-network table.
 pub fn decode_figma_vector_path(
     node: &FigValue,
     blobs: &[BlobOrString],
@@ -281,6 +285,9 @@ pub fn decode_figma_vector_path(
     Some(DecodedVectorPath {
         d: path_parts.join(" "),
         fill_rule: fill_geometry_rule(node),
+        // A geometry stream is already the paint-specific shape Figma
+        // selected (fillGeometry or expanded strokeGeometry).
+        allows_fill: true,
     })
 }
 
@@ -454,9 +461,11 @@ pub fn decode_vector_network_blob(
     if result.is_empty() {
         None
     } else {
+        let allows_fill = result.contains('Z');
         Some(DecodedVectorPath {
             d: result,
             fill_rule,
+            allows_fill,
         })
     }
 }

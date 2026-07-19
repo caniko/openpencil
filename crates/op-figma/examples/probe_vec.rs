@@ -14,6 +14,8 @@ mod corner_geometry;
 mod figma_types;
 #[path = "../src/kiwi.rs"]
 mod kiwi;
+#[path = "../src/tree.rs"]
+mod tree;
 #[path = "../src/vector_decoder.rs"]
 mod vector_decoder;
 #[path = "../src/zip_reader.rs"]
@@ -22,6 +24,7 @@ mod zip_reader;
 use figma_types::{parse_fig_file, BlobOrString};
 use kiwi::FigValue;
 use std::collections::BTreeMap;
+use tree::{build_tree, guid_to_string, TreeNode};
 use vector_decoder::decode_figma_vector_path;
 
 fn keys(v: &FigValue) -> Vec<String> {
@@ -35,9 +38,226 @@ fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
     *map.entry(key.to_string()).or_insert(0) += 1;
 }
 
+fn geometry_dump(node: &FigValue, blobs: &[BlobOrString], indent: &str) {
+    println!("{indent}keys: {:?}", keys(node));
+    let size = node.get("size");
+    println!(
+        "{indent}size=({:?},{:?}) strokeWeight={:?} align={:?} cap={:?} join={:?}",
+        size.and_then(|value| value.get_f64("x")),
+        size.and_then(|value| value.get_f64("y")),
+        node.get_f64("strokeWeight"),
+        node.get_str("strokeAlign"),
+        node.get_str("strokeCap"),
+        node.get_str("strokeJoin")
+    );
+    if node.get_str("type") == Some("INSTANCE") {
+        let symbol_data = node.get("symbolData");
+        let symbol_id = symbol_data
+            .and_then(|data| data.get("symbolID"))
+            .and_then(guid_to_string);
+        let overridden_symbol_id = node.get("overriddenSymbolID").and_then(guid_to_string);
+        let overrides = symbol_data
+            .and_then(|data| data.get_array("symbolOverrides"))
+            .unwrap_or(&[]);
+        let derived = node.get_array("derivedSymbolData").unwrap_or(&[]);
+        println!(
+            "{indent}instance symbolID={symbol_id:?} overriddenSymbolID={overridden_symbol_id:?} overrides={} derived={}",
+            overrides.len(),
+            derived.len()
+        );
+        if !overrides.is_empty() {
+            println!("{indent}symbolOverrides: {overrides:?}");
+        }
+    }
+    if let Some(boolean_operation) = node.get_str("booleanOperation") {
+        println!("{indent}booleanOperation={boolean_operation}");
+    }
+    for paint_key in ["fillPaints", "strokePaints"] {
+        if let Some(paints) = node.get_array(paint_key) {
+            println!("{indent}{paint_key}: {paints:?}");
+        }
+    }
+    for geometry_key in ["fillGeometry", "strokeGeometry"] {
+        let Some(geometries) = node.get_array(geometry_key) else {
+            continue;
+        };
+        println!("{indent}{geometry_key}: {} record(s)", geometries.len());
+        for (geometry_index, geometry) in geometries.iter().enumerate() {
+            let winding = geometry.get_str("windingRule").unwrap_or("(none)");
+            let blob_index = geometry.get_f64("commandsBlob").map(|value| value as usize);
+            match blob_index.and_then(|index| blobs.get(index).map(|blob| (index, blob))) {
+                Some((index, BlobOrString::Bytes(bytes))) => {
+                    println!(
+                        "{indent}  [{geometry_index}] commandsBlob={index} len={} windingRule={winding} bytes={bytes:02x?}",
+                        bytes.len()
+                    );
+                    println!(
+                        "{indent}      opcode decode: {:?}",
+                        vector_decoder::decode_figma_path_blob(bytes)
+                    );
+                }
+                Some((index, BlobOrString::Str(value))) => println!(
+                    "{indent}  [{geometry_index}] commandsBlob={index} string={value:?} windingRule={winding}"
+                ),
+                None => println!(
+                    "{indent}  [{geometry_index}] commandsBlob={blob_index:?} missing windingRule={winding}"
+                ),
+            }
+        }
+    }
+    let vector_blob = node
+        .get("vectorData")
+        .and_then(|data| data.get_f64("vectorNetworkBlob"))
+        .map(|value| value as usize);
+    if let Some(index) = vector_blob {
+        match blobs.get(index) {
+            Some(BlobOrString::Bytes(bytes)) => println!(
+                "{indent}vectorNetworkBlob={index} len={} header={:?}",
+                bytes.len(),
+                (0..3)
+                    .filter_map(|word| {
+                        let offset = word * 4;
+                        bytes.get(offset..offset + 4).map(|slice| {
+                            u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]])
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            Some(BlobOrString::Str(value)) => {
+                println!("{indent}vectorNetworkBlob={index} string={value:?}")
+            }
+            None => println!("{indent}vectorNetworkBlob={index} missing"),
+        }
+    }
+    let decoded = decode_figma_vector_path(node, blobs);
+    println!("{indent}current decode: {decoded:?}");
+}
+
+fn dump_subtree(node: &TreeNode, blobs: &[BlobOrString], depth: usize, max_depth: usize) {
+    let indent = "  ".repeat(depth);
+    let figma = &node.figma;
+    let guid = figma
+        .get("guid")
+        .and_then(guid_to_string)
+        .unwrap_or_else(|| "(none)".to_string());
+    println!(
+        "{indent}- guid={guid} type={} name={:?} children={}",
+        figma.get_str("type").unwrap_or("(none)"),
+        figma.get_str("name").unwrap_or(""),
+        node.children.len()
+    );
+    geometry_dump(figma, blobs, &format!("{indent}  "));
+    if depth < max_depth {
+        for child in &node.children {
+            dump_subtree(child, blobs, depth + 1, max_depth);
+        }
+    }
+}
+
+fn dump_named_contexts(
+    root: &TreeNode,
+    blobs: &[BlobOrString],
+    page_name: &str,
+    targets: &[String],
+    ancestor_levels: usize,
+    max_depth: usize,
+) {
+    struct Options<'a> {
+        blobs: &'a [BlobOrString],
+        page_name: &'a str,
+        targets: &'a [String],
+        ancestor_levels: usize,
+        max_depth: usize,
+    }
+
+    fn visit<'a>(
+        node: &'a TreeNode,
+        options: &Options<'_>,
+        current_page: Option<&'a str>,
+        stack: &mut Vec<&'a TreeNode>,
+    ) {
+        let current_page = if node.figma.get_str("type") == Some("CANVAS") {
+            node.figma.get_str("name")
+        } else {
+            current_page
+        };
+        stack.push(node);
+        let name = node.figma.get_str("name").unwrap_or("");
+        let characters = node
+            .figma
+            .get("textData")
+            .and_then(|data| data.get_str("characters"))
+            .unwrap_or("");
+        let matched_target = options
+            .targets
+            .iter()
+            .find(|target| target.as_str() == name || target.as_str() == characters);
+        if let Some(target) = matched_target
+            .filter(|_| options.page_name == "*" || current_page == Some(options.page_name))
+        {
+            let context_index = stack.len().saturating_sub(1 + options.ancestor_levels);
+            let context = stack[context_index];
+            let path = stack
+                .iter()
+                .map(|entry| entry.figma.get_str("name").unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            println!(
+                "\n== TARGET {target:?} (node name={name:?}, characters={characters:?}) on page {:?} ==",
+                current_page.unwrap_or("(outside canvas)")
+            );
+            println!("tree path: {path}");
+            println!("context ancestor levels: {}", options.ancestor_levels);
+            dump_subtree(context, options.blobs, 0, options.max_depth);
+        }
+        for child in &node.children {
+            visit(child, options, current_page, stack);
+        }
+        stack.pop();
+    }
+
+    let options = Options {
+        blobs,
+        page_name,
+        targets,
+        ancestor_levels,
+        max_depth,
+    };
+    visit(root, &options, None, &mut Vec::new());
+}
+
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: probe_vec <path>");
-    let bytes = std::fs::read(&path).expect("read");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .expect("usage: probe_vec <path> [--page NAME] [--target NAME]...");
+    let page_name = args
+        .windows(2)
+        .find(|pair| pair[0] == "--page")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("v1.0");
+    let targets: Vec<String> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--target")
+        .map(|pair| pair[1].clone())
+        .collect();
+    let blob_indices: Vec<usize> = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--blob")
+        .filter_map(|pair| pair[1].parse().ok())
+        .collect();
+    let ancestor_levels = args
+        .windows(2)
+        .find(|pair| pair[0] == "--ancestor")
+        .and_then(|pair| pair[1].parse().ok())
+        .unwrap_or(1);
+    let max_depth = args
+        .windows(2)
+        .find(|pair| pair[0] == "--depth")
+        .and_then(|pair| pair[1].parse().ok())
+        .unwrap_or(4);
+    let bytes = std::fs::read(path).expect("read");
     let decoded = match parse_fig_file(&bytes) {
         Ok(d) => d,
         Err(e) => {
@@ -59,6 +279,36 @@ fn main() {
         }
     }
     println!("blob kinds: bytes={blob_bytes} str={blob_strs}");
+
+    if !blob_indices.is_empty() {
+        for index in blob_indices {
+            match decoded.blobs.get(index) {
+                Some(BlobOrString::Bytes(bytes)) => {
+                    let hex = bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    println!("blob[{index}] len={} hex={hex}", bytes.len());
+                }
+                Some(BlobOrString::Str(value)) => println!("blob[{index}] string={value:?}"),
+                None => println!("blob[{index}] missing"),
+            }
+        }
+        return;
+    }
+
+    if !targets.is_empty() {
+        let root = build_tree(&decoded.node_changes).expect("document tree");
+        dump_named_contexts(
+            &root,
+            &decoded.blobs,
+            page_name,
+            &targets,
+            ancestor_levels,
+            max_depth,
+        );
+        return;
+    }
 
     // Global tallies.
     let mut type_tally: BTreeMap<String, usize> = BTreeMap::new();

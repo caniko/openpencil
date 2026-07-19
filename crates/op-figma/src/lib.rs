@@ -22,6 +22,7 @@ mod node_mapper;
 mod text_mapper;
 mod tree;
 mod vector_decoder;
+mod vector_fallback;
 mod zip_reader;
 
 #[cfg(test)]
