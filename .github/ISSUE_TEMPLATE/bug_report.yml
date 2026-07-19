@@ -22,9 +22,9 @@ body:
       label: Platform
       options:
         - Web (browser)
-        - macOS (Electron)
-        - Windows (Electron)
-        - Linux (Electron)
+        - macOS (native desktop)
+        - Windows (native desktop)
+        - Linux (native desktop)
     validations:
       required: true
 
