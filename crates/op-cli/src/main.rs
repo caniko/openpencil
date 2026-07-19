@@ -12,6 +12,7 @@ mod codegen_cli;
 mod command_helpers;
 mod export_cli;
 mod figma_cli;
+mod html_cli;
 mod mcp_http_cli;
 mod page_theme_cli;
 mod path_args;
@@ -100,6 +101,14 @@ fn run(args: &[String]) -> Result<String, String> {
         Command::ImportFigma { fig_path, out_path } => {
             figma_cli::run_import_figma(&fig_path, &out_path)?
         }
+        Command::ImportHtml {
+            html_path,
+            out_path,
+        } => html_cli::run_import_html(&html_path, &out_path)?,
+        Command::ImportSnapshot {
+            json_path,
+            out_path,
+        } => html_cli::run_import_snapshot(&json_path, &out_path)?,
         Command::ToolCall { tool, args } => {
             post(target_port, &tool_call_body(&tool, &args_to_json(&args)))?
         }
@@ -162,6 +171,14 @@ enum Command {
     ToolsList,
     ImportFigma {
         fig_path: String,
+        out_path: String,
+    },
+    ImportHtml {
+        html_path: String,
+        out_path: String,
+    },
+    ImportSnapshot {
+        json_path: String,
         out_path: String,
     },
     ToolCall {
@@ -359,8 +376,9 @@ fn command_from_positionals(positionals: &[String], flags: &Flags) -> Result<Com
         "theme:list" => page_theme_cli::map_theme_list(positionals),
         "layout" => map_layout(flags),
         "find-space" => map_find_space(flags),
-        "import:svg" => map_import_svg(positionals, flags),
-        "import:html" => map_import_html(positionals, flags),
+        "import:svg" => html_cli::map_import_svg(positionals, flags),
+        "import:html" => html_cli::map_import_html(positionals, flags),
+        "import:snapshot" => html_cli::map_import_snapshot(positionals, flags),
         "import:figma" => figma_cli::map_import_figma(positionals, flags),
         "codegen:plan" | "codegen:submit" | "codegen:assemble" | "codegen:clean" => {
             codegen_cli::map_codegen(positionals, flags)
@@ -674,50 +692,6 @@ fn map_find_space(flags: &Flags) -> Result<Command, String> {
     }
     push_file_path(&mut pairs, flags);
     tool_call("find_empty_space", pairs)
-}
-
-fn map_import_svg(positionals: &[String], flags: &Flags) -> Result<Command, String> {
-    let path = required_pos(
-        positionals,
-        1,
-        "Usage: op import:svg <file.svg> [--x N] [--y N] [--parent P] [--page PAGE]",
-    )?;
-    let mut pairs = vec![pair("svgPath", path)];
-    if let Some(x) = flag_value(flags, "x") {
-        pairs.push(pair("x", x));
-    }
-    if let Some(y) = flag_value(flags, "y") {
-        pairs.push(pair("y", y));
-    }
-    if let Some(parent) = flag_value(flags, "parent") {
-        pairs.push(pair("parent", parent));
-    }
-    if let Some(page) = flag_value(flags, "page") {
-        pairs.push(pair("pageId", page));
-    }
-    push_file_path(&mut pairs, flags);
-    tool_call("import_svg", pairs)
-}
-
-fn map_import_html(positionals: &[String], flags: &Flags) -> Result<Command, String> {
-    let path = required_pos(
-        positionals,
-        1,
-        "Usage: op import:html <file.html> [--x N] [--y N] [--parent P] [--page PAGE]",
-    )?;
-    let mut pairs = vec![pair("htmlPath", path)];
-    for (flag, key) in [
-        ("x", "x"),
-        ("y", "y"),
-        ("parent", "parent"),
-        ("page", "pageId"),
-    ] {
-        if let Some(value) = flag_value(flags, flag) {
-            pairs.push(pair(key, value));
-        }
-    }
-    push_file_path(&mut pairs, flags);
-    tool_call("import_html", pairs)
 }
 
 fn generic_tool_call(tool: &str, rest: &[String], flags: &Flags) -> Result<Command, String> {

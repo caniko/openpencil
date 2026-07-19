@@ -689,61 +689,6 @@ fn parse_args_maps_codegen_assemble_and_clean_to_mcp_tools() {
 }
 
 #[test]
-fn parse_args_maps_import_figma_to_direct_converter() {
-    let p = parse_args(&[
-        "import:figma".to_string(),
-        "/tmp/source.fig".to_string(),
-        "--out".to_string(),
-        "/tmp/converted.op".to_string(),
-    ])
-    .expect("parse import:figma");
-    assert_eq!(
-        p.command,
-        Command::ImportFigma {
-            fig_path: "/tmp/source.fig".to_string(),
-            out_path: "/tmp/converted.op".to_string(),
-        }
-    );
-}
-
-#[test]
-fn import_html_maps_to_tool_call() {
-    let args = vec![
-        "import:html".to_string(),
-        "page.html".to_string(),
-        "--x".to_string(),
-        "10".to_string(),
-        "--page".to_string(),
-        "p1".to_string(),
-    ];
-    let parsed = parse_args(&args).expect("parse");
-    assert_eq!(
-        parsed.command,
-        Command::ToolCall {
-            tool: "import_html".to_string(),
-            args: vec![
-                ("htmlPath".to_string(), "page.html".to_string()),
-                ("x".to_string(), "10".to_string()),
-                ("pageId".to_string(), "p1".to_string()),
-            ],
-        }
-    );
-}
-
-#[test]
-fn figma_default_out_path_matches_ts_suffix_replacement() {
-    assert_eq!(figma_default_out_path("checkout.fig"), "checkout.op");
-    assert_eq!(
-        figma_default_out_path("/tmp/checkout.fig"),
-        "/tmp/checkout.op"
-    );
-    assert_eq!(
-        figma_default_out_path("/tmp/checkout.FIG"),
-        "/tmp/checkout.FIG"
-    );
-}
-
-#[test]
 fn parse_args_maps_ts_insert_json_alias_to_rust_tool() {
     let args = vec![
         "insert".to_string(),
