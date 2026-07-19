@@ -291,12 +291,17 @@ export class PenEditorProvider implements vscode.CustomEditorProvider<PenDocumen
     if (panel.active) this.setActive(key);
     disposables.push(
       panel.onDidChangeViewState((e) => {
-        // Keep-last-active: the MCP proxy keeps routing to the most recently
-        // active .op editor even while another tab has focus — an IDE agent
-        // necessarily de-focuses this panel when it opens files or chats, and
-        // clearing here made every mid-conversation MCP call fail with
-        // "no active document". Dispose/release still clears the route.
-        if (e.webviewPanel.active) this.setActive(key);
+        if (e.webviewPanel.active) {
+          this.setActive(key);
+        } else if (this.pool.active?.filePath === key) {
+          // Split semantics on de-focus: the MCP route (pool) keeps-last —
+          // an IDE agent necessarily de-focuses this panel when it opens
+          // files, and clearing the route made every mid-conversation MCP
+          // call fail with "no active document" (dispose/release still
+          // clears it). The registry (codegen / chat-participant commands)
+          // keeps the original focus-following semantics unchanged.
+          this.registry.setActive(undefined);
+        }
       }),
     );
 
