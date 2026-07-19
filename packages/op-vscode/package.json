@@ -105,5 +105,10 @@
     "esbuild": "^0.21",
     "jsonc-parser": "^3",
     "oxlint": "latest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZSeven-W/openpencil.git",
+    "directory": "packages/op-vscode"
   }
 }

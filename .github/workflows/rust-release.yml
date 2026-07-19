@@ -759,6 +759,26 @@ jobs:
           name: openpencil-vscode-vsix
           path: packages/op-vscode/*.vsix
           if-no-files-found: error
+      # Open VSX is the registry Cursor / VSCodium / Gitpod pull from. The
+      # token comes from https://open-vsx.org/user-settings/tokens (an
+      # account owning the `openpencil` namespace) stored as the
+      # OPENVSX_TOKEN repo secret — mirrors the NPM_TOKEN hard-requirement.
+      - name: Publish to Open VSX
+        working-directory: packages/op-vscode
+        env:
+          OPENVSX_TOKEN: ${{ secrets.OPENVSX_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENVSX_TOKEN:-}" ]; then
+            echo "::error::OPENVSX_TOKEN is required to publish to open-vsx.org (create it at https://open-vsx.org/user-settings/tokens, add as repo secret)"
+            exit 1
+          fi
+          # First-run namespace claim; harmless "already exists" afterwards.
+          bunx ovsx create-namespace openpencil -p "$OPENVSX_TOKEN" || true
+          for f in ./openpencil-vscode-"${OP_VERSION}"-*.vsix; do
+            bunx ovsx publish --packagePath "$f" -p "$OPENVSX_TOKEN"
+          done
 
   release-draft:
     name: Create / update GitHub prerelease
