@@ -5,12 +5,12 @@ use crate::widgets::editor_state_ext::{theme_for, translate};
 use crate::widgets::{LayoutBox, LayoutCx, PaintCx, Widget, WidgetId};
 use crate::{Point2D, Rect, TextLayout};
 use jian_widgets::centered_text_baseline_y;
-use op_editor_core::missing_fonts::MissingFontsPrompt;
+use op_editor_core::missing_fonts::{MissingFontEntry, MissingFontsPrompt};
 use op_editor_core::{EditorState, EditorUiState};
 
 const PANEL_WIDTH: f32 = 480.0;
 const BASE_HEIGHT: f32 = 140.0;
-const ROW_HEIGHT: f32 = 44.0;
+pub(crate) const ROW_HEIGHT: f32 = 44.0;
 const ROWS_TOP: f32 = 68.0;
 const HORIZONTAL_PAD: f32 = 20.0;
 const BUTTON_WIDTH: f32 = 150.0;
@@ -74,16 +74,24 @@ impl<'a> MissingFontsPanel<'a> {
     }
 
     pub(crate) fn row_button_rect(&self, panel: Rect, row: usize) -> Rect {
-        row_button_rect(panel, row)
+        row_button_rect(modal_row_rect(panel, row))
     }
 }
 
-pub(crate) fn row_button_rect(panel: Rect, row: usize) -> Rect {
+fn modal_row_rect(panel: Rect, row: usize) -> Rect {
     Rect {
         origin: Point2D::new(
-            panel.origin.x + panel.size.x - HORIZONTAL_PAD - BUTTON_WIDTH,
-            panel.origin.y + ROWS_TOP + row as f32 * ROW_HEIGHT + 8.0,
+            panel.origin.x + HORIZONTAL_PAD,
+            panel.origin.y + ROWS_TOP + row as f32 * ROW_HEIGHT,
         ),
+        size: Point2D::new(panel.size.x - HORIZONTAL_PAD * 2.0, ROW_HEIGHT),
+    }
+}
+
+/// Shared choose-file geometry used by the modal and Settings Fonts tab.
+pub(crate) fn row_button_rect(row: Rect) -> Rect {
+    Rect {
+        origin: Point2D::new(row.origin.x + row.size.x - BUTTON_WIDTH, row.origin.y + 8.0),
         size: Point2D::new(BUTTON_WIDTH, BUTTON_HEIGHT),
     }
 }
@@ -98,7 +106,7 @@ fn dismiss_rect(panel: Rect) -> Rect {
     }
 }
 
-fn paint_text(
+pub(crate) fn paint_text(
     cx: &mut PaintCx<'_>,
     text: &str,
     origin: Point2D,
@@ -115,6 +123,86 @@ fn paint_text(
     )
     .with_font_weight(weight);
     cx.backend.draw_text(&layout, origin);
+}
+
+/// Paint one missing-font row. Both settings and the one-shot modal call this
+/// so status, mismatch, and choose-file affordances cannot drift apart.
+pub(crate) fn paint_missing_font_row(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    ui: &EditorUiState,
+    entry: &MissingFontEntry,
+    row: Rect,
+    divider: bool,
+) {
+    if divider {
+        cx.backend.fill_rect(
+            Rect {
+                origin: row.origin,
+                size: Point2D::new(row.size.x, 1.0),
+            },
+            theme.border,
+        );
+    }
+    paint_text(
+        cx,
+        &entry.family,
+        Point2D::new(row.origin.x, row.origin.y + 17.0),
+        13.0,
+        600,
+        theme.foreground,
+    );
+    let usage = translate(ui, "missingFonts.usage").replace("{n}", &entry.run_count.to_string());
+    paint_text(
+        cx,
+        &usage,
+        Point2D::new(row.origin.x, row.origin.y + 33.0),
+        11.0,
+        400,
+        theme.muted_foreground,
+    );
+
+    let action = row_button_rect(row);
+    if entry.resolved {
+        let chip = Rect {
+            origin: Point2D::new(action.origin.x + action.size.x - 76.0, action.origin.y),
+            size: Point2D::new(76.0, action.size.y),
+        };
+        cx.backend
+            .fill_round_rect(chip, 6.0, theme.row_selected_primary);
+        paint_text(
+            cx,
+            translate(ui, "missingFonts.resolved"),
+            Point2D::new(chip.origin.x + 12.0, centered_text_baseline_y(chip, 11.0)),
+            11.0,
+            500,
+            theme.primary,
+        );
+    } else {
+        cx.backend.fill_round_rect(action, 6.0, theme.muted);
+        paint_text(
+            cx,
+            translate(ui, "missingFonts.chooseFile"),
+            Point2D::new(
+                action.origin.x + 12.0,
+                centered_text_baseline_y(action, 11.0),
+            ),
+            11.0,
+            500,
+            theme.foreground,
+        );
+    }
+
+    if let Some(note) = &entry.mismatch_note {
+        paint_text(
+            cx,
+            note,
+            Point2D::new(row.origin.x, row.origin.y + 43.0),
+            11.0,
+            400,
+            theme.destructive,
+        );
+    }
 }
 
 impl Widget for MissingFontsPanel<'_> {
@@ -157,76 +245,14 @@ impl Widget for MissingFontsPanel<'_> {
         );
 
         for (row, entry) in self.prompt.entries.iter().enumerate() {
-            let row_y = panel.origin.y + ROWS_TOP + row as f32 * ROW_HEIGHT;
-            if row > 0 {
-                cx.backend.fill_rect(
-                    Rect {
-                        origin: Point2D::new(panel.origin.x + HORIZONTAL_PAD, row_y),
-                        size: Point2D::new(panel.size.x - HORIZONTAL_PAD * 2.0, 1.0),
-                    },
-                    self.theme.border,
-                );
-            }
-            paint_text(
+            paint_missing_font_row(
                 cx,
-                &entry.family,
-                Point2D::new(panel.origin.x + HORIZONTAL_PAD, row_y + 17.0),
-                13.0,
-                600,
-                self.theme.foreground,
+                &self.theme,
+                self.ui,
+                entry,
+                modal_row_rect(panel, row),
+                row > 0,
             );
-            let usage = translate(self.ui, "missingFonts.usage")
-                .replace("{n}", &entry.run_count.to_string());
-            paint_text(
-                cx,
-                &usage,
-                Point2D::new(panel.origin.x + HORIZONTAL_PAD, row_y + 33.0),
-                11.0,
-                400,
-                self.theme.muted_foreground,
-            );
-
-            let action = self.row_button_rect(panel, row);
-            if entry.resolved {
-                let chip = Rect {
-                    origin: Point2D::new(action.origin.x + action.size.x - 76.0, action.origin.y),
-                    size: Point2D::new(76.0, action.size.y),
-                };
-                cx.backend
-                    .fill_round_rect(chip, 6.0, self.theme.row_selected_primary);
-                paint_text(
-                    cx,
-                    translate(self.ui, "missingFonts.resolved"),
-                    Point2D::new(chip.origin.x + 12.0, centered_text_baseline_y(chip, 11.0)),
-                    11.0,
-                    500,
-                    self.theme.primary,
-                );
-            } else {
-                cx.backend.fill_round_rect(action, 6.0, self.theme.muted);
-                paint_text(
-                    cx,
-                    translate(self.ui, "missingFonts.chooseFile"),
-                    Point2D::new(
-                        action.origin.x + 12.0,
-                        centered_text_baseline_y(action, 11.0),
-                    ),
-                    11.0,
-                    500,
-                    self.theme.foreground,
-                );
-            }
-
-            if let Some(note) = &entry.mismatch_note {
-                paint_text(
-                    cx,
-                    note,
-                    Point2D::new(panel.origin.x + HORIZONTAL_PAD, row_y + 43.0),
-                    11.0,
-                    400,
-                    self.theme.destructive,
-                );
-            }
         }
 
         let dismiss = dismiss_rect(panel);

@@ -180,6 +180,7 @@ mod agent_settings_compact_action_tests;
 mod agent_settings_connect_tests;
 #[cfg(test)]
 mod agent_settings_embed_tests;
+pub mod agent_settings_fonts;
 #[cfg(test)]
 mod agent_settings_form_action_tests;
 mod agent_settings_form_actions;

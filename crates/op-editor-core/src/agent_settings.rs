@@ -23,16 +23,18 @@ pub enum AgentSettingsTab {
     Agents,
     Mcp,
     Images,
+    Fonts,
     System,
     /// Sign-in status + workspace identity (v0.8.2 user system).
     Account,
 }
 
 impl AgentSettingsTab {
-    pub const ALL: [AgentSettingsTab; 5] = [
+    pub const ALL: [AgentSettingsTab; 6] = [
         AgentSettingsTab::Agents,
         AgentSettingsTab::Mcp,
         AgentSettingsTab::Images,
+        AgentSettingsTab::Fonts,
         AgentSettingsTab::System,
         AgentSettingsTab::Account,
     ];
@@ -42,6 +44,7 @@ impl AgentSettingsTab {
             AgentSettingsTab::Agents => "Agents",
             AgentSettingsTab::Mcp => "MCP",
             AgentSettingsTab::Images => "Images",
+            AgentSettingsTab::Fonts => "Fonts",
             AgentSettingsTab::System => "System",
             AgentSettingsTab::Account => "Account",
         }

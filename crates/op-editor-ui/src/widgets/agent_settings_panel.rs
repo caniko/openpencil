@@ -4,6 +4,7 @@ use crate::theme::Theme;
 use crate::widgets::agent_settings_account::{self, AccountTabHit};
 use crate::widgets::agent_settings_acp::{self, AcpHit};
 use crate::widgets::agent_settings_builtin::{self, BuiltinHit};
+use crate::widgets::agent_settings_fonts::{self, FontsHit};
 use crate::widgets::agent_settings_i18n::t as t_settings;
 use crate::widgets::agent_settings_images::{self, ImagesHit};
 use crate::widgets::agent_settings_mcp::{self, McpHit};
@@ -36,8 +37,6 @@ pub(super) const NAV_TOP: f32 = 56.0;
 pub(super) const SECTION_GAP: f32 = 28.0;
 pub(super) const CARD_HEIGHT: f32 = 56.0;
 pub(super) const CARD_GAP: f32 = 8.0;
-// 56x28 left the centered "Connect" label ~3px from each edge (measured
-// on the Agents cards); 76x30 restores a comfortable button inset.
 pub(super) const CONNECT_BTN_W: f32 = 76.0;
 pub(super) const CONNECT_BTN_H: f32 = 30.0;
 pub(super) const AVATAR_SIZE: f32 = 28.0;
@@ -49,25 +48,17 @@ pub(super) const SUB_FONT: f32 = 11.0;
 pub enum AgentSettingsPanelMode {
     Full,
     WebBuiltinOnly,
-    /// VS Code / Cursor custom-editor embed (`ui.embed == EmbedHost::VsCode`):
-    /// the dialog exposes only the MCP section (server info + CLI
-    /// integrations) — no built-in agent cards, CLI/ACP config, image
-    /// providers, or system/experimental settings paint or hit-test.
     McpOnly,
 }
 
 impl AgentSettingsPanelMode {
-    /// Single enumeration point for the dialog's sections: both the
-    /// nav-strip paint (`paint_sidebar`) and every hit-test entry
-    /// point (`hit_test`, `nav_at`, `card_at`, `acp_card_at`,
-    /// `content_total_height`) walk this same slice, so gating here
-    /// keeps paint and hit-test in lockstep automatically.
     fn visible_tabs(self) -> &'static [AgentSettingsTab] {
         match self {
             AgentSettingsPanelMode::Full => &AgentSettingsTab::ALL,
             AgentSettingsPanelMode::WebBuiltinOnly => &[
                 AgentSettingsTab::Agents,
                 AgentSettingsTab::Images,
+                AgentSettingsTab::Fonts,
                 AgentSettingsTab::System,
             ],
             AgentSettingsPanelMode::McpOnly => &[AgentSettingsTab::Mcp],
@@ -78,9 +69,6 @@ impl AgentSettingsPanelMode {
         if self.visible_tabs().contains(&settings.tab) {
             settings.tab
         } else {
-            // Fall back to this mode's first visible tab rather than a
-            // hardcoded `Agents` — `McpOnly` never lists `Agents`, so the
-            // dialog must land on MCP directly when opened in embed.
             self.visible_tabs()[0]
         }
     }
@@ -90,10 +78,6 @@ impl AgentSettingsPanelMode {
     }
 }
 
-/// Narrow `base` down to `McpOnly` when the editor is rendering inside the
-/// VS Code / Cursor embed, regardless of which panel flavor the host would
-/// otherwise request. Reads `ui.embed` — the same source `top_bar.rs` uses
-/// to relabel the settings chip to "MCP" for this embed.
 fn mode_for_ui(ui: &EditorUiState, base: AgentSettingsPanelMode) -> AgentSettingsPanelMode {
     if ui.embed == op_editor_core::EmbedHost::VsCode {
         AgentSettingsPanelMode::McpOnly
@@ -159,6 +143,8 @@ pub enum AgentSettingsHit {
         index: usize,
         field: ImageGenField,
     },
+    MissingFontChooseFile(usize),
+    RemoveImportedFont(usize),
     ToggleAutoUpdate,
     ToggleExperimental,
     /// Pick a pencil-cursor silhouette (Settings > System).
@@ -365,6 +351,17 @@ impl<'a> AgentSettingsPanel<'a> {
                     ImagesHit::None => {}
                 }
             }
+            AgentSettingsTab::Fonts => {
+                match agent_settings_fonts::hit_test(content_rect(panel), self.ui, scrolled) {
+                    FontsHit::ChooseFile(row) => {
+                        return AgentSettingsHit::MissingFontChooseFile(row)
+                    }
+                    FontsHit::RemoveImportedFont(row) => {
+                        return AgentSettingsHit::RemoveImportedFont(row)
+                    }
+                    FontsHit::None => {}
+                }
+            }
             AgentSettingsTab::System => {
                 match agent_settings_system::hit_test(content_rect(panel), scrolled) {
                     SystemHit::ToggleAutoUpdate => return AgentSettingsHit::ToggleAutoUpdate,
@@ -503,6 +500,7 @@ impl<'a> AgentSettingsPanel<'a> {
             AgentSettingsTab::Agents => agents_content_height(&self.settings, self.mode),
             AgentSettingsTab::Mcp => agent_settings_mcp::content_height(&self.settings),
             AgentSettingsTab::Images => agent_settings_images::content_height(&self.settings),
+            AgentSettingsTab::Fonts => agent_settings_fonts::content_height(self.ui),
             AgentSettingsTab::System => agent_settings_system::content_height(),
             AgentSettingsTab::Account => agent_settings_account::content_height(),
         }
@@ -583,6 +581,9 @@ fn paint_panel(
         AgentSettingsTab::Images => {
             agent_settings_images::paint_images_tab(cx, theme, settings, _ui, content_rect, now_ms)
         }
+        AgentSettingsTab::Fonts => {
+            agent_settings_fonts::paint_fonts_tab(cx, theme, _ui, content_rect)
+        }
         AgentSettingsTab::System => {
             agent_settings_system::paint_system_tab(cx, theme, settings, _ui, content_rect)
         }
@@ -638,6 +639,7 @@ fn paint_sidebar(
             AgentSettingsTab::Agents => Icon::Pen,
             AgentSettingsTab::Mcp => Icon::Terminal,
             AgentSettingsTab::Images => Icon::Image,
+            AgentSettingsTab::Fonts => Icon::Type,
             AgentSettingsTab::System => Icon::Settings,
             AgentSettingsTab::Account => Icon::User,
         };

@@ -658,6 +658,25 @@ impl WidgetHostNative {
             AgentSettingsHit::CancelAcpAgentDraft => {
                 self.cancel_acp_agent_draft();
             }
+            AgentSettingsHit::MissingFontChooseFile(row) => {
+                // Fonts tab: raise the per-row supply request; the
+                // desktop drain opens the picker with this row's
+                // expected family attached.
+                self.editor_state.editor_ui.missing_fonts_import_row = Some(row);
+            }
+            AgentSettingsHit::RemoveImportedFont(index) => {
+                // Fonts tab imported-list removal — same flow as the
+                // property-panel font picker's remove action.
+                let family = self
+                    .editor_state
+                    .editor_ui
+                    .imported_font_families
+                    .get(index)
+                    .cloned();
+                if let Some(family) = family {
+                    self.editor_state.editor_ui.pending_font_remove = Some(family);
+                }
+            }
             AgentSettingsHit::Inside => {
                 // Modal chrome that hit no control — blank press;
                 // commits the focused settings input (and blurs the
