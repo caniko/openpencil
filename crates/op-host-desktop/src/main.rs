@@ -37,6 +37,7 @@ mod git_jobs;
 mod git_overflow_host;
 mod git_session;
 mod git_ssh_host;
+mod html_import_session;
 mod iconify_host;
 mod image_downscale;
 mod image_generate_host;
@@ -198,6 +199,9 @@ struct DesktopApp {
     /// in `RedrawRequested` swaps in the parsed document when the
     /// worker finishes.
     current_figma_import: Option<figma_import_session::FigmaImportSession>,
+    /// In-flight `.html` import — same worker/pump lifecycle as the
+    /// Figma session above.
+    current_html_import: Option<html_import_session::HtmlImportSession>,
     /// In-flight Figma CLIPBOARD paste decode (Cmd+V) — worker sends
     /// the parsed nodes; the redraw path pumps + inserts them.
     pending_figma_paste: Option<std::sync::mpsc::Receiver<Vec<jian_ops_schema::node::PenNode>>>,
@@ -413,6 +417,7 @@ impl DesktopApp {
             #[cfg(test)]
             design_md_test_provider: None,
             current_figma_import: None,
+            current_html_import: None,
             pending_figma_paste: None,
             pending_html_paste: None,
             model_probe,
@@ -480,6 +485,7 @@ impl DesktopApp {
         // drop the session here so the worker's `send` becomes a
         // silent no-op when it finishes.
         figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+        html_import_session::cancel(&mut self.host, &mut self.current_html_import);
         self.image_search.reset();
         self.saved_doc_fingerprint =
             op_host_services::doc_io::document_fingerprint(self.host.editor_state());
@@ -590,7 +596,8 @@ impl DesktopApp {
             for path in winit::platform::macos::drain_opened_file_urls() {
                 let is_op = op_host_services::doc_io::is_supported_document(&path);
                 let is_fig = op_host_services::doc_io::is_supported_figma_import(&path);
-                if !is_op && !is_fig {
+                let is_html = op_host_services::doc_io::is_supported_html_import(&path);
+                if !is_op && !is_fig && !is_html {
                     continue;
                 }
                 if is_fig
@@ -617,8 +624,16 @@ impl DesktopApp {
                     // still pending; pump applies it when the worker
                     // finishes).
                     figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                    html_import_session::cancel(&mut self.host, &mut self.current_html_import);
                     self.current_figma_import =
                         Some(figma_import_session::spawn(&mut self.host, path));
+                    self.request_redraw(true);
+                    opened = true;
+                } else if is_html {
+                    figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                    html_import_session::cancel(&mut self.host, &mut self.current_html_import);
+                    self.current_html_import =
+                        Some(html_import_session::spawn(&mut self.host, path));
                     self.request_redraw(true);
                     opened = true;
                 } else if persistence::open_path(
@@ -652,7 +667,8 @@ impl DesktopApp {
         for path in paths {
             let is_op = op_host_services::doc_io::is_supported_document(&path);
             let is_fig = op_host_services::doc_io::is_supported_figma_import(&path);
-            if (!is_op && !is_fig) || !path.is_file() {
+            let is_html = op_host_services::doc_io::is_supported_html_import(&path);
+            if (!is_op && !is_fig && !is_html) || !path.is_file() {
                 continue;
             }
             // Single-window editor: the first forwarded document wins, the
@@ -662,7 +678,14 @@ impl DesktopApp {
             }
             if is_fig {
                 figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                html_import_session::cancel(&mut self.host, &mut self.current_html_import);
                 self.current_figma_import = Some(figma_import_session::spawn(&mut self.host, path));
+                self.request_redraw(true);
+                opened = true;
+            } else if is_html {
+                figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                html_import_session::cancel(&mut self.host, &mut self.current_html_import);
+                self.current_html_import = Some(html_import_session::spawn(&mut self.host, path));
                 self.request_redraw(true);
                 opened = true;
             } else if persistence::open_path(
@@ -962,7 +985,8 @@ impl DesktopApp {
 fn initial_file_from_argv() -> Option<PathBuf> {
     std::env::args_os().skip(1).map(PathBuf::from).find(|p| {
         (op_host_services::doc_io::is_supported_document(p)
-            || op_host_services::doc_io::is_supported_figma_import(p))
+            || op_host_services::doc_io::is_supported_figma_import(p)
+            || op_host_services::doc_io::is_supported_html_import(p))
             && p.is_file()
     })
 }

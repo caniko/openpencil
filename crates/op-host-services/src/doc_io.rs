@@ -327,6 +327,16 @@ pub fn is_supported_figma_import(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("fig"))
 }
 
+/// True for HTML pages (`.html` / `.htm`) — routed through the
+/// desktop `html_import_session` (op-html structured import) rather
+/// than the `.op`-only `open_path`. Case-insensitive like the other
+/// extension filters.
+pub fn is_supported_html_import(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+}
+
 /// Outcome of the desktop residual's `run_action` — tells the desktop
 /// runner which post-action bookkeeping to run. Lives here (not on the
 /// desktop side) so the headless daemon can name it too.
@@ -372,6 +382,15 @@ pub enum ErrorKind {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn html_import_extensions() {
+        use std::path::Path;
+        assert!(is_supported_html_import(Path::new("a.html")));
+        assert!(is_supported_html_import(Path::new("A.HTM")));
+        assert!(!is_supported_html_import(Path::new("a.svg")));
+        assert!(!is_supported_html_import(Path::new("html")));
+    }
+
     use super::*;
 
     /// A unique temp path under the OS temp dir for a round-trip test.

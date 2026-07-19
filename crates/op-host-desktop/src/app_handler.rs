@@ -3,8 +3,8 @@
 
 use crate::{
     a11y, chat_attachment, chat_session, codegen_session, cursor_icon, design_session,
-    figma_import_session, frame, git_jobs, menu, persistence, window_state, DesktopApp,
-    DesktopEvent, INITIAL_VIEWPORT_H, INITIAL_VIEWPORT_W,
+    figma_import_session, frame, git_jobs, html_import_session, menu, persistence, window_state,
+    DesktopApp, DesktopEvent, INITIAL_VIEWPORT_H, INITIAL_VIEWPORT_W,
 };
 use op_host_native::{NativeBackend, ProviderError, SharedSkiaContext, SharedSkiaError};
 use std::time::{Duration, Instant};
@@ -297,7 +297,13 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
         if let Some(path) = self.initial_file.take() {
             if op_host_services::doc_io::is_supported_figma_import(&path) {
                 figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                html_import_session::cancel(&mut self.host, &mut self.current_html_import);
                 self.current_figma_import = Some(figma_import_session::spawn(&mut self.host, path));
+                self.request_redraw(true);
+            } else if op_host_services::doc_io::is_supported_html_import(&path) {
+                figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                html_import_session::cancel(&mut self.host, &mut self.current_html_import);
+                self.current_html_import = Some(html_import_session::spawn(&mut self.host, path));
                 self.request_redraw(true);
             } else if persistence::open_path(
                 &mut self.host,
@@ -514,8 +520,15 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 // stray drop can't disrupt the current document.
                 if op_host_services::doc_io::is_supported_figma_import(&path) {
                     figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                    html_import_session::cancel(&mut self.host, &mut self.current_html_import);
                     self.current_figma_import =
                         Some(figma_import_session::spawn(&mut self.host, path));
+                    self.request_redraw(true);
+                } else if op_host_services::doc_io::is_supported_html_import(&path) {
+                    figma_import_session::cancel(&mut self.host, &mut self.current_figma_import);
+                    html_import_session::cancel(&mut self.host, &mut self.current_html_import);
+                    self.current_html_import =
+                        Some(html_import_session::spawn(&mut self.host, path));
                     self.request_redraw(true);
                 } else if op_host_services::doc_io::is_supported_document(&path) {
                     if persistence::open_path(
@@ -529,7 +542,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     }
                 } else {
                     eprintln!(
-                        "openpencil-desktop: ignored dropped file (not .op / .pen / .fig): {}",
+                        "openpencil-desktop: ignored dropped file (not .op / .pen / .fig / .html): {}",
                         path.display()
                     );
                 }
@@ -701,6 +714,25 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     }
                     figma_import_session::PumpOutcome::StillPending
                     | figma_import_session::PumpOutcome::Idle => {}
+                }
+                match html_import_session::pump(
+                    &mut self.host,
+                    &mut self.current_html_import,
+                    &mut self.current_path,
+                    self.window.as_ref(),
+                ) {
+                    figma_import_session::PumpOutcome::CompletedOk => {
+                        self.rebind_git_session_for_current_path();
+                        // Same fresh-EditorState reasoning as the Figma
+                        // pump above: drop stale image-search state.
+                        self.image_search.reset();
+                        self.redraw_dirty = true;
+                    }
+                    figma_import_session::PumpOutcome::CompletedErr => {
+                        self.redraw_dirty = true;
+                    }
+                    figma_import_session::PumpOutcome::Idle
+                    | figma_import_session::PumpOutcome::StillPending => {}
                 }
                 // A failed subtask row's "Retry" click raised
                 // `chat.pending_subtask_retry` — launch the single-subtask
@@ -914,6 +946,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                         Instant::now() + Duration::from_millis(33),
                     ));
                 } else if self.current_figma_import.is_some()
+                    || self.current_html_import.is_some()
                     || self.pending_figma_paste.is_some()
                     || self.pending_html_paste.is_some()
                 {
@@ -1551,6 +1584,7 @@ impl DesktopApp {
             || self.current_design_md.is_some()
             || !self.sub_agents.is_empty()
             || self.current_figma_import.is_some()
+            || self.current_html_import.is_some()
             || self.pending_figma_paste.is_some()
             || self.pending_html_paste.is_some()
             || self.host.next_animation_deadline_ms().is_some()
