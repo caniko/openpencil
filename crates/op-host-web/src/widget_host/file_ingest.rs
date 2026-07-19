@@ -41,6 +41,7 @@ impl WidgetHost {
         // happens to match the last build's inputs (mirrors the native host).
         self.scene_cache.invalidate();
         self.editor_state_dirty = true;
+        self.arm_missing_fonts_detection();
     }
 
     /// Insert nodes parsed from the Figma clipboard, centred on the

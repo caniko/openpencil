@@ -244,15 +244,7 @@ impl NativeBackend {
         color: Color,
         even_odd: bool,
     ) {
-        self.fill_svg_path_impl(
-            canvas,
-            d,
-            top_left,
-            size,
-            viewbox,
-            color,
-            Some(even_odd),
-        );
+        self.fill_svg_path_impl(canvas, d, top_left, size, viewbox, color, Some(even_odd));
     }
 
     #[allow(clippy::too_many_arguments)]

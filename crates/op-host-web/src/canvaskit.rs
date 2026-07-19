@@ -1233,12 +1233,16 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
         crate::repaint_coalescer::install(Rc::new(move || {
             if let Ok(mut b) = inner_for_paint.try_borrow_mut() {
                 b.repaint();
+                drop(b);
+                crate::web_fonts::drain_font_requests(&inner_for_paint);
+                crate::web_fonts::drain_missing_fonts_detection(&inner_for_paint);
             } else {
                 crate::repaint_coalescer::request();
             }
         }));
     }
     crate::web_fonts::drain_font_requests(&inner);
+    crate::web_fonts::drain_missing_fonts_detection(&inner);
     // Re-register any user-imported fonts persisted in IndexedDB (async; repaints
     // when the read lands so their text re-shapes with the imported typeface).
     crate::web_fonts::load_imported_fonts_at_mount(&inner);
@@ -1434,6 +1438,7 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 crate::dom_io::drain_pending_kit_io(&inner);
                 crate::theme_preset_io::drain_pending_theme_preset_io(&inner);
                 crate::web_fonts::drain_font_requests(&inner);
+                crate::web_fonts::drain_missing_fonts_detection(&inner);
             },
         )?;
     }

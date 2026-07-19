@@ -149,13 +149,8 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         color: Color,
         even_odd: bool,
     ) {
-        self.inner.fill_svg_path_in_rect_with_fill_rule(
-            self.canvas,
-            d,
-            rect,
-            color,
-            even_odd,
-        );
+        self.inner
+            .fill_svg_path_in_rect_with_fill_rule(self.canvas, d, rect, color, even_odd);
     }
 
     fn stroke_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color, width: f32) {

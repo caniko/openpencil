@@ -140,6 +140,7 @@ fn load_into_host(host: &mut WidgetHostNative, path: &std::path::Path) -> Result
     // the next paint rebuilds instead of serving the old document's rows.
     host.force_rotate_layer_panel_owner();
     host.mark_editor_state_dirty();
+    host.arm_missing_fonts_detection();
     Ok(())
 }
 

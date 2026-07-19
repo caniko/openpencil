@@ -194,6 +194,14 @@ impl WidgetHost {
         if rename_committed || text_edit_committed {
             self.mark_dirty();
         }
+        let missing_fonts_rect =
+            op_editor_ui::widgets::MissingFontsPanel::for_editor(&self.editor_state)
+                .map(|panel| panel.rect(viewport_width, viewport_height));
+        if let Some(panel_rect) = missing_fonts_rect {
+            if self.dispatch_missing_fonts_press(panel_rect, Point2D::new(x, y)) {
+                return true;
+            }
+        }
         // Floating Design-MD panel — painted top-most, so it
         // hit-tests first: a click on its rect is the panel's before
         // any lower layer can claim it (mirrors native press order).

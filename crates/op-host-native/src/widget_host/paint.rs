@@ -679,5 +679,29 @@ impl WidgetHostNative {
                 drop_rect,
             );
         }
+
+        // Missing-font prompt — absolute top-most modal after every other
+        // overlay, matching its first-tier press routing.
+        if let Some(panel) =
+            op_editor_ui::widgets::MissingFontsPanel::for_editor(&self.editor_state)
+        {
+            frame.fill_rect(
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                op_editor_ui::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.5,
+                },
+            );
+            let panel_rect = panel.rect(viewport_width, viewport_height);
+            let mut cx = PaintCx {
+                backend: &mut *frame,
+            };
+            panel.paint(&mut cx, panel_rect);
+        }
     }
 }

@@ -28,6 +28,7 @@ impl WidgetHost {
         ui.system_fonts_loaded = true;
         ui.font_picker.hover = None;
         self.mark_dirty();
+        self.complete_pending_missing_fonts_detection();
     }
 }
 

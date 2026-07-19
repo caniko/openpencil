@@ -38,6 +38,9 @@ impl WidgetHost {
                 self.commit_settings_focus();
                 self.editor_state.editor_ui.agent_settings.tab = tab;
                 self.editor_state.editor_ui.agent_settings.scroll_y.offset = 0.0;
+                if matches!(tab, op_editor_core::AgentSettingsTab::Fonts) {
+                    self.refresh_missing_fonts_for_settings();
+                }
             }
             AgentSettingsHit::Connect(provider) => {
                 let settings = &mut self.editor_state.editor_ui.agent_settings;
@@ -86,6 +89,20 @@ impl WidgetHost {
                     .agent_settings
                     .mcp_client_config_clipboard_text();
                 self.host_copy_text(&config);
+            }
+            AgentSettingsHit::MissingFontChooseFile(row) => {
+                self.editor_state.editor_ui.missing_fonts_import_row = Some(row);
+            }
+            AgentSettingsHit::RemoveImportedFont(index) => {
+                if let Some(family) = self
+                    .editor_state
+                    .editor_ui
+                    .imported_font_families
+                    .get(index)
+                    .cloned()
+                {
+                    self.editor_state.editor_ui.pending_font_remove = Some(family);
+                }
             }
             AgentSettingsHit::ToggleImagesAdvanced => {
                 self.editor_state

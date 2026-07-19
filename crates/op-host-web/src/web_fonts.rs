@@ -114,8 +114,19 @@ pub(crate) fn drain_font_requests<C: RepaintContext + 'static>(inner: &InnerRc<C
         start_system_font_query(inner);
     }
     load_used_system_fonts(inner);
+    drain_missing_font_import_request(inner);
     drain_font_import_request(inner);
     drain_font_remove_request(inner);
+}
+
+/// Re-check deferred detection after the CanvasKit font drain. The async query
+/// completion also calls this through `apply_browser_system_font_families`;
+/// this synchronous re-check is the fallback if the query path changes later.
+pub(crate) fn drain_missing_fonts_detection<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
+    let Ok(mut b) = inner.try_borrow_mut() else {
+        return;
+    };
+    b.host_mut().complete_pending_missing_fonts_detection();
 }
 
 fn should_query_system_fonts<C: RepaintContext + 'static>(inner: &InnerRc<C>) -> bool {
@@ -463,11 +474,25 @@ fn refresh_imported_font_snapshot<C: RepaintContext + 'static>(inner: &InnerRc<C
         .editor_ui
         .imported_font_families = Arc::new(families);
     b.host_mut().mark_editor_state_dirty();
+    b.host_mut().refresh_missing_fonts_prompt();
     // A font change alters text metrics/rendering without touching the doc, and
     // the web scene cache has no font-generation signal — force a rebuild so the
     // layout scene isn't left stale (measured/shaped against the old fonts).
     b.host_mut().invalidate_layout_scene();
     let _ = b.repaint();
+}
+
+fn drain_missing_font_import_request<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
+    let row = {
+        let Ok(mut b) = inner.try_borrow_mut() else {
+            return;
+        };
+        b.host_mut().take_missing_fonts_import_row()
+    };
+    let Some(row) = row else {
+        return;
+    };
+    open_font_import_picker(inner, Some(row));
 }
 
 /// Drain a pending `ImportFont`: open the hidden file input, read the chosen
@@ -490,6 +515,13 @@ fn drain_font_import_request<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
     if !requested {
         return;
     }
+    open_font_import_picker(inner, None);
+}
+
+fn open_font_import_picker<C: RepaintContext + 'static>(
+    inner: &InnerRc<C>,
+    missing_row: Option<usize>,
+) {
     let inner = inner.clone();
     crate::dom_io::open_file_picker(
         FONT_ACCEPT,
@@ -517,7 +549,18 @@ fn drain_font_import_request<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
                         console_warn_font("import rejected: font exceeds the 16 MiB cap");
                         return;
                     }
-                    import_font_bytes(&inner, bytes);
+                    let actual_family =
+                        missing_row.and_then(|_| crate::font_meta::parse_family(&bytes));
+                    if import_font_bytes(&inner, bytes) {
+                        if let Some(row) = missing_row {
+                            let Ok(mut b) = inner.try_borrow_mut() else {
+                                return;
+                            };
+                            b.host_mut()
+                                .note_missing_font_supplied(row, actual_family.as_deref());
+                            let _ = b.repaint();
+                        }
+                    }
                 }),
             );
         }),
@@ -527,16 +570,16 @@ fn drain_font_import_request<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
 /// Register imported font bytes: extract the family via CanvasKit, persist to
 /// IndexedDB, and refresh the snapshot. A parse failure (no family name) logs
 /// and does nothing else.
-fn import_font_bytes<C: RepaintContext + 'static>(inner: &InnerRc<C>, bytes: Vec<u8>) {
+fn import_font_bytes<C: RepaintContext + 'static>(inner: &InnerRc<C>, bytes: Vec<u8>) -> bool {
     let family = {
         let Ok(mut b) = inner.try_borrow_mut() else {
-            return;
+            return false;
         };
         b.register_imported_font_from_bytes(&bytes)
     };
     let Some(family) = family else {
         console_warn_font("import rejected: could not parse the font (no family name)");
-        return;
+        return false;
     };
     // Persist (non-blocking) then reflect the new family in the picker.
     crate::font_store_idb::put_font(
@@ -545,6 +588,7 @@ fn import_font_bytes<C: RepaintContext + 'static>(inner: &InnerRc<C>, bytes: Vec
         &bytes,
     );
     refresh_imported_font_snapshot(inner);
+    true
 }
 
 /// Drain a pending `RemoveImportedFont`: drop the family from the CanvasKit
@@ -580,6 +624,38 @@ fn console_warn_font(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supplied_font_with_another_family_records_a_mismatch_note() {
+        let bytes =
+            include_bytes!("../../op-host-desktop/assets/fonts/InstrumentSerif-Regular.ttf");
+        let actual = crate::font_meta::parse_family(bytes).expect("fixture family");
+        let mut host = crate::widget_host::WidgetHost::new();
+        host.editor_state_mut().editor_ui.missing_fonts_prompt =
+            Some(op_editor_core::missing_fonts::MissingFontsPrompt {
+                entries: vec![op_editor_core::missing_fonts::MissingFontEntry {
+                    family: "Katibeh".to_string(),
+                    run_count: 1,
+                    mismatch_note: None,
+                    resolved: false,
+                }],
+            });
+
+        host.note_missing_font_supplied(0, Some(&actual));
+
+        let note = host
+            .editor_state()
+            .editor_ui
+            .missing_fonts_prompt
+            .as_ref()
+            .unwrap()
+            .entries[0]
+            .mismatch_note
+            .as_deref()
+            .expect("mismatch note");
+        assert!(note.contains("Instrument Serif"));
+        assert!(note.contains("Katibeh"));
+    }
 
     #[test]
     fn detects_platform_emoji_font_families() {

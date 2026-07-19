@@ -401,7 +401,6 @@ impl NativeBackend {
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
-
     pub fn stroke_round_rect_per_corner(
         &self,
         canvas: &skia_safe::Canvas,

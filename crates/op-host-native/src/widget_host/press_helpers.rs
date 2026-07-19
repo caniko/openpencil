@@ -74,6 +74,9 @@ impl WidgetHostNative {
                 self.commit_settings_focus_if_any();
                 self.editor_state.editor_ui.agent_settings.tab = t;
                 self.editor_state.editor_ui.agent_settings.scroll_y.offset = 0.0;
+                if matches!(t, op_editor_core::AgentSettingsTab::Fonts) {
+                    self.refresh_missing_fonts_for_settings();
+                }
             }
             AgentSettingsHit::Connect(p) => {
                 // `connected` is indexed by `AgentProvider::ALL` order.

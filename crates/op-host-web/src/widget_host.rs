@@ -109,6 +109,7 @@ mod layer_context_history_tests;
 mod layer_panel_rename_tests;
 #[cfg(test)]
 mod locale_picker_scroll_tests;
+mod missing_fonts_press;
 mod node_drag;
 #[cfg(test)]
 mod node_drag_tests;
