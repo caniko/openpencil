@@ -494,6 +494,37 @@ fn any_visible(paints: Option<&[FigValue]>) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the node references enough binary data to represent actual
+/// vector geometry. Short command blobs and nodes with no geometry
+/// source are degenerate, while non-empty undecodable data still uses
+/// the visible rectangle fallback so the import failure remains clear.
+fn has_non_degenerate_vector_geometry(figma: &FigValue, ctx: &ConversionContext) -> bool {
+    for key in ["fillGeometry", "strokeGeometry"] {
+        if let Some(geometries) = figma.get_array(key) {
+            for geometry in geometries {
+                let Some(index) = geometry.get_f64("commandsBlob") else {
+                    continue;
+                };
+                if ctx
+                    .blobs
+                    .get(index as usize)
+                    .and_then(|blob| blob.as_bytes())
+                    .is_some_and(|bytes| bytes.len() >= 9)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    figma
+        .get("vectorData")
+        .and_then(|data| data.get_f64("vectorNetworkBlob"))
+        .and_then(|index| ctx.blobs.get(index as usize))
+        .and_then(|blob| blob.as_bytes())
+        .is_some_and(|bytes| bytes.len() >= 9)
+}
+
 fn convert_vector(
     tree: &TreeNode,
     parent_stack_mode: Option<&str>,
@@ -584,7 +615,25 @@ fn convert_vector(
         );
     }
 
-    // Fallback — undecodable vector becomes a rectangle.
+    if !has_non_degenerate_vector_geometry(figma, ctx) {
+        ctx.warnings.push(format!(
+            "Vector node \"{}\" imported as invisible path (empty geometry)",
+            figma.get_str("name").unwrap_or("")
+        ));
+        return path_node(
+            common_props(figma, id),
+            None,
+            None,
+            resolve_width(figma, parent_stack_mode, ctx),
+            resolve_height(figma, parent_stack_mode, ctx),
+            None,
+            None,
+            None,
+        );
+    }
+
+    // Fallback — genuinely non-empty but undecodable vector data stays
+    // visible as a rectangle and retains the stronger warning class.
     ctx.warnings.push(format!(
         "Vector node \"{}\" converted as rectangle (path data not decodable)",
         figma.get_str("name").unwrap_or("")

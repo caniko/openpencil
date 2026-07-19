@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::common::{clear_icon_lookup, set_icon_lookup, IconLookupResult, IconStyle};
+use crate::figma_types::BlobOrString;
 use jian_ops_schema::node::PenNode;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -94,10 +95,70 @@ fn convert_vector_falls_back_when_no_match() {
     let mut ctx = fresh_ctx();
     let node = convert_vector(&tree, None, &mut ctx);
 
-    // No icon match — falls through to rectangle fallback (vector has
-    // no decoded path data in this synthetic fixture).
-    assert!(matches!(node, PenNode::Rectangle(_)));
+    // No icon match — the synthetic fixture has no geometry, so it
+    // remains present in the layer tree as an invisible path.
+    assert_invisible_degenerate_path(&node, "unmatched-name");
+    assert!(ctx.warnings.iter().any(|w| w.contains("empty geometry")));
 
+    clear_icon_lookup();
+}
+
+fn assert_invisible_degenerate_path(node: &PenNode, expected_name: &str) {
+    let PenNode::Path(path) = node else {
+        panic!("expected Path, got {node:?}");
+    };
+    assert_eq!(path.base.name.as_deref(), Some(expected_name));
+    assert!(path.d.as_deref().unwrap_or_default().is_empty());
+    assert!(path.anchors.as_deref().unwrap_or_default().is_empty());
+    assert!(path.fill.is_none());
+    assert!(path.stroke.is_none());
+    assert_eq!(path.width, Some(SizingBehavior::Number(24.0)));
+    assert_eq!(path.height, Some(SizingBehavior::Number(24.0)));
+}
+
+#[test]
+fn degenerate_commands_blob_imports_as_invisible_path() {
+    let _g = LOOKUP_GUARD.lock().unwrap();
+    set_icon_lookup(|_| None);
+
+    let mut tree = vector_node("four-byte-vector");
+    let FigValue::Object(pairs) = &mut tree.figma else {
+        unreachable!();
+    };
+    pairs.push((
+        "fillGeometry".into(),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+    ));
+    let mut ctx = fresh_ctx();
+    ctx.blobs = vec![BlobOrString::Bytes(vec![0; 4])];
+
+    let node = convert_vector(&tree, None, &mut ctx);
+
+    assert_invisible_degenerate_path(&node, "four-byte-vector");
+    assert!(ctx.warnings.iter().any(|w| w.contains("empty geometry")));
+    clear_icon_lookup();
+}
+
+#[test]
+fn degenerate_boolean_without_geometry_imports_as_invisible_path() {
+    let _g = LOOKUP_GUARD.lock().unwrap();
+    set_icon_lookup(|_| None);
+
+    let mut tree = vector_node("empty-boolean");
+    let FigValue::Object(pairs) = &mut tree.figma else {
+        unreachable!();
+    };
+    let node_type = pairs
+        .iter_mut()
+        .find(|(key, _)| key == "type")
+        .expect("type field");
+    node_type.1 = FigValue::Str("BOOLEAN_OPERATION".into());
+    let mut ctx = fresh_ctx();
+
+    let node = convert_vector(&tree, None, &mut ctx);
+
+    assert_invisible_degenerate_path(&node, "empty-boolean");
+    assert!(ctx.warnings.iter().any(|w| w.contains("empty geometry")));
     clear_icon_lookup();
 }
 
