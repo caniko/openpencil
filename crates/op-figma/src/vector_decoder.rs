@@ -36,6 +36,13 @@ pub struct DecodedVectorPath {
     /// intends to paint as a fill. Open vector-network chains have no
     /// fill region even when the node carries a fill paint.
     pub allows_fill: bool,
+    /// Whether `d` actually came from the node's `strokeGeometry`
+    /// stream (Figma's pre-expanded stroke outline). Only such paths
+    /// may be reclassified as "fill the expansion, drop the stroke" —
+    /// a vector-network fallback is a CENTERLINE and must keep its
+    /// stroke even when the strokeGeometry array is non-empty but
+    /// undecodable.
+    pub from_stroke_geometry: bool,
 }
 
 impl std::ops::Deref for DecodedVectorPath {
@@ -254,12 +261,16 @@ pub fn decode_figma_vector_path(
     let has_fills = any_visible(node.get_array("fillPaints"));
     let has_strokes = any_visible(node.get_array("strokePaints"));
 
-    let geometries = if !has_fills && has_strokes {
-        node.get_array("strokeGeometry")
-            .or_else(|| node.get_array("fillGeometry"))
+    let (geometries, from_stroke_geometry) = if !has_fills && has_strokes {
+        match node.get_array("strokeGeometry").filter(|g| !g.is_empty()) {
+            Some(g) => (Some(g), true),
+            None => (node.get_array("fillGeometry"), false),
+        }
     } else {
-        node.get_array("fillGeometry")
-            .or_else(|| node.get_array("strokeGeometry"))
+        match node.get_array("fillGeometry").filter(|g| !g.is_empty()) {
+            Some(g) => (Some(g), false),
+            None => (node.get_array("strokeGeometry"), true),
+        }
     };
 
     let Some(geometries) = geometries.filter(|g| !g.is_empty()) else {
@@ -288,6 +299,7 @@ pub fn decode_figma_vector_path(
         // A geometry stream is already the paint-specific shape Figma
         // selected (fillGeometry or expanded strokeGeometry).
         allows_fill: true,
+        from_stroke_geometry,
     })
 }
 
@@ -466,6 +478,8 @@ pub fn decode_vector_network_blob(
             d: result,
             fill_rule,
             allows_fill,
+            // Networks are centerlines, never expanded outlines.
+            from_stroke_geometry: false,
         })
     }
 }

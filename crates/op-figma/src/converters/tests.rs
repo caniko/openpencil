@@ -198,6 +198,65 @@ fn tesla_brake_expanded_stroke_geometry_is_filled_not_stroked_again() {
     clear_icon_lookup();
 }
 
+/// A stroke-only node whose strokeGeometry array is present but
+/// UNDECODABLE falls back to the vector network — a CENTERLINE. It
+/// must keep its stroke instead of being reclassified as an expanded
+/// outline and painted as a fill.
+#[test]
+fn network_fallback_keeps_stroke_despite_nonempty_stroke_geometry() {
+    let _guard = LOOKUP_GUARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    set_icon_lookup(|_| None);
+    let mut tree = vector_node("Centerline Icon");
+    tree.figma.set(
+        "size",
+        obj(vec![
+            ("x", FigValue::Float(20.0)),
+            ("y", FigValue::Float(19.5)),
+        ]),
+    );
+    tree.figma.set(
+        "strokePaints",
+        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)]),
+    );
+    tree.figma.set("strokeWeight", FigValue::Float(2.0));
+    // Non-empty strokeGeometry whose commandsBlob is degenerate (4
+    // bytes) — decode fails and the vector network takes over.
+    tree.figma.set(
+        "strokeGeometry",
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+    );
+    tree.figma.set(
+        "vectorData",
+        obj(vec![
+            ("vectorNetworkBlob", FigValue::Uint(0)),
+            (
+                "normalizedSize",
+                obj(vec![
+                    ("x", FigValue::Float(20.0)),
+                    ("y", FigValue::Float(19.5)),
+                ]),
+            ),
+        ]),
+    );
+    let network = captured_bytes(TESLA_TAB_MAINTENANCE_NETWORK);
+    let mut ctx = fresh_ctx();
+    ctx.blobs = vec![
+        BlobOrString::Bytes(network),
+        BlobOrString::Bytes(vec![0u8; 4]),
+    ];
+
+    let PenNode::Path(path) = convert_vector(&tree, None, &mut ctx) else {
+        panic!("expected Path");
+    };
+    assert!(path.stroke.is_some(), "centerline network keeps its stroke");
+    assert!(
+        path.fill.is_none(),
+        "centerline must not be filled as an expanded outline"
+    );
+}
+
 #[test]
 fn tesla_open_tab_network_does_not_implicitly_close_visible_fill() {
     let _guard = LOOKUP_GUARD

@@ -577,6 +577,7 @@ fn convert_vector(
         d: path_d,
         fill_rule,
         allows_fill,
+        from_stroke_geometry,
     } = decode_figma_vector_path(figma, &ctx.blobs).unwrap_or_default();
 
     if !path_d.is_empty() {
@@ -615,12 +616,10 @@ fn convert_vector(
         // outline, so treat the stroke paints as the fill.
         let has_visible_fills = any_visible(figma.get_array("fillPaints"));
         let has_visible_strokes = any_visible(figma.get_array("strokePaints"));
-        let is_stroke_only = !has_visible_fills
-            && has_visible_strokes
-            && figma
-                .get_array("strokeGeometry")
-                .map(|g| !g.is_empty())
-                .unwrap_or(false);
+        // Only a path that genuinely CAME from strokeGeometry is the
+        // pre-expanded outline; a vector-network fallback is a
+        // centerline and must keep its stroke.
+        let is_stroke_only = !has_visible_fills && has_visible_strokes && from_stroke_geometry;
 
         if is_stroke_only {
             return path_node(
