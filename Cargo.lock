@@ -3177,6 +3177,7 @@ dependencies = [
  "op-ai-skills",
  "op-config-store",
  "op-figma",
+ "op-html",
  "op-pen-loader",
  "op-process-io",
  "op-rpc-transport",
@@ -3388,6 +3389,7 @@ dependencies = [
  "op-editor-ui",
  "op-figma",
  "op-host-native",
+ "op-html",
  "op-i18n",
  "op-mcp",
  "op-orchestrator",
@@ -3417,6 +3419,7 @@ dependencies = [
  "op-editor-host-core",
  "op-editor-ui",
  "op-figma",
+ "op-html",
  "op-pen-loader",
  "serde",
  "serde_json",
@@ -3442,6 +3445,7 @@ dependencies = [
  "html5ever",
  "jian-ops-schema",
  "markup5ever_rcdom",
+ "serde_json",
 ]
 
 [[package]]
