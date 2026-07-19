@@ -940,6 +940,8 @@ struct DeepHeader {
     #[serde(default)]
     images: Option<IgnoredAny>,
     #[serde(default)]
+    image_thumbs: Option<IgnoredAny>,
+    #[serde(default)]
     app: Option<IgnoredAny>,
     #[serde(default)]
     routes: Option<IgnoredAny>,
@@ -999,15 +1001,26 @@ fn load_canonical_deep(
     // reference shares one `Arc` per unique payload (no per-reference
     // inflation). Both parse steps are serde_stacker-protected — the
     // deep nesting that routed us here must not overflow either.
-    let doc: jian_ops_schema::PenDocument = if header.images.is_some() {
+    let (mut doc, pending_thumbs): (
+        jian_ops_schema::PenDocument,
+        Option<jian_ops_schema::image_thumbs::PendingThumbSeed>,
+    ) = if header.images.is_some() || header.image_thumbs.is_some() {
         let mut raw: serde_json::Value = deserialize_deep(src)?;
+        let pending = header
+            .image_thumbs
+            .is_some()
+            .then(|| jian_ops_schema::image_thumbs::take_pending_from_document(&mut raw));
         let table = jian_ops_schema::image_table::take_image_table(&mut raw);
-        jian_ops_schema::node::image_src::intern::with_load_scope(table, || {
+        let doc = jian_ops_schema::node::image_src::intern::with_load_scope(table, || {
             deserialize_deep_value(raw)
-        })?
+        })?;
+        (doc, pending)
     } else {
-        deserialize_deep(src)?
+        (deserialize_deep(src)?, None)
     };
+    if let Some(pending_thumbs) = pending_thumbs {
+        jian_ops_schema::image_thumbs::attach_to_document(&mut doc, pending_thumbs);
+    }
     Ok(jian_ops_schema::LoadResult {
         value: doc,
         warnings,
@@ -1091,3 +1104,7 @@ mod tests {
         assert_eq!(loaded.value.children.len(), 1, "the frame should load");
     }
 }
+
+#[cfg(test)]
+#[path = "payload/deep_image_thumb_tests.rs"]
+mod deep_image_thumb_tests;

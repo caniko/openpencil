@@ -198,8 +198,8 @@ pub fn property_panel_content_height(
 }
 
 /// Same as `action_button_rects` but the picker-open flags add
-/// hit-rects for popup rows that overlay later sections:
-/// `fill_picker_open` emits the 4 fill-type rows; the two
+/// hit-rects for popup rows that overlay later sections. Fill-type
+/// rows use their dedicated viewport-aware overlay hit-test; the two
 /// `export_*_picker_open` flags emit the Export section's inline
 /// scale (3 rows) / format (5 rows) select popups. `effects` drives
 /// the Effects section's per-effect "✕" and parameter-stepper rects
@@ -211,8 +211,8 @@ pub fn action_button_rects_with_fill_picker(
     effects: &[EffectSummary],
     fills: &[FillSummary],
     interactions: &InteractionSummary,
-    fill_picker_open: bool,
-    fill_type_picker_index: usize,
+    _fill_picker_open: bool,
+    _fill_type_picker_index: usize,
     font_picker_open: bool,
     font_weight_picker_open: bool,
     export_scale_picker_open: bool,
@@ -395,13 +395,7 @@ pub fn action_button_rects_with_fill_picker(
     }
     if visible.fill {
         y = crate::widgets::property_panel_input_layout::push_fill_action_rects(
-            &mut out,
-            panel_rect,
-            visible,
-            fills,
-            fill_picker_open,
-            fill_type_picker_index,
-            y,
+            &mut out, panel_rect, visible, fills, y,
         );
         y += SECTION_GAP;
     }

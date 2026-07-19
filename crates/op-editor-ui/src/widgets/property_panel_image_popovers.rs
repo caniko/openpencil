@@ -69,14 +69,11 @@ fn paint_data_url_image(cx: &mut PaintCx<'_>, rect: Rect, src: &str, radius: f32
     let Some(bytes) = crate::widgets::property_panel_image_preview::data_url_bytes(src) else {
         return;
     };
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    src.hash(&mut h);
     cx.backend.save();
     cx.backend.clip_round_rect(rect, radius);
     cx.backend.draw_image_with_options(
         rect,
-        h.finish(),
+        jian_ops_schema::node::image_src::paint_image_id(src),
         &bytes,
         ImageDrawMode::Crop,
         ImageAdjustments::default(),
@@ -422,4 +419,30 @@ pub(crate) fn warning_colors() -> (Color, Color, Color, Color) {
         hex_color(0xfb923c, 1.0), // icon orange-400
         hex_color(0xfed7aa, 1.0), // text orange-200
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::property_panel_test_support::CountingBackend;
+
+    #[test]
+    fn search_thumb_uses_the_canonical_paint_id() {
+        let src = "data:image/png;base64,QUJD";
+        let mut backend = CountingBackend::default();
+
+        paint_data_url_image(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            Rect::xywh(0.0, 0.0, 20.0, 20.0),
+            src,
+            4.0,
+        );
+
+        assert_eq!(
+            backend.images[0].1,
+            jian_ops_schema::node::image_src::paint_image_id(src)
+        );
+    }
 }

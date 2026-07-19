@@ -3267,6 +3267,9 @@ dependencies = [
  "flate2",
  "jian-ops-schema",
  "op-editor-core",
+ "op-editor-ui",
+ "op-host-services",
+ "op-pen-loader",
  "ruzstd",
  "serde_json",
 ]
@@ -3320,6 +3323,7 @@ dependencies = [
  "op-git",
  "op-host-native",
  "op-host-services",
+ "op-html",
  "op-i18n",
  "op-mcp",
  "op-opmerge",

@@ -29,6 +29,7 @@ impl PropertyPanel {
         crate::widgets::property_panel_fill::fill_type_picker_hit(
             &self.fill_type_picker,
             action_rect,
+            crate::widgets::property_panel_fill::fill_type_picker_viewport(panel_rect),
             point,
             &self.theme,
         )

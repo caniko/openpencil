@@ -1568,6 +1568,7 @@ impl Widget for PropertyPanel {
                     cx,
                     &self.theme,
                     action_rect,
+                    crate::widgets::property_panel_fill::fill_type_picker_viewport(rect),
                     &self.fill_type_picker,
                     active,
                     self.locale,

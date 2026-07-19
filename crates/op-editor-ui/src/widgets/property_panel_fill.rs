@@ -16,7 +16,7 @@ pub use crate::widgets::property_panel_fill_body::stop_hex_rgb_only;
 use crate::widgets::property_panel_fill_body::{paint_fill_gradient_body, paint_fill_solid_body};
 use crate::widgets::property_panel_fill_image_body::paint_fill_image_body;
 pub use crate::widgets::property_panel_fill_picker::{
-    fill_type_at, fill_type_picker_hit, fill_type_picker_rect,
+    fill_type_at, fill_type_picker_hit, fill_type_picker_rect, fill_type_picker_viewport,
 };
 use crate::widgets::property_panel_fill_picker::{popup_anchor, tokens_from_theme, FILL_TYPES};
 use crate::widgets::property_panel_inputs::{
@@ -121,11 +121,12 @@ pub fn paint_fill_type_picker(
     cx: &mut PaintCx<'_>,
     theme: &Theme,
     action_rect: Rect,
+    viewport: Rect,
     state: &SelectState,
     active: op_editor_core::FillType,
     locale: op_editor_core::Locale,
 ) {
-    let picker_rect = fill_type_picker_rect(action_rect);
+    let picker_rect = fill_type_picker_rect(action_rect, viewport);
     let items: Vec<SelectItem<'static>> = FILL_TYPES
         .iter()
         .map(|t| SelectItem {

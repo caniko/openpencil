@@ -69,10 +69,15 @@ pub(super) fn jian_color_to_color4f(c: Color) -> skia_safe::Color4f {
 // methods are added to `NativeBackend` via a sibling `impl` block.
 mod gradient;
 mod image;
+mod image_diagnostics;
 mod path;
 mod text;
 #[cfg(test)]
 use image::{cover_rect, figma_image_local_matrix, image_adjustment_matrix};
+pub use image_diagnostics::{
+    begin_image_paint_diagnostics, end_image_paint_diagnostics, image_paint_diagnostics_snapshot,
+    ImagePaintDiagnostics,
+};
 
 /// Frame-scoped Jian-DrawOp adapter (spec v19 §5.2.1).
 ///
@@ -94,6 +99,9 @@ pub struct NativeBackend {
     image_cache_bytes: usize,
     /// Monotonic use counter driving LRU eviction.
     image_cache_tick: u64,
+    /// Small, paint-thread-decoded blur-up rasters. This cache is isolated
+    /// from the full-resolution worker-populated image LRU.
+    thumb_cache: image::ThumbCache,
     svg_path_cache: std::collections::HashMap<u64, path::SvgPathCacheEntry>,
     svg_path_cache_order: std::collections::VecDeque<u64>,
     svg_raster_cache: std::collections::HashMap<path::SvgRasterKey, path::SvgRasterCacheEntry>,
@@ -120,6 +128,7 @@ const IMAGE_CACHE_MAX_ENTRIES: usize = 4096;
 /// Decode encoded bytes and force their pixels into a CPU raster image.
 /// This function is called by host workers, never by paint.
 pub fn decode_raster(encoded: &[u8]) -> Option<skia_safe::Image> {
+    image_diagnostics::record_full_decode();
     let lazy = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded))?;
     lazy.make_raster_image(None, None)
 }
@@ -183,6 +192,7 @@ impl NativeBackend {
             image_cache: std::collections::HashMap::new(),
             image_cache_bytes: 0,
             image_cache_tick: 0,
+            thumb_cache: image::ThumbCache::default(),
             svg_path_cache: std::collections::HashMap::new(),
             svg_path_cache_order: std::collections::VecDeque::new(),
             svg_raster_cache: std::collections::HashMap::new(),
@@ -696,6 +706,10 @@ pub fn enumerate_system_font_families() -> Vec<String> {
 #[cfg(test)]
 #[path = "skia/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "skia/image_thumb_tests.rs"]
+mod image_thumb_tests;
 
 #[cfg(test)]
 #[path = "skia/font_fallback_tests.rs"]

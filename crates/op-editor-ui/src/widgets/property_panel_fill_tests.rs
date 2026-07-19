@@ -3,13 +3,74 @@ use jian_widgets::components::select::{SelectHit, SelectState};
 use crate::theme::Theme;
 use crate::widgets::property_panel::{PropertyPanel, PropertyPanelAction};
 use crate::widgets::property_panel_fill::{
-    fill_type_at, fill_type_picker_hit, fill_type_picker_rect,
+    fill_type_at, fill_type_picker_hit, fill_type_picker_rect, paint_fill_type_picker,
 };
+use crate::widgets::property_panel_fill_picker::{FILL_TYPE_COUNT, FILL_TYPE_ROW_HEIGHT};
 use crate::widgets::property_panel_inputs::format_color_hex;
 use crate::widgets::property_panel_sections as sections;
 use crate::widgets::property_panel_test_support::{state_from, visible_for};
-use crate::{Point2D, Rect};
+use crate::widgets::PaintCx;
+use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
 use op_editor_core::{FillType, NodeId, PropertyFocus};
+
+#[derive(Default)]
+struct PickerCaptureBackend {
+    round_fills: Vec<Rect>,
+}
+
+impl RenderBackend for PickerCaptureBackend {
+    fn begin_frame(&mut self) {}
+
+    fn end_frame(&mut self) {}
+
+    fn fill_rect(&mut self, _rect: Rect, _color: Color) {}
+
+    fn stroke_rect(&mut self, _rect: Rect, _color: Color, _width: f32) {}
+
+    fn draw_text(&mut self, _layout: &TextLayout, _origin: Point2D) {}
+
+    fn clip_rect(&mut self, _rect: Rect) {}
+
+    fn stroke_line(&mut self, _from: Point2D, _to: Point2D, _color: Color, _width: f32) {}
+
+    fn fill_round_rect(&mut self, rect: Rect, _radius: f32, _color: Color) {
+        self.round_fills.push(rect);
+    }
+
+    fn stroke_round_rect(&mut self, _rect: Rect, _radius: f32, _color: Color, _width: f32) {}
+
+    fn stroke_svg_path(
+        &mut self,
+        _d: &str,
+        _top_left: Point2D,
+        _size: f32,
+        _color: Color,
+        _width: f32,
+    ) {
+    }
+
+    fn save(&mut self) {}
+
+    fn restore(&mut self) {}
+
+    fn translate(&mut self, _offset: Point2D) {}
+
+    fn resize(&mut self, _width: u32, _height: u32) {}
+
+    fn dpi_scale(&self) -> f32 {
+        1.0
+    }
+}
+
+fn assert_rect_eq(actual: Rect, expected: Rect) {
+    assert!(
+        (actual.origin.x - expected.origin.x).abs() < 0.01
+            && (actual.origin.y - expected.origin.y).abs() < 0.01
+            && (actual.size.x - expected.size.x).abs() < 0.01
+            && (actual.size.y - expected.size.y).abs() < 0.01,
+        "expected {expected:?}, got {actual:?}"
+    );
+}
 
 fn panel_rect() -> Rect {
     Rect {
@@ -64,12 +125,13 @@ fn fill_type_picker_hit_uses_shared_outside_protocol() {
         origin: Point2D::new(panel_rect.origin.x + 32.0, panel_rect.origin.y + 120.0),
         size: Point2D::new(150.0, 30.0),
     };
-    let picker = fill_type_picker_rect(action_rect);
+    let picker = fill_type_picker_rect(action_rect, panel_rect);
 
     assert_eq!(
         fill_type_picker_hit(
             &state,
             action_rect,
+            panel_rect,
             Point2D::new(picker.origin.x + 8.0, picker.origin.y + 10.0),
             &Theme::dark(),
         ),
@@ -80,11 +142,100 @@ fn fill_type_picker_hit_uses_shared_outside_protocol() {
         fill_type_picker_hit(
             &state,
             action_rect,
+            panel_rect,
             Point2D::new(picker.origin.x - 1.0, picker.origin.y),
             &Theme::dark(),
         ),
         SelectHit::Outside
     );
+}
+
+#[test]
+fn fill_type_picker_flips_above_when_below_space_is_insufficient() {
+    let viewport = Rect::xywh(0.0, 36.0, 280.0, 264.0);
+    let action_rect = Rect::xywh(40.0, 250.0, 110.0, 26.0);
+    let popup_height = FILL_TYPE_ROW_HEIGHT * FILL_TYPE_COUNT as f32;
+
+    let picker = fill_type_picker_rect(action_rect, viewport);
+
+    assert_rect_eq(
+        picker,
+        Rect::xywh(
+            action_rect.origin.x,
+            action_rect.origin.y - 4.0 - popup_height,
+            action_rect.size.x,
+            popup_height,
+        ),
+    );
+    assert!(picker.origin.y >= viewport.origin.y);
+}
+
+#[test]
+fn fill_type_picker_clamps_inside_viewport_when_neither_side_fits() {
+    let viewport = Rect::xywh(0.0, 36.0, 280.0, 180.0);
+    let action_rect = Rect::xywh(40.0, 90.0, 110.0, 26.0);
+    let popup_height = FILL_TYPE_ROW_HEIGHT * FILL_TYPE_COUNT as f32;
+
+    let picker = fill_type_picker_rect(action_rect, viewport);
+
+    assert_rect_eq(
+        picker,
+        Rect::xywh(
+            action_rect.origin.x,
+            viewport.origin.y + viewport.size.y - popup_height,
+            action_rect.size.x,
+            popup_height,
+        ),
+    );
+}
+
+#[test]
+fn fill_type_picker_paint_and_hit_test_share_flipped_rect() {
+    let theme = Theme::dark();
+    let viewport = Rect::xywh(0.0, 36.0, 280.0, 264.0);
+    let action_rect = Rect::xywh(40.0, 250.0, 110.0, 26.0);
+    let popup_height = FILL_TYPE_ROW_HEIGHT * FILL_TYPE_COUNT as f32;
+    let expected = Rect::xywh(
+        action_rect.origin.x,
+        action_rect.origin.y - 4.0 - popup_height,
+        action_rect.size.x,
+        popup_height,
+    );
+    let state = SelectState {
+        open: true,
+        ..Default::default()
+    };
+    let mut backend = PickerCaptureBackend::default();
+
+    paint_fill_type_picker(
+        &mut PaintCx {
+            backend: &mut backend,
+        },
+        &theme,
+        action_rect,
+        viewport,
+        &state,
+        FillType::Solid,
+        op_editor_core::Locale::EnUs,
+    );
+
+    assert!(
+        backend.round_fills.contains(&expected),
+        "picker must paint at the shared flipped rect; painted {:?}",
+        backend.round_fills
+    );
+    assert_eq!(
+        fill_type_picker_hit(
+            &state,
+            action_rect,
+            viewport,
+            Point2D::new(expected.origin.x + 8.0, expected.origin.y + 75.0),
+            &theme,
+        ),
+        SelectHit::Row(2),
+        "row hit-test must use the exact rect used by paint"
+    );
+    assert!(expected.origin.y >= viewport.origin.y);
 }
 
 #[test]
@@ -128,7 +279,7 @@ fn fill_type_picker_hit_anchors_to_instance_toggle_action_rect() {
     .expect("fill type toggle action rect");
 
     let expected_popup_y = toggle_rect.origin.y + toggle_rect.size.y + 4.0;
-    let picker_rect = fill_type_picker_rect(toggle_rect);
+    let picker_rect = fill_type_picker_rect(toggle_rect, rect);
     assert!(
         (picker_rect.origin.y - expected_popup_y).abs() < 0.01,
         "open fill-type popup y must derive from ToggleFillTypePicker action rect: expected {expected_popup_y}, got {}",

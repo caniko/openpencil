@@ -5,6 +5,15 @@ use crate::Rect;
 use crate::{Color, Point2D};
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod decode_registry;
+
+#[cfg(test)]
+use decode_registry::lock_decode_registry_for_tests;
+pub use decode_registry::{
+    has_pending_decodes, mark_decode_done, mark_decode_failed, note_pending_decode,
+    pending_decode_count, take_pending_decodes,
+};
+
 /// Byte budget for cached encoded-image payloads. The cache must hold
 /// the working set of an image-heavy document (a Figma import easily
 /// carries hundreds of bitmaps) — a small entry cap caused every frame
@@ -83,61 +92,6 @@ static DATA_URL_CACHE: OnceLock<Mutex<DataUrlCache>> = OnceLock::new();
 
 fn data_url_cache() -> &'static Mutex<DataUrlCache> {
     DATA_URL_CACHE.get_or_init(|| Mutex::new(DataUrlCache::new()))
-}
-
-const PENDING_DECODE_CAP: usize = 64;
-
-#[derive(Default)]
-struct PendingDecodeRegistry {
-    pending: std::collections::VecDeque<u64>,
-    in_flight: std::collections::HashSet<u64>,
-}
-
-static PENDING_DECODES: OnceLock<Mutex<PendingDecodeRegistry>> = OnceLock::new();
-
-fn pending_decodes() -> &'static Mutex<PendingDecodeRegistry> {
-    PENDING_DECODES.get_or_init(|| Mutex::new(PendingDecodeRegistry::default()))
-}
-
-pub fn note_pending_decode(id: u64) {
-    let Ok(mut reg) = pending_decodes().lock() else {
-        return;
-    };
-    if reg.in_flight.contains(&id)
-        || reg.pending.contains(&id)
-        || reg.pending.len() >= PENDING_DECODE_CAP
-    {
-        return;
-    }
-    reg.pending.push_back(id);
-}
-
-pub fn take_pending_decodes(max: usize) -> Vec<u64> {
-    let Ok(mut reg) = pending_decodes().lock() else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(max.min(reg.pending.len()));
-    while out.len() < max {
-        let Some(id) = reg.pending.pop_front() else {
-            break;
-        };
-        reg.in_flight.insert(id);
-        out.push(id);
-    }
-    out
-}
-
-pub fn mark_decode_done(id: u64) {
-    if let Ok(mut reg) = pending_decodes().lock() {
-        reg.in_flight.remove(&id);
-    }
-}
-
-pub fn has_pending_decodes() -> bool {
-    pending_decodes()
-        .lock()
-        .map(|reg| !reg.pending.is_empty())
-        .unwrap_or(false)
 }
 
 /// Most remote misses a single frame can queue before the rest wait
@@ -351,6 +305,19 @@ pub(super) fn paint_image_node(
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);
     if !decode_ready {
+        // Keep every placeholder layer inside the image node's authored
+        // corners. The thumb is deliberately first: a translucent node fill
+        // can tint it before the neutral placeholder art lands on top.
+        if let Some(radii) = per_corner {
+            cx.backend.save();
+            cx.backend.clip_round_rect_per_corner(world_rect, radii);
+        } else if use_round {
+            cx.backend.save();
+            cx.backend.clip_round_rect(world_rect, r);
+        }
+        if let Some(thumb) = jian_ops_schema::image_thumbs::thumb_for(id) {
+            cx.backend.draw_image_thumb(world_rect, id, thumb.as_ref());
+        }
         if let Some(fill) = node.fill {
             if let Some(radii) = per_corner {
                 cx.backend
@@ -386,17 +353,6 @@ pub(super) fn paint_image_node(
                 a: 1.0,
             }
         };
-        // Honor the node's corner radius like the real-image path
-        // below: clip the placeholder art into the rounded rect (the
-        // dashed edges lose their corner segments, which reads as a
-        // rounded dashed border without a dashed-arc primitive).
-        if let Some(radii) = per_corner {
-            cx.backend.save();
-            cx.backend.clip_round_rect_per_corner(world_rect, radii);
-        } else if use_round {
-            cx.backend.save();
-            cx.backend.clip_round_rect(world_rect, r);
-        }
         super::canvas_viewport::paint_dashed_rect(cx, world_rect, placeholder, 1.0);
         paint_picture_glyph(cx, world_rect, placeholder);
         if per_corner.is_some() || use_round {
@@ -463,13 +419,6 @@ fn clear_remote_registry_for_tests() {
     }
 }
 
-#[cfg(test)]
-fn clear_pending_decodes_for_tests() {
-    if let Ok(mut reg) = pending_decodes().lock() {
-        *reg = PendingDecodeRegistry::default();
-    }
-}
-
 /// Minimal "picture" glyph — frame + sun + mountain strokes scaled
 /// into the centre of `rect` (24px reference art, like the lucide
 /// `image` icon but hand-stroked to avoid an icon-catalog dependency
@@ -522,6 +471,9 @@ fn paint_picture_glyph(cx: &mut PaintCx<'_>, rect: Rect, color: Color) {
 }
 
 #[cfg(test)]
+mod blur_up_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout_scene::NodeKind;
@@ -529,13 +481,10 @@ mod tests {
 
     /// The caches + registry are process-wide statics; serialize the
     /// tests that mutate them so parallel test threads don't race.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     fn lock_statics() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = lock_decode_registry_for_tests();
         clear_data_url_cache_for_tests();
         clear_remote_registry_for_tests();
-        clear_pending_decodes_for_tests();
         guard
     }
 
@@ -643,35 +592,6 @@ mod tests {
         let second = image_source_bytes(src, 7).expect("cached decode");
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert_eq!(data_url_cache_len_for_tests(), 1);
-    }
-
-    #[test]
-    fn pending_decode_queue_dedupes_and_tracks_in_flight_lifecycle() {
-        let _guard = lock_statics();
-        note_pending_decode(41);
-        note_pending_decode(41);
-
-        assert!(has_pending_decodes());
-        assert_eq!(take_pending_decodes(8), vec![41]);
-        assert!(!has_pending_decodes());
-        note_pending_decode(41);
-        assert!(
-            take_pending_decodes(8).is_empty(),
-            "in-flight ids stay deduped"
-        );
-
-        mark_decode_done(41);
-        note_pending_decode(41);
-        assert_eq!(take_pending_decodes(8), vec![41]);
-    }
-
-    #[test]
-    fn pending_decode_queue_is_bounded() {
-        let _guard = lock_statics();
-        for id in 0..(PENDING_DECODE_CAP as u64 + 10) {
-            note_pending_decode(id);
-        }
-        assert_eq!(take_pending_decodes(usize::MAX).len(), PENDING_DECODE_CAP);
     }
 
     #[test]

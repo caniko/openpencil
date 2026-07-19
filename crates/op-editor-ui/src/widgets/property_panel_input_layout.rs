@@ -5,9 +5,6 @@
 
 use crate::widgets::property_panel::{EffectSummary, FillSummary, PropertyPanelAction};
 use crate::widgets::property_panel_fill::{fill_head_rects, fill_row_body_height};
-use crate::widgets::property_panel_fill_picker::{
-    fill_type_at, fill_type_picker_rect, FILL_TYPE_COUNT, FILL_TYPE_ROW_HEIGHT,
-};
 use crate::widgets::property_panel_inputs::{
     COLOR_VARIABLE_BUTTON_W, COLOR_VARIABLE_GAP, HEADER_HEIGHT, INPUT_HEIGHT, PAD_X, SECTION_GAP,
     SECTION_HEADER_HEIGHT, TAB_HEIGHT,
@@ -335,7 +332,7 @@ pub fn editable_input_rects(
 }
 
 /// Push the Fill section's action rects (header "+", per-fill type
-/// dropdown / × / type-picker rows / colour-swatch + gradient-stop /
+/// dropdown / × / colour-swatch + gradient-stop /
 /// image-popover affordances) starting at `*y`'s row, returning the y
 /// just past the section's trailing 12 px gap (the caller adds the
 /// `SECTION_GAP`). Split out of `action_button_rects_with_fill_picker`
@@ -345,8 +342,6 @@ pub(crate) fn push_fill_action_rects(
     panel_rect: Rect,
     visible: VisibleSections,
     fills: &[FillSummary],
-    fill_picker_open: bool,
-    fill_type_picker_index: usize,
     mut y: f32,
 ) -> f32 {
     let x0 = panel_rect.origin.x;
@@ -394,28 +389,6 @@ pub(crate) fn push_fill_action_rects(
             ));
         }
         out.push((PropertyPanelAction::RemoveFill(fi), head.remove));
-        // This fill's open type-picker overlay rows.
-        if fill_picker_open && fill_type_picker_index == fi {
-            let picker_rect = fill_type_picker_rect(dropdown_rect);
-            for i in 0..FILL_TYPE_COUNT {
-                let Some(t) = fill_type_at(i) else {
-                    continue;
-                };
-                out.push((
-                    PropertyPanelAction::SetFillType {
-                        index: fi,
-                        fill_type: t,
-                    },
-                    Rect {
-                        origin: Point2D::new(
-                            picker_rect.origin.x,
-                            picker_rect.origin.y + i as f32 * FILL_TYPE_ROW_HEIGHT,
-                        ),
-                        size: Point2D::new(picker_rect.size.x, FILL_TYPE_ROW_HEIGHT),
-                    },
-                ));
-            }
-        }
         y += INPUT_HEIGHT + 6.0; // head row
                                  // Body action rects, keyed off this fill's type.
         match fill_type {

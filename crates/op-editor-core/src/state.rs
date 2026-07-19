@@ -144,6 +144,7 @@ impl EditorState {
     /// Select tool, the identity viewport and page 0 active.
     pub fn from_document(doc: jian_ops_schema::PenDocument) -> Self {
         let components = ComponentLibrary::from_document(&doc);
+        jian_ops_schema::image_thumbs::activate_for_document(&doc);
         Self {
             doc,
             selection: SelectionState::empty(),
@@ -203,6 +204,7 @@ impl EditorState {
     pub fn replace_document(&mut self, doc: jian_ops_schema::PenDocument) {
         self.components = ComponentLibrary::from_document(&doc);
         let old_doc = std::mem::replace(&mut self.doc, doc);
+        jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
         self.selection = SelectionState::empty();
         self.history = History::new();
         self.revision = 0;
@@ -233,6 +235,7 @@ impl EditorState {
         let snap = self.snapshot_for_history();
         self.components = ComponentLibrary::from_document(&doc);
         let old_doc = std::mem::replace(&mut self.doc, doc);
+        jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
         self.selection = SelectionState::empty();
         self.history_push_past(snap);
         self.document_generation = self.document_generation.saturating_add(1);
@@ -372,6 +375,15 @@ fn empty_document() -> jian_ops_schema::PenDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static THUMB_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_thumbnail_registry() -> std::sync::MutexGuard<'static, ()> {
+        THUMB_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn new_state_is_empty_and_quiescent() {
@@ -398,6 +410,61 @@ mod tests {
         // Transient editor state always starts fresh.
         assert!(s.selection.is_empty());
         assert_eq!(s.tool, Tool::Select);
+    }
+
+    #[test]
+    fn document_transitions_activate_present_thumbnail_seeds_only() {
+        let _guard = lock_thumbnail_registry();
+        let old_id = 9_100_001;
+        let from_id = 9_100_002;
+        let replace_id = 9_100_003;
+        let undo_id = 9_100_004;
+        jian_ops_schema::image_thumbs::clear_registry();
+        jian_ops_schema::image_thumbs::store_thumb(old_id, vec![1, 2, 3]);
+
+        let loaded = jian_ops_schema::load_str(&format!(
+            r#"{{"version":"0.8.0","imageThumbs":{{"{from_id}":"/9j/2Q=="}},"children":[]}}"#
+        ))
+        .expect("document with pending thumbnail seed");
+        assert!(jian_ops_schema::image_thumbs::thumb_for(from_id).is_none());
+        assert!(jian_ops_schema::image_thumbs::thumb_for(old_id).is_some());
+
+        let mut state = EditorState::from_document(loaded.value);
+        assert!(jian_ops_schema::image_thumbs::thumb_for(old_id).is_none());
+        assert!(jian_ops_schema::image_thumbs::thumb_for(from_id).is_some());
+
+        let replacement = jian_ops_schema::load_str(&format!(
+            r#"{{"version":"0.8.0","imageThumbs":{{"{replace_id}":"/9j/2Q=="}},"children":[]}}"#
+        ))
+        .expect("plain replacement seed");
+        state.replace_document(replacement.value);
+        assert!(jian_ops_schema::image_thumbs::thumb_for(from_id).is_none());
+        assert!(jian_ops_schema::image_thumbs::thumb_for(replace_id).is_some());
+
+        let undoable = jian_ops_schema::load_str(&format!(
+            r#"{{"version":"0.8.0","imageThumbs":{{"{undo_id}":"/9j/2Q=="}},"children":[]}}"#
+        ))
+        .expect("undoable replacement seed");
+        state.replace_document_with_undo(undoable.value);
+        assert!(jian_ops_schema::image_thumbs::thumb_for(replace_id).is_none());
+        assert!(jian_ops_schema::image_thumbs::thumb_for(undo_id).is_some());
+    }
+
+    #[test]
+    fn absent_temporary_documents_do_not_clear_active_thumbnails() {
+        let _guard = lock_thumbnail_registry();
+        let active_id = 9_100_005;
+        jian_ops_schema::image_thumbs::clear_registry();
+        jian_ops_schema::image_thumbs::store_thumb(active_id, vec![1, 2, 3]);
+
+        let parsed = jian_ops_schema::load_str(r#"{"version":"0.8.0","children":[]}"#)
+            .expect("temporary inline document");
+        assert!(jian_ops_schema::image_thumbs::thumb_for(active_id).is_some());
+        let _temporary_state = EditorState::from_document(parsed.value);
+        assert!(
+            jian_ops_schema::image_thumbs::thumb_for(active_id).is_some(),
+            "an absent seed is a strict no-op even at a state transition"
+        );
     }
 
     #[test]

@@ -21,6 +21,12 @@ function copyBytes(u8) {
   return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 }
 
+let createWebImageCaches = null;
+
+export function setImageCacheFactory(factory) {
+  createWebImageCaches = factory;
+}
+
 // Initialise CanvasKit on `canvasId`. Returns a bridge object the Rust backend
 // drives. Text is rasterized with browser/system fonts by default; the Rust
 // side can additionally register Local Font Access faces through
@@ -28,6 +34,9 @@ function copyBytes(u8) {
 export async function opCkInit(canvasId) {
   await loadScript('/canvaskit/canvaskit.js');
   const CK = await CanvasKitInit({ locateFile: (f) => '/canvaskit/' + f });
+  if (typeof createWebImageCaches !== 'function') {
+    throw new Error('CanvasKit image cache factory was not configured');
+  }
   let surface = CK.MakeWebGLCanvasSurface(canvasId);
   if (!surface) throw new Error('CanvasKit: MakeWebGLCanvasSurface returned null');
   let canvas = surface.getCanvas();
@@ -562,39 +571,7 @@ export async function opCkInit(canvasId) {
     return base.copy();
   };
 
-  // Encoded document images are stable-id keyed and retained across frames so
-  // CanvasKit does not decode/upload the same payload on every repaint.
-  const IMAGE_CACHE_CAP = 4096;
-  const IMAGE_CACHE_BYTE_BUDGET = 384 * 1024 * 1024;
-  const imageCache = new Map();
-  let imageCacheBytes = 0;
-  const imageKey = (lo, hi) => String(hi >>> 0) + ':' + String(lo >>> 0);
-  const cachedImage = (lo, hi) => {
-    const key = imageKey(lo, hi);
-    const hit = imageCache.get(key);
-    if (!hit) return null;
-    imageCache.delete(key);
-    imageCache.set(key, hit);
-    return hit.image;
-  };
-  const installDecodedImage = (lo, hi, encoded) => {
-    const key = imageKey(lo, hi);
-    if (imageCache.has(key)) return true;
-    const image = CK.MakeImageFromEncoded(copyBytes(encoded));
-    if (!image) return false;
-    const bytes = encoded.byteLength || encoded.length || 0;
-    imageCache.set(key, { image, bytes });
-    imageCacheBytes += bytes;
-    while (imageCache.size > IMAGE_CACHE_CAP || imageCacheBytes > IMAGE_CACHE_BYTE_BUDGET) {
-      const firstKey = imageCache.keys().next().value;
-      const old = imageCache.get(firstKey);
-      if (!old) break;
-      imageCache.delete(firstKey);
-      imageCacheBytes -= old.bytes;
-      if (old.image && old.image.delete) old.image.delete();
-    }
-    return true;
-  };
+  const imageCaches = createWebImageCaches(CK);
 
   // Figma maps node-normalized coordinates to normalized image UV. Image
   // shaders consume the inverse, mapping image pixels into the destination
@@ -796,15 +773,19 @@ export async function opCkInit(canvasId) {
     },
 
     imageDecoded(imageIdLo, imageIdHi) {
-      return imageCache.has(imageKey(imageIdLo, imageIdHi));
+      return imageCaches.hasFullImage(imageIdLo, imageIdHi);
     },
 
     decodeImage(imageIdLo, imageIdHi, encoded) {
-      return installDecodedImage(imageIdLo, imageIdHi, encoded);
+      return imageCaches.installFullImage(imageIdLo, imageIdHi, encoded);
+    },
+
+    drawImageThumb(imageIdLo, imageIdHi, x, y, w, h, jpeg) {
+      imageCaches.drawThumbnailCover(canvas, imageIdLo, imageIdHi, jpeg, x, y, w, h);
     },
 
     drawImageWithOptions(imageIdLo, imageIdHi, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius) {
-      const image = cachedImage(imageIdLo, imageIdHi);
+      const image = imageCaches.fullImage(imageIdLo, imageIdHi);
       if (!image || !(w > 0) || !(h > 0)) return;
       const imageW = image.width();
       const imageH = image.height();

@@ -25,16 +25,17 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;
 
+use crate::document_json::{
+    externalize_for_disk, parse_document_json, with_borrowed_parsed_document,
+};
+use crate::live_sync;
+use crate::live_sync_glue::SharedSync;
+use crate::repaint_ctx::RepaintContext;
 use op_editor_core::bridge_protocol::{
     event_conflict_resolved, event_ready, event_snapshot_conflict, event_snapshot_result,
     BridgeInbound, ConflictMode,
 };
 use op_editor_core::web_sync::WebSyncClient;
-use op_editor_core::PenDocument;
-
-use crate::live_sync;
-use crate::live_sync_glue::SharedSync;
-use crate::repaint_ctx::RepaintContext;
 
 /// Tick cadence for the outbound-event observer. Latency only: the gate's edge
 /// latches never lose an event between ticks (a fast rise+fall is still drained
@@ -289,8 +290,8 @@ fn handle_open_document<C: RepaintContext + 'static>(
     // The extension sends the raw on-disk bytes — files saved by the
     // desktop / CLI carry a deduplicated `images` table that must be
     // resolved back to inline data URLs before the typed parse.
-    let doc: PenDocument = match parse_document_json(&json) {
-        Ok(doc) => doc,
+    let parsed = match parse_document_json(&json) {
+        Ok(parsed) => parsed,
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!(
                 "[op-bridge] open-document: bad JSON: {err}"
@@ -300,10 +301,7 @@ fn handle_open_document<C: RepaintContext + 'static>(
     };
 
     // Prologue borrow: replace + repaint + capture the opened pair/bytes.
-    let (pair, doc_json) = {
-        let Ok(mut b) = inner.try_borrow_mut() else {
-            return;
-        };
+    let Some((pair, doc_json)) = with_borrowed_parsed_document(inner, parsed, |b, doc| {
         b.host_mut().editor_state_mut().replace_document(doc);
         b.host_mut().force_rotate_layer_panel_owner();
         b.host_mut().mark_editor_state_dirty();
@@ -312,10 +310,10 @@ fn handle_open_document<C: RepaintContext + 'static>(
         let _ = b.repaint();
         let s = b.host().editor_state();
         let pair = (s.document_generation(), s.document_revision());
-        match serde_json::to_string(&s.doc) {
-            Ok(json) => (pair, json),
-            Err(_) => return,
-        }
+        serde_json::to_string(&s.doc).ok().map(|json| (pair, json))
+    })
+    .flatten() else {
+        return;
     };
 
     // Scope the open to generation G and block pulls, all before any await.
@@ -734,32 +732,6 @@ fn read_triple<C: RepaintContext>(inner: &Rc<RefCell<C>>) -> Option<(u64, u64, b
     let b = inner.try_borrow().ok()?;
     let s = b.host().editor_state();
     Some((s.document_generation(), s.document_revision(), s.is_dirty()))
-}
-
-/// Parse `.op` JSON into a `PenDocument`, resolving a deduplicated
-/// `images` table (files saved by the desktop / CLI) during the typed
-/// parse so every reference shares one `Arc` per unique payload — the
-/// in-memory document keeps the inline form without per-reference
-/// payload copies.
-fn parse_document_json(json: &str) -> Result<PenDocument, serde_json::Error> {
-    let mut raw: serde_json::Value = serde_json::from_str(json)?;
-    let table = jian_ops_schema::image_table::take_image_table(&mut raw);
-    jian_ops_schema::node::image_src::intern::with_load_scope(table, || serde_json::from_value(raw))
-}
-
-/// Externalize shared image payloads in a document JSON string headed
-/// for DISK — the VS Code extension writes `snapshot-result` bytes to
-/// the `.op` file verbatim, so replies must be in the saved (deduped)
-/// form. Daemon push bodies stay inline; only reply payloads go
-/// through here. Unparsable input passes through unchanged.
-fn externalize_for_disk(doc_json: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(doc_json) {
-        Ok(mut v) => {
-            jian_ops_schema::image_table::externalize_images(&mut v);
-            v.to_string()
-        }
-        Err(_) => doc_json.to_owned(),
-    }
 }
 
 /// Serialize the live document + capture its `(generation, revision)` pair

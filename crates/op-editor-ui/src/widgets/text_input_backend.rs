@@ -246,6 +246,14 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
         self.inner.stroke_polygon(points, color, width);
     }
 
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
+        self.inner.image_decoded(image_id, encoded)
+    }
+
+    fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
+        self.inner.draw_image_thumb(rect, image_id, jpeg);
+    }
+
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.inner.draw_image(rect, image_id, encoded);
     }

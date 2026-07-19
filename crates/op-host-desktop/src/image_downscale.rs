@@ -28,6 +28,17 @@ const BYTE_BUDGET: usize = 2_000_000;
 /// JPEG quality for re-encoded opaque images — visually lossless for
 /// design mock-ups, a fraction of the source size.
 const JPEG_QUALITY: u32 = 82;
+const THUMB_MAX_EDGE: i32 = 32;
+const THUMB_BYTE_BUDGET: usize = 4 * 1024;
+const THUMB_JPEG_QUALITIES: [u32; 6] = [60, 50, 40, 30, 20, 10];
+
+/// Results produced from one decode of a Figma import bitmap. The resolver
+/// decides the final data-URL MIME after the optional replacement lands.
+#[derive(Default)]
+pub(crate) struct PreparedImportImage {
+    pub replacement: Option<Vec<u8>>,
+    pub thumbnail: Option<Vec<u8>>,
+}
 
 /// Re-encode `bytes` smaller when it decodes to a raster image whose
 /// longest edge exceeds [`MAX_EDGE`] or whose payload exceeds
@@ -43,8 +54,59 @@ pub fn maybe_downscale(bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
     if is_gif(bytes) || is_animated_webp(bytes) {
         return None;
     }
-    let oversized_bytes = bytes.len() > BYTE_BUDGET;
     let src = Image::from_encoded(Data::new_copy(bytes))?;
+    maybe_downscale_decoded(bytes, &src)
+}
+
+/// Decode an imported Figma bitmap once, producing both its optional
+/// full-size replacement and its blur-up JPEG. The callback runs before the
+/// resolver creates the final data URL, so callers bind the thumbnail later.
+pub(crate) fn prepare_figma_import_image(bytes: &[u8]) -> PreparedImportImage {
+    let Some(src) = Image::from_encoded(Data::new_copy(bytes)) else {
+        return PreparedImportImage::default();
+    };
+    let replacement = if is_gif(bytes) || is_animated_webp(bytes) {
+        None
+    } else {
+        maybe_downscale_decoded(bytes, &src).map(|(_mime, replacement)| replacement)
+    };
+    PreparedImportImage {
+        replacement,
+        thumbnail: make_blur_thumbnail_from_image(&src),
+    }
+}
+
+/// Generate a blur-up JPEG from an already-decoded raster. This keeps the
+/// fallback path on the decode worker without decoding the payload twice.
+pub(crate) fn make_blur_thumbnail_from_image(src: &Image) -> Option<Vec<u8>> {
+    let (w, h) = (src.width(), src.height());
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let longest = w.max(h);
+    let scale = (THUMB_MAX_EDGE as f32 / longest as f32).min(1.0);
+    let nw = ((w as f32 * scale).round() as i32).max(1);
+    let nh = ((h as f32 * scale).round() as i32).max(1);
+    let mut surface = surfaces::raster_n32_premul((nw, nh))?;
+    surface.canvas().clear(skia_safe::Color::WHITE);
+    let mut paint = Paint::default();
+    paint.set_anti_alias(true);
+    surface.canvas().draw_image_rect_with_sampling_options(
+        src,
+        None,
+        Rect::from_xywh(0.0, 0.0, nw as f32, nh as f32),
+        CubicResampler::mitchell(),
+        &paint,
+    );
+    let thumb = surface.image_snapshot();
+    THUMB_JPEG_QUALITIES.iter().find_map(|quality| {
+        let encoded = thumb.encode(None, EncodedImageFormat::JPEG, *quality)?;
+        (encoded.size() <= THUMB_BYTE_BUDGET).then(|| encoded.as_bytes().to_vec())
+    })
+}
+
+fn maybe_downscale_decoded(bytes: &[u8], src: &Image) -> Option<(&'static str, Vec<u8>)> {
+    let oversized_bytes = bytes.len() > BYTE_BUDGET;
     let (w, h) = (src.width(), src.height());
     if w <= 0 || h <= 0 {
         return None;
@@ -69,7 +131,7 @@ pub fn maybe_downscale(bytes: &[u8]) -> Option<(&'static str, Vec<u8>)> {
     // Mitchell cubic resampling — the high-quality downscale filter, so
     // a shrunk photo stays smooth instead of aliasing.
     surface.canvas().draw_image_rect_with_sampling_options(
-        &src,
+        src,
         None,
         Rect::from_xywh(0.0, 0.0, nw as f32, nh as f32),
         CubicResampler::mitchell(),
@@ -187,6 +249,22 @@ mod tests {
             maybe_downscale(&png).is_none(),
             "a 64px image is within budget — no re-encode"
         );
+    }
+
+    #[test]
+    fn blur_thumbnail_is_a_bounded_jpeg() {
+        let png = solid(320, 160, EncodedImageFormat::PNG);
+        let prepared = prepare_figma_import_image(&png);
+        assert!(
+            prepared.replacement.is_none(),
+            "the in-budget full image remains unchanged"
+        );
+        let thumb = prepared.thumbnail.expect("import pass generates thumbnail");
+
+        assert!(thumb.starts_with(&[0xff, 0xd8]), "thumbnail is JPEG");
+        assert!(thumb.len() <= 4 * 1024, "thumbnail stays within 4 KiB");
+        let decoded = Image::from_encoded(Data::new_copy(&thumb)).expect("thumbnail decodes");
+        assert_eq!(decoded.dimensions(), (32, 16).into());
     }
 
     #[test]

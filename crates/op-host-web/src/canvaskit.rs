@@ -19,6 +19,8 @@ extern "C" {
     /// the bridge object. Text uses browser/system fonts via the JS bridge.
     #[wasm_bindgen(js_name = opCkInit, catch)]
     fn op_ck_init(canvas_id: &str) -> Result<js_sys::Promise, JsValue>;
+    #[wasm_bindgen(js_name = setImageCacheFactory)]
+    fn set_image_cache_factory(factory: &js_sys::Function);
 
     /// The bridge object: flat scalar-arg ops over a CanvasKit canvas.
     pub type OpCk;
@@ -266,6 +268,17 @@ extern "C" {
     fn image_decoded(this: &OpCk, image_id_lo: u32, image_id_hi: u32) -> bool;
     #[wasm_bindgen(method, js_name = decodeImage)]
     fn decode_image(this: &OpCk, image_id_lo: u32, image_id_hi: u32, encoded: &[u8]) -> bool;
+    #[wasm_bindgen(method, js_name = drawImageThumb)]
+    fn draw_image_thumb(
+        this: &OpCk,
+        image_id_lo: u32,
+        image_id_hi: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        jpeg: &[u8],
+    );
     #[wasm_bindgen(method, js_name = measureText)]
     fn measure_text(this: &OpCk, t: &str, sz: f32) -> f32;
     #[wasm_bindgen(method, js_name = measureTextStyled)]
@@ -336,6 +349,12 @@ extern "C" {
     fn set_dpr(this: &OpCk, dpr: f32);
 }
 
+#[wasm_bindgen(module = "/src/op_ck_image_cache.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = webImageCacheFactory)]
+    fn web_image_cache_factory() -> js_sys::Function;
+}
+
 /// Minimum backing-store scale used by the web host.
 ///
 /// Some embedded browsers report a DPR of 1 even on a HiDPI display. Text in
@@ -375,22 +394,6 @@ fn image_draw_mode_code(mode: ImageDrawMode) -> u8 {
         ImageDrawMode::Tile => 3,
         ImageDrawMode::Stretch => 4,
     }
-}
-
-fn take_web_decode_batch(max: usize) -> Vec<(u64, std::sync::Arc<[u8]>)> {
-    use op_editor_ui::widgets::canvas_viewport_image::{
-        cached_bytes_for, mark_decode_done, take_pending_decodes,
-    };
-    take_pending_decodes(max)
-        .into_iter()
-        .filter_map(|id| match cached_bytes_for(id) {
-            Some(bytes) => Some((id, bytes)),
-            None => {
-                mark_decode_done(id);
-                None
-            }
-        })
-        .collect()
 }
 
 fn svg_path_even_odd(d: &str) -> bool {
@@ -457,12 +460,13 @@ impl CanvasKitBackend {
     }
 
     fn drain_pending_decodes(&mut self, max: usize) -> usize {
-        use op_editor_ui::widgets::canvas_viewport_image::mark_decode_done;
+        use crate::image_decode_queue::{finish_web_decode, take_web_decode_batch};
         let batch = take_web_decode_batch(max);
         for (id, bytes) in &batch {
-            self.ck
+            let decoded = self
+                .ck
                 .decode_image(*id as u32, (*id >> 32) as u32, bytes.as_ref());
-            mark_decode_done(*id);
+            finish_web_decode(*id, decoded);
         }
         batch.len()
     }
@@ -855,6 +859,17 @@ impl RenderBackend for CanvasKitBackend {
         self.ck
             .image_decoded(image_id as u32, (image_id >> 32) as u32)
     }
+    fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
+        self.ck.draw_image_thumb(
+            image_id as u32,
+            (image_id >> 32) as u32,
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            jpeg,
+        );
+    }
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.draw_image_with_options_and_transform(
             rect,
@@ -1047,6 +1062,8 @@ pub async fn init_backend(
     logical_w: u32,
     logical_h: u32,
 ) -> Result<CanvasKitBackend, JsValue> {
+    let image_cache_factory = web_image_cache_factory();
+    set_image_cache_factory(&image_cache_factory);
     let promise = op_ck_init(canvas_id)?;
     let ck_val = wasm_bindgen_futures::JsFuture::from(promise).await?;
     let ck: OpCk = ck_val.unchecked_into();
@@ -1955,40 +1972,6 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use op_editor_ui::widgets::canvas_viewport_image::{
-        has_pending_decodes, mark_decode_done, note_pending_decode, store_remote_image_bytes,
-        take_pending_decodes,
-    };
-    use std::sync::Mutex;
-
-    static DECODE_REGISTRY_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn web_decode_batch_takes_at_most_two_and_keeps_remaining_work_queued() {
-        let _guard = DECODE_REGISTRY_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        for stale in take_pending_decodes(usize::MAX) {
-            mark_decode_done(stale);
-        }
-        for id in 0xC100..0xC103 {
-            store_remote_image_bytes(id, vec![id as u8]);
-            note_pending_decode(id);
-        }
-
-        let batch = take_web_decode_batch(2);
-
-        assert_eq!(batch.len(), 2);
-        assert_eq!(batch[0].0, 0xC100);
-        assert_eq!(batch[1].0, 0xC101);
-        assert!(has_pending_decodes());
-        for (id, _) in batch {
-            mark_decode_done(id);
-        }
-        for id in take_pending_decodes(usize::MAX) {
-            mark_decode_done(id);
-        }
-    }
 
     #[test]
     fn canvaskit_draw_path_only_reads_predecoded_images() {
@@ -2001,7 +1984,7 @@ mod tests {
             .expect("draw bridge end")
             + draw_start;
         let draw = &bridge[draw_start..draw_end];
-        assert!(draw.contains("cachedImage(imageIdLo, imageIdHi)"));
+        assert!(draw.contains("imageCaches.fullImage(imageIdLo, imageIdHi)"));
         assert!(!draw.contains("MakeImageFromEncoded"));
     }
 

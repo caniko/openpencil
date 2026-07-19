@@ -66,8 +66,19 @@ pub(crate) fn data_url_bytes(src: &str) -> Option<Vec<u8>> {
 }
 
 fn src_hash(src: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    src.hash(&mut h);
-    h.finish()
+    jian_ops_schema::node::image_src::paint_image_id(src)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_source_id_uses_the_canonical_paint_id() {
+        let src = "data:image/png;base64,QUJD";
+        assert_eq!(
+            src_hash(src),
+            jian_ops_schema::node::image_src::paint_image_id(src)
+        );
+    }
 }

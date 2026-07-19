@@ -1,8 +1,13 @@
 //! Worker pool for paint-recorded local image decode requests.
 
+#[path = "image_decode_stats.rs"]
+mod image_decode_stats;
+
 use crate::DesktopEvent;
+use image_decode_stats::ImageDecodeStats;
 use op_editor_ui::widgets::canvas_viewport_image::{
-    cached_bytes_for, mark_decode_done, take_pending_decodes,
+    cached_bytes_for, mark_decode_done, mark_decode_failed, pending_decode_count,
+    take_pending_decodes,
 };
 use op_host_native::{decode_raster, NativeBackend};
 use skia_safe::{ConditionallySend, Sendable};
@@ -30,6 +35,7 @@ pub struct ImageDecodeHost {
     workers: Vec<JoinHandle<()>>,
     in_flight: usize,
     wake_proxy: Arc<Mutex<Option<EventLoopProxy<DesktopEvent>>>>,
+    stats: Option<ImageDecodeStats>,
 }
 
 impl ImageDecodeHost {
@@ -55,6 +61,7 @@ impl ImageDecodeHost {
             workers,
             in_flight: 0,
             wake_proxy,
+            stats: ImageDecodeStats::from_env(),
         }
     }
 
@@ -66,6 +73,20 @@ impl ImageDecodeHost {
 
     pub fn is_pending(&self) -> bool {
         self.in_flight > 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stats_snapshot(&self) -> Option<(u64, u64, usize, usize, &'static str)> {
+        self.stats.as_ref().map(|stats| {
+            let snapshot = stats.snapshot();
+            (
+                snapshot.installs,
+                snapshot.reinstalls,
+                snapshot.in_flight,
+                snapshot.pending,
+                snapshot.state,
+            )
+        })
     }
 
     /// Install completed rasters, then submit at most four queued ids.
@@ -89,6 +110,9 @@ impl ImageDecodeHost {
                 Err(_) => mark_decode_done(id),
             }
         }
+        if let Some(stats) = self.stats.as_ref() {
+            stats.update_queue(self.in_flight, pending_decode_count());
+        }
         changed
     }
 
@@ -98,8 +122,13 @@ impl ImageDecodeHost {
             self.in_flight = self.in_flight.saturating_sub(1);
             if let Some(image) = result.image {
                 backend.install_raster_image(result.id, image.into_inner());
+                if let Some(stats) = self.stats.as_mut() {
+                    stats.record_install(result.id);
+                }
+                mark_decode_done(result.id);
+            } else {
+                mark_decode_failed(result.id);
             }
-            mark_decode_done(result.id);
             changed = true;
         }
         changed
@@ -128,7 +157,20 @@ fn decode_worker(
             },
             Err(_) => break,
         };
-        let image = decode_raster(&job.bytes).and_then(|image| image.wrap_send().ok());
+        let decoded = decode_raster(&job.bytes);
+        let thumbnail = decoded.as_ref().and_then(|image| {
+            if jian_ops_schema::image_thumbs::thumb_for(job.id).is_none() {
+                crate::image_downscale::make_blur_thumbnail_from_image(image)
+            } else {
+                None
+            }
+        });
+        let image = decoded.and_then(|image| image.wrap_send().ok());
+        if let (Some(_), Some(thumbnail)) = (&image, thumbnail) {
+            if jian_ops_schema::image_thumbs::thumb_for(job.id).is_none() {
+                jian_ops_schema::image_thumbs::store_thumb(job.id, thumbnail);
+            }
+        }
         if results.send(DecodeResult { id: job.id, image }).is_err() {
             break;
         }
@@ -146,7 +188,10 @@ mod tests {
         take_pending_decodes,
     };
     use op_host_native::NativeBackend;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    static DECODE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn encode_test_png() -> Vec<u8> {
         let mut surface = skia_safe::surfaces::raster_n32_premul((3, 2)).unwrap();
@@ -159,8 +204,22 @@ mod tests {
             .to_vec()
     }
 
+    fn encode_test_jpeg(width: i32, height: i32) -> Vec<u8> {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((width, height)).unwrap();
+        surface.canvas().clear(skia_safe::Color::BLUE);
+        surface
+            .image_snapshot()
+            .encode(None, skia_safe::EncodedImageFormat::JPEG, 60)
+            .unwrap()
+            .as_bytes()
+            .to_vec()
+    }
+
     #[test]
     fn worker_round_trip_decodes_and_installs_off_thread() {
+        let _guard = DECODE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let id = 0xDEC0_DE01;
         for stale in take_pending_decodes(usize::MAX) {
             mark_decode_done(stale);
@@ -183,5 +242,98 @@ mod tests {
         }
         let image = backend.raster_image(id).expect("installed raster");
         assert_eq!(image.dimensions(), (3, 2).into());
+    }
+
+    #[test]
+    fn successful_worker_decode_installs_a_fallback_thumbnail() {
+        let _guard = DECODE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = 0xDEC0_7A11;
+        for stale in take_pending_decodes(usize::MAX) {
+            mark_decode_done(stale);
+        }
+        store_remote_image_bytes(id, encode_test_png());
+        note_pending_decode(id);
+
+        let mut host = ImageDecodeHost::new();
+        let mut backend = NativeBackend::with_dpi(1.0);
+        assert!(host.pump(&mut backend), "first pump submits queued decode");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.is_pending() {
+            host.pump(&mut backend);
+            assert!(Instant::now() < deadline, "decode worker never landed");
+            std::thread::yield_now();
+        }
+
+        let thumb = jian_ops_schema::image_thumbs::thumb_for(id)
+            .expect("successful full decode generates a fallback thumbnail");
+        assert!(thumb.starts_with(&[0xff, 0xd8]));
+        assert!(thumb.len() <= 4 * 1024);
+        if let Some(stats) = host.stats_snapshot() {
+            assert_eq!(stats.0, 1, "successful install reaches telemetry");
+            assert_eq!(stats.1, 0, "the first paint id is not a reinstall");
+        }
+    }
+
+    #[test]
+    fn worker_decode_failure_is_not_queued_again() {
+        let _guard = DECODE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = 0xDEC0_BAD1;
+        for stale in take_pending_decodes(usize::MAX) {
+            mark_decode_done(stale);
+        }
+        store_remote_image_bytes(id, b"not an encoded image".to_vec());
+        note_pending_decode(id);
+
+        let mut host = ImageDecodeHost::new();
+        let mut backend = NativeBackend::with_dpi(1.0);
+        assert!(host.pump(&mut backend), "first pump submits queued decode");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.is_pending() {
+            host.pump(&mut backend);
+            assert!(Instant::now() < deadline, "failed decode never completed");
+            std::thread::yield_now();
+        }
+
+        assert!(!backend.image_decoded(id, &[]));
+        note_pending_decode(id);
+        assert!(
+            take_pending_decodes(1).is_empty(),
+            "a failed payload must remain negatively cached"
+        );
+    }
+
+    #[test]
+    fn paint_thread_rejects_oversized_thumbnail_dimensions_before_rasterizing() {
+        let mut backend = NativeBackend::with_dpi(1.0);
+        let mut surface = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
+        let oversized = encode_test_jpeg(64, 64);
+        assert!(oversized.len() <= 4 * 1024);
+
+        op_host_native::begin_image_paint_diagnostics();
+        backend.draw_image_thumb(
+            surface.canvas(),
+            op_editor_ui::Rect::xywh(0.0, 0.0, 20.0, 20.0),
+            0xDEC0_0032,
+            &oversized,
+        );
+        backend.draw_image_thumb(
+            surface.canvas(),
+            op_editor_ui::Rect::xywh(0.0, 0.0, 20.0, 20.0),
+            0xDEC0_0032,
+            &encode_test_jpeg(16, 16),
+        );
+        let diagnostics = op_host_native::end_image_paint_diagnostics();
+
+        assert_eq!(
+            diagnostics.successful_thumbnail_draws, 0,
+            "oversized dimensions are rejected and the id stays negatively cached"
+        );
+        assert_eq!(diagnostics.paint_thread_full_decodes, 0);
     }
 }

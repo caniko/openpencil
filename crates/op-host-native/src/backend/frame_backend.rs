@@ -319,6 +319,11 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.image_decoded(image_id, encoded)
     }
 
+    fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
+        self.inner
+            .draw_image_thumb(self.canvas, rect, image_id, jpeg);
+    }
+
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.inner.draw_image(self.canvas, rect, image_id, encoded);
     }
