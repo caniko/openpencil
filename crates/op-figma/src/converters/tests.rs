@@ -198,6 +198,73 @@ fn tesla_brake_expanded_stroke_geometry_is_filled_not_stroked_again() {
     clear_icon_lookup();
 }
 
+/// A stroke-only node whose strokeGeometry key is present but EMPTY
+/// must go to the vector-network fallback — NOT to fillGeometry (the
+/// opposite paint's outline), which would paint the wrong shape.
+#[test]
+fn empty_preferred_geometry_falls_to_network_not_opposite_stream() {
+    let _guard = LOOKUP_GUARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    set_icon_lookup(|_| None);
+    let mut tree = vector_node("Empty Preferred");
+    tree.figma.set(
+        "size",
+        obj(vec![
+            ("x", FigValue::Float(20.0)),
+            ("y", FigValue::Float(19.5)),
+        ]),
+    );
+    tree.figma.set(
+        "strokePaints",
+        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)]),
+    );
+    tree.figma.set("strokeWeight", FigValue::Float(2.0));
+    // Preferred (stroke) geometry present but EMPTY; a decodable
+    // fillGeometry exists that must NOT be chosen.
+    tree.figma.set("strokeGeometry", FigValue::Array(vec![]));
+    tree.figma.set(
+        "fillGeometry",
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+    );
+    tree.figma.set(
+        "vectorData",
+        obj(vec![
+            ("vectorNetworkBlob", FigValue::Uint(0)),
+            (
+                "normalizedSize",
+                obj(vec![
+                    ("x", FigValue::Float(20.0)),
+                    ("y", FigValue::Float(19.5)),
+                ]),
+            ),
+        ]),
+    );
+    let network = captured_bytes(TESLA_TAB_MAINTENANCE_NETWORK);
+    // Blob 1: a decodable fill outline (M/L/Z rect) that the selector
+    // must skip in favour of the network fallback.
+    let mut rect_blob = Vec::new();
+    rect_blob.push(0x01);
+    for v in [0f32, 0f32] {
+        rect_blob.extend(v.to_le_bytes());
+    }
+    rect_blob.push(0x02);
+    for v in [20f32, 0f32] {
+        rect_blob.extend(v.to_le_bytes());
+    }
+    rect_blob.push(0x00);
+    let mut ctx = fresh_ctx();
+    ctx.blobs = vec![BlobOrString::Bytes(network), BlobOrString::Bytes(rect_blob)];
+
+    let PenNode::Path(path) = convert_vector(&tree, None, &mut ctx) else {
+        panic!("expected Path");
+    };
+    // The maintenance network is open (no Z); the fill rect blob would
+    // have contained one — proves the network was chosen.
+    assert!(path.d.as_deref().is_some_and(|d| !d.contains('Z')));
+    assert!(path.stroke.is_some(), "network fallback keeps the stroke");
+}
+
 /// A stroke-only node whose strokeGeometry array is present but
 /// UNDECODABLE falls back to the vector network — a CENTERLINE. It
 /// must keep its stroke instead of being reclassified as an expanded

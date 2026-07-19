@@ -261,13 +261,17 @@ pub fn decode_figma_vector_path(
     let has_fills = any_visible(node.get_array("fillPaints"));
     let has_strokes = any_visible(node.get_array("strokePaints"));
 
+    // Fall through to the OPPOSITE paint geometry only when the
+    // preferred key is ABSENT; a present-but-empty preferred stream
+    // means "no outline of that kind" and goes to the vector-network
+    // fallback below (original semantics).
     let (geometries, from_stroke_geometry) = if !has_fills && has_strokes {
-        match node.get_array("strokeGeometry").filter(|g| !g.is_empty()) {
+        match node.get_array("strokeGeometry") {
             Some(g) => (Some(g), true),
             None => (node.get_array("fillGeometry"), false),
         }
     } else {
-        match node.get_array("fillGeometry").filter(|g| !g.is_empty()) {
+        match node.get_array("fillGeometry") {
             Some(g) => (Some(g), false),
             None => (node.get_array("strokeGeometry"), true),
         }
