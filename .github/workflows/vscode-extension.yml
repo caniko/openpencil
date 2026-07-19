@@ -1,0 +1,74 @@
+name: VS Code extension package
+
+# Gates the op-vscode extension (typecheck + unit tests + esbuild bundle) and
+# packages a platform-neutral .vsix artifact on every change. The daemon
+# binary + wasm bundle are NOT embedded yet (the extension probes
+# <workspace>/target/debug/op-host-web-server or `openpencil.dev.daemonPath`);
+# per-platform vsix bundling lands with the packaging plan (Plan 3).
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'packages/op-vscode/**'
+      # build.mjs extracts the bundled AI skill from the CLI's asset.
+      - 'crates/op-cli/assets/skill-bundle.json'
+      - '.github/workflows/vscode-extension.yml'
+  pull_request:
+    paths:
+      - 'packages/op-vscode/**'
+      - 'crates/op-cli/assets/skill-bundle.json'
+      - '.github/workflows/vscode-extension.yml'
+
+jobs:
+  package:
+    name: Check and package .vsix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: packages/op-vscode
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        working-directory: packages/op-vscode
+        run: bunx tsc -p tsconfig.json --noEmit
+
+      - name: Unit tests
+        working-directory: packages/op-vscode
+        run: bun test src
+
+      - name: Build extension bundle
+        working-directory: packages/op-vscode
+        run: node build.mjs
+
+      - name: Stage packaging metadata
+        working-directory: packages/op-vscode
+        # vsce wants a LICENSE next to package.json; the repo root carries it.
+        run: cp ../../LICENSE LICENSE
+
+      - name: Package .vsix
+        working-directory: packages/op-vscode
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          bunx @vscode/vsce package --no-dependencies --allow-missing-repository \
+            --out "openpencil-vscode-${version}.vsix"
+          ls -la ./*.vsix
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpencil-vscode-vsix
+          path: packages/op-vscode/*.vsix
+          if-no-files-found: error
+          retention-days: 30

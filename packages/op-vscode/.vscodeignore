@@ -11,3 +11,4 @@ bun.lockb
 **/.eslintrc*
 **/*.ts
 node_modules/**
+test/**
