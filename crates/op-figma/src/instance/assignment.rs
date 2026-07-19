@@ -241,6 +241,20 @@ pub fn seed_assignments_from_instances(
     }
 }
 
+/// Ratio between an instance's box and its symbol's, `(1.0, 1.0)`
+/// when either is missing or degenerate.
+pub(super) fn instance_scale(symbol_node: &TreeNode, instance_size: Option<FigVec2>) -> (f64, f64) {
+    if let (Some(size), Some(Some(sym_size))) = (
+        instance_size,
+        symbol_node.figma.get("size").map(FigVec2::from_value),
+    ) {
+        if sym_size.x != 0.0 && sym_size.y != 0.0 {
+            return (size.x / sym_size.x, size.y / sym_size.y);
+        }
+    }
+    (1.0, 1.0)
+}
+
 /// Clone the symbol children rescaled to the instance size: the
 /// no-override fast path, also the fallback when a guessed mapping
 /// fails the confidence gate.

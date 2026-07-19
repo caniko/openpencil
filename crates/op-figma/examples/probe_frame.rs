@@ -41,6 +41,12 @@ const INTERESTING: &[&str] = &[
     "transform",
     "parentIndex",
     "type",
+    "horizontalConstraint",
+    "verticalConstraint",
+    "constraints",
+    "proportionsConstrained",
+    "textAutoResize",
+    "fontSize",
     "blendMode",
     "styleType",
 ];

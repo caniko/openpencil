@@ -33,7 +33,7 @@ use apply::{
     apply_to_node, flatten_dfs, local_id, strip_first_guid, virtual_guid_base, walk_virtual,
 };
 pub use assignment::seed_assignments_from_instances;
-use assignment::{guessed_mapping_is_implausible, rescale_only};
+use assignment::{guessed_mapping_is_implausible, instance_scale, rescale_only};
 pub(crate) use swap_filter::filter_swap_stale_derived;
 
 /// Layout keys an instance inherits from its master SYMBOL.
@@ -659,6 +659,8 @@ pub fn apply_instance_overrides_cached(
             return rescaled;
         }
         let empty: HashMap<String, FigValue> = HashMap::new();
+        // `rescaled` already carries the instance ratio, so the walk
+        // below must not scale a second time.
         return rescaled
             .into_iter()
             .map(|c| {
@@ -668,6 +670,8 @@ pub fn apply_instance_overrides_cached(
                     &empty,
                     &safe_nested_override,
                     &safe_nested_derived,
+                    &HashSet::new(),
+                    (1.0, 1.0),
                 )
             })
             .collect();
@@ -709,11 +713,17 @@ pub fn apply_instance_overrides_cached(
         }
     }
 
-    // Scale authored component-space geometry first. Derived size,
-    // transform, and font fields are already in instance space, so
-    // they overwrite this base rather than being scaled twice.
-    rescale_only(symbol_node, instance_size)
-        .into_iter()
+    // Hand the instance/symbol ratio to the resolver instead of
+    // pre-scaling the whole subtree: it scales branch by branch and
+    // drops the ratio wherever Figma's derived data already supplies
+    // instance-space geometry.
+    let scale = instance_scale(symbol_node, instance_size);
+    let mut derived_branch: HashSet<String> = HashSet::new();
+    mark_derived_branches(symbol_node, &node_derived, &mut derived_branch);
+    symbol_node
+        .children
+        .iter()
+        .cloned()
         .map(|c| {
             apply_to_node(
                 c,
@@ -721,7 +731,37 @@ pub fn apply_instance_overrides_cached(
                 &node_derived,
                 &nested_override,
                 &nested_derived,
+                &derived_branch,
+                scale,
             )
         })
         .collect()
+}
+
+/// Collect the guids of every node whose derived entry carries resolved
+/// GEOMETRY, plus their ancestors. Those branches are already in
+/// instance space, so the instance/symbol ratio must not touch them.
+/// A derived entry without `size` / `transform` (a bare marker, or one
+/// that only overrides paint) says nothing about geometry and leaves
+/// its branch on the component-space path.
+fn mark_derived_branches(
+    node: &TreeNode,
+    node_derived: &HashMap<String, FigValue>,
+    out: &mut HashSet<String>,
+) -> bool {
+    let key = node.figma.get("guid").and_then(guid_to_string);
+    let mut has = key
+        .as_ref()
+        .and_then(|k| node_derived.get(k.as_str()))
+        .is_some_and(|d| d.get("size").is_some() || d.get("transform").is_some());
+    for child in &node.children {
+        // No short-circuit: every marked descendant must be recorded.
+        has |= mark_derived_branches(child, node_derived, out);
+    }
+    if has {
+        if let Some(key) = key {
+            out.insert(key);
+        }
+    }
+    has
 }

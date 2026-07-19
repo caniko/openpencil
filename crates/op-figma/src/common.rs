@@ -323,9 +323,12 @@ fn has_command_geometry(figma: &FigValue) -> bool {
     })
 }
 
-fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
+/// Rescale one node's own fields in place, without touching children.
+/// Shared by the whole-subtree rescaler and by the override resolver,
+/// which scales node-by-node so a branch can stop inheriting an outer
+/// instance's ratio the moment Figma hands it resolved geometry.
+pub(crate) fn scale_node_fields(figma: &mut FigValue, sx: f64, sy: f64) {
     let metric_scale = sx.abs().min(sy.abs());
-    let figma = &mut child.figma;
     if let Some(mut transform) = figma.get("transform").cloned() {
         let m02 = transform.get_f64("m02").unwrap_or(0.0) * sx;
         let m12 = transform.get_f64("m12").unwrap_or(0.0) * sy;
@@ -388,15 +391,18 @@ fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
             FigValue::Float(accumulated_y as f32),
         );
     }
+}
 
+fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
+    scale_node_fields(&mut child.figma, sx, sy);
     // Stop at nested instances. Their own resolution pass rescales
     // their subtree against their (already-scaled) box, and their
     // derived entries are recorded in nested-instance space — letting
     // an ancestor's ratio recurse past this point applies it twice
     // (a 0.4-scaled outer instance squeezed a nested button's label
     // box from 24 px to 9.6 px while its derived font size stayed 12).
-    let is_nested_instance = child.figma.get_str("type") == Some("INSTANCE")
-        || child.figma.get("symbolData").is_some();
+    let is_nested_instance =
+        child.figma.get_str("type") == Some("INSTANCE") || child.figma.get("symbolData").is_some();
     if !is_nested_instance {
         child.children = scale_tree_children_owned(child.children, sx, sy);
     }

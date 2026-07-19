@@ -3,11 +3,11 @@
 //! Strategy-2 resolution and the foreign-session anchoring.
 
 use super::{guid_path_key, OVERRIDE_SKIP_KEYS};
-use crate::common::round2;
+use crate::common::{round2, scale_node_fields};
 use crate::figma_types::FigVec2;
 use crate::kiwi::FigValue;
 use crate::tree::{guid_to_string, TreeNode};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Local-id getter — falls back to 0 when `guid.localID` is absent
 /// (matches TS `a.figma.guid?.localID ?? 0`).
@@ -115,6 +115,8 @@ pub(super) fn apply_to_node(
     node_derived: &HashMap<String, FigValue>,
     nested_override: &HashMap<String, Vec<FigValue>>,
     nested_derived: &HashMap<String, Vec<FigValue>>,
+    derived_branch: &HashSet<String>,
+    scale: (f64, f64),
 ) -> TreeNode {
     let key = node
         .figma
@@ -130,6 +132,34 @@ pub(super) fn apply_to_node(
         children,
     } = node;
 
+    // Instance rescale, branch by branch. Figma records resolved
+    // geometry ("derived") for the instance children it re-laid out
+    // and omits it entirely for branches that just came along for the
+    // ride. A branch that carries derived data anywhere inside it is
+    // already in instance space and must be left alone; only a branch
+    // with no derived data at all is still component-space and needs
+    // the instance/symbol ratio (that is the icon symbol whose artwork
+    // sat at (60,60) inside a 40x40 box). Scaling a derived branch
+    // instead pulled hidden price rows into view under text that kept
+    // its own resolved size.
+    let scales_here = !derived_branch.contains(&key);
+    let authored_size = figma.get("size").and_then(FigVec2::from_value);
+    if scales_here {
+        scale_node_fields(&mut figma, scale.0, scale.1);
+    }
+    // A node Figma resized itself re-bases its children on its own
+    // ratio. Inside an instance-space branch the ratio is spent, so
+    // children stay put — scaling them anyway left a 102 px row
+    // holding 6 px labels.
+    let child_scale = match (
+        authored_size,
+        d.and_then(|d| d.get("size")).and_then(FigVec2::from_value),
+    ) {
+        (Some(a), Some(dv)) if a.x.abs() > 0.001 && a.y.abs() > 0.001 => (dv.x / a.x, dv.y / a.y),
+        _ if !scales_here => (1.0, 1.0),
+        _ => scale,
+    };
+
     if d.is_none() && ov.is_none() && nested_ov.is_none() && nested_d.is_none() {
         return TreeNode {
             figma,
@@ -142,6 +172,8 @@ pub(super) fn apply_to_node(
                         node_derived,
                         nested_override,
                         nested_derived,
+                        derived_branch,
+                        child_scale,
                     )
                 })
                 .collect(),
@@ -235,6 +267,8 @@ pub(super) fn apply_to_node(
                     node_derived,
                     nested_override,
                     nested_derived,
+                    derived_branch,
+                    child_scale,
                 )
             })
             .collect(),
