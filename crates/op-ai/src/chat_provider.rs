@@ -331,8 +331,9 @@ pub struct ChatToolDef {
 
 /// Result of executing one chat tool call. `content` is the JSON the
 /// model sees as the tool result (TS shape: `{"success":true,"data":…}`
-/// or `{"success":false,"error":…}`); `is_error` marks transport-level
-/// failure so Anthropic `tool_result` blocks can set `is_error`.
+/// or `{"success":false,"error":…}`); `is_error` marks an unsuccessful
+/// tool outcome (semantic validation/rollback or executor failure) so
+/// Anthropic `tool_result` blocks can set `is_error`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatToolResult {
     pub content: String,

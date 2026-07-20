@@ -41,12 +41,15 @@ mod chat_subprocess_parse;
 pub mod chat_subprocess_quirks;
 mod chat_subprocess_safety;
 pub mod chat_system_prompt;
+mod chat_tool_result;
 pub mod cli_model_discovery;
 pub mod cli_provider_probe;
 mod cli_resolver_windows;
 mod design_agent_diagnostics;
 #[cfg(test)]
 mod design_agent_reflow_tests;
+#[cfg(test)]
+mod design_agent_tool_result_tests;
 pub mod design_agent_tools;
 pub mod design_context;
 pub mod design_md_llm;

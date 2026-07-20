@@ -23,6 +23,7 @@ use op_mcp::{ToolRegistry, ToolResponse};
 use std::collections::HashSet;
 
 use crate::chat_modify_sanitize::sanitize_modify_replacement;
+use crate::chat_tool_result::{rolled_back_transaction_message, structured_error_result};
 
 /// TS `maxTurns` for the chat agent loop (`ai-chat-handlers.ts:254`).
 pub const MAX_TOOL_TURNS: usize = 20;
@@ -171,6 +172,19 @@ pub(crate) fn execute_with_registry(
             json,
             ..
         } => {
+            let data = match json {
+                Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                    .unwrap_or(serde_json::Value::String(raw)),
+                None => serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+            };
+            // `batch_design` reports transactional rollbacks as structured
+            // JSON so callers retain the failing lines and resend hint. That
+            // is still a tool failure: no command landed and the agent loop
+            // must receive `is_error`, otherwise the transcript paints a
+            // green success card for an unchanged document.
+            if let Some(message) = rolled_back_transaction_message(&data) {
+                return (structured_error_result(message, data), false);
+            }
             let mut mutated = false;
             if let Some(cmd) = command {
                 if state.apply(cmd.clone()) {
@@ -182,11 +196,6 @@ pub(crate) fn execute_with_registry(
                     );
                 }
             }
-            let data = match json {
-                Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                    .unwrap_or(serde_json::Value::String(raw)),
-                None => serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
-            };
             let envelope = serde_json::json!({ "success": true, "data": data });
             (
                 ChatToolResult {
