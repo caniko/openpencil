@@ -23,6 +23,13 @@ use crate::chat_agent_context::{
 };
 use crate::chat_builtin_http::{map_anthropic_stop_reason, map_openai_stop_reason};
 
+#[path = "chat_agent_loop_retry.rs"]
+mod retry;
+use retry::{
+    is_correctable_write_failure, is_write_level, CorrectiveWriteRetry, CORRECTIVE_WRITE_EXHAUSTED,
+    CORRECTIVE_WRITE_PROGRESS,
+};
+
 /// Everything one agent-loop run needs. `max_turns` is the TS `maxTurns`
 /// cap — `MAX_TOOL_TURNS = 20` for plain chat, `DESIGN_LOOP_MAX_TURNS = 28`
 /// for the gated design-generation loop (`chat_builtin_http.rs`; the two
@@ -599,14 +606,19 @@ async fn run_anthropic_agent_loop_inner(
     // `fill_attempts` above (see `SALVAGE_MAX_ROUNDS`'s doc comment).
     let mut salvaged_screens: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut salvage_rounds_used = 0usize;
+    let mut write_retry = CorrectiveWriteRetry::default();
     let turn_cap = cfg.max_turns.max(1);
     let mut turn = 0usize;
     loop {
+        // A failed design write gets one model-authored correction request,
+        // even when that failure consumed the final ordinary turn. This is a
+        // separate one-shot budget; the host never replays tool arguments.
+        let corrective_write_round = write_retry.begin_round();
         // Ordinary turn budget exhausted — the ONLY reason to send another
         // request is a committed screen that's still eligible for its own
         // dedicated salvage round. This request, if sent, does NOT count
         // against `turn`; it draws from `SALVAGE_MAX_ROUNDS` instead.
-        if turn >= turn_cap {
+        if turn >= turn_cap && !corrective_write_round {
             if salvage_rounds_used >= SALVAGE_MAX_ROUNDS {
                 let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
                 report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
@@ -685,6 +697,11 @@ async fn run_anthropic_agent_loop_inner(
         }
         let calls = collector.tool_calls();
         if calls.is_empty() {
+            if corrective_write_round {
+                let _ = tx
+                    .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_EXHAUSTED.to_string()))
+                    .await;
+            }
             let reason = collector
                 .stop_reason
                 .as_deref()
@@ -733,12 +750,15 @@ async fn run_anthropic_agent_loop_inner(
                 .await;
             return Ok(true);
         }
-        if turn < turn_cap {
+        if turn < turn_cap && !corrective_write_round {
             turn += 1;
         }
 
         messages.push(json!({ "role": "assistant", "content": collector.assistant_content() }));
         let mut results: Vec<Value> = Vec::new();
+        let mut failed_write_tools = Vec::new();
+        let mut corrective_write_seen = false;
+        let mut corrective_write_failed = false;
         for call in &calls {
             let level = cfg.level_for(&call.name);
             let _ = tx
@@ -748,6 +768,14 @@ async fn run_anthropic_agent_loop_inner(
                 })
                 .await;
             let result = execute_tool(&cfg.executor, &call.name, &call.args_json).await;
+            if is_write_level(&level) {
+                if corrective_write_round {
+                    corrective_write_seen = true;
+                    corrective_write_failed |= result.is_error;
+                } else if is_correctable_write_failure(&level, &result) {
+                    failed_write_tools.push(call.name.clone());
+                }
+            }
             // Send screenshots as images only when the model supports them.
             let content: Value = match prepare_screenshot_for_context(
                 &cfg.model,
@@ -789,6 +817,18 @@ async fn run_anthropic_agent_loop_inner(
                 "content": content,
                 "is_error": result.is_error,
             }));
+        }
+        if corrective_write_round && (!corrective_write_seen || corrective_write_failed) {
+            let _ = tx
+                .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_EXHAUSTED.to_string()))
+                .await;
+        } else if cfg.finalize_on_exit {
+            if let Some(nudge) = write_retry.schedule(&failed_write_tools) {
+                results.push(json!({ "type": "text", "text": nudge }));
+                let _ = tx
+                    .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_PROGRESS.to_string()))
+                    .await;
+            }
         }
         messages.push(json!({ "role": "user", "content": results }));
     }
@@ -957,10 +997,14 @@ async fn run_openai_agent_loop_inner(
     let mut fill_attempts: HashMap<String, usize> = HashMap::new();
     let mut salvaged_screens: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut salvage_rounds_used = 0usize;
+    let mut write_retry = CorrectiveWriteRetry::default();
     let turn_cap = cfg.max_turns.max(1);
     let mut turn = 0usize;
     loop {
-        if turn >= turn_cap {
+        // See the Anthropic path above: this one-shot request is model-authored
+        // correction, not a blind replay, and owns its own hard budget.
+        let corrective_write_round = write_retry.begin_round();
+        if turn >= turn_cap && !corrective_write_round {
             if salvage_rounds_used >= SALVAGE_MAX_ROUNDS {
                 let still_unfilled = run_loop_finalize(&cfg.executor, cfg.finalize_on_exit).await;
                 report_unfilled_if_any(tx, &still_unfilled.unfilled).await;
@@ -1037,6 +1081,11 @@ async fn run_openai_agent_loop_inner(
         }
         let calls = collector.pending_calls();
         if calls.is_empty() {
+            if corrective_write_round {
+                let _ = tx
+                    .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_EXHAUSTED.to_string()))
+                    .await;
+            }
             let reason = collector
                 .finish_reason
                 .as_deref()
@@ -1082,7 +1131,7 @@ async fn run_openai_agent_loop_inner(
                 .await;
             return Ok(true);
         }
-        if turn < turn_cap {
+        if turn < turn_cap && !corrective_write_round {
             turn += 1;
         }
 
@@ -1106,6 +1155,9 @@ async fn run_openai_agent_loop_inner(
             "content": content,
             "tool_calls": tool_calls_json,
         }));
+        let mut failed_write_tools = Vec::new();
+        let mut corrective_write_seen = false;
+        let mut corrective_write_failed = false;
         for (_, call) in &calls {
             let level = cfg.level_for(&call.name);
             let _ = tx
@@ -1115,6 +1167,14 @@ async fn run_openai_agent_loop_inner(
                 })
                 .await;
             let result = execute_tool(&cfg.executor, &call.name, &call.args_json).await;
+            if is_write_level(&level) {
+                if corrective_write_round {
+                    corrective_write_seen = true;
+                    corrective_write_failed |= result.is_error;
+                } else if is_correctable_write_failure(&level, &result) {
+                    failed_write_tools.push(call.name.clone());
+                }
+            }
             // OpenAI images follow the short role:tool acknowledgement.
             match prepare_screenshot_for_context(
                 &cfg.model,
@@ -1162,6 +1222,18 @@ async fn run_openai_agent_loop_inner(
                 }
             }
         }
+        if corrective_write_round && (!corrective_write_seen || corrective_write_failed) {
+            let _ = tx
+                .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_EXHAUSTED.to_string()))
+                .await;
+        } else if cfg.finalize_on_exit {
+            if let Some(nudge) = write_retry.schedule(&failed_write_tools) {
+                messages.push(json!({ "role": "user", "content": nudge }));
+                let _ = tx
+                    .send(ChatDelta::TextDelta(CORRECTIVE_WRITE_PROGRESS.to_string()))
+                    .await;
+            }
+        }
     }
 }
 
@@ -1176,3 +1248,7 @@ mod tests;
 #[cfg(test)]
 #[path = "chat_agent_loop_finalize_tests.rs"]
 mod finalize_tests;
+
+#[cfg(test)]
+#[path = "chat_agent_loop_retry_tests.rs"]
+mod retry_tests;
