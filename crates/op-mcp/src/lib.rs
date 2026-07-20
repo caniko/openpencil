@@ -27,6 +27,8 @@ pub mod batch_design_result;
 #[cfg(test)]
 mod batch_design_tests;
 mod batch_direct_ops;
+#[cfg(test)]
+mod batch_direct_ops_tests;
 pub mod batch_get;
 #[cfg(test)]
 mod batch_get_tests;
@@ -38,6 +40,8 @@ mod batch_program;
 pub mod batch_program_objects;
 #[cfg(test)]
 mod batch_program_tests;
+#[cfg(test)]
+mod batch_program_update_tests;
 pub mod bulk_vars;
 #[cfg(test)]
 mod bulk_vars_tests;

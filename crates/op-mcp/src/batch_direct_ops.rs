@@ -84,7 +84,7 @@ pub(crate) fn update_command_from_value(
     let Some(obj) = value.as_object() else {
         return Err("U() update JSON must be an object".into());
     };
-    if let Some(patch_json) = ts_update_patch_json_value(value) {
+    if let Some(patch_json) = ts_update_patch_json_value(value)? {
         return Ok(EditorCommand::PatchNodeData {
             node_id,
             patch_json,
