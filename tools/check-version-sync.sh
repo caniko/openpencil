@@ -534,7 +534,7 @@ require_workflow_job_regex sdk-packages \
     '^[[:space:]]*needs:[[:space:]]*version[[:space:]]*$' \
     'sdk-packages must depend on the version preflight job'
 require_workflow_job_regex release-draft \
-    '^[[:space:]]*needs:[[:space:]]*\[version,[[:space:]]*build,[[:space:]]*web-docker,[[:space:]]*sdk-packages\][[:space:]]*$' \
+    '^[[:space:]]*needs:[[:space:]]*\[version,[[:space:]]*build,[[:space:]]*web-docker,[[:space:]]*sdk-packages,[[:space:]]*vsix\][[:space:]]*$' \
     'release-draft must preserve artifact dependencies and depend on version preflight'
 require_workflow_job_regex package-managers \
     '^[[:space:]]*needs:[[:space:]]*\[version,[[:space:]]*release-draft\][[:space:]]*$' \

@@ -149,7 +149,7 @@ __SDK_NEEDS__
           version="__PUBLISH_VERSION__"
           echo "$version"
   release-draft:
-    needs: [version, build, web-docker, sdk-packages]
+    needs: [version, build, web-docker, sdk-packages, vsix]
     runs-on: ubuntu-latest
     env:
       OP_VERSION: ${{ needs.version.outputs.version }}
