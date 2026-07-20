@@ -511,6 +511,11 @@ pub enum EditorCommand {
         property: String,
         value: LayoutPropValue,
     },
+    /// Replace one font-family token everywhere in the document. Matching is
+    /// ASCII-case-insensitive and understands quoted CSS family stacks. Both
+    /// top-level roots and every page are included, along with explicit
+    /// per-segment font families in styled text.
+    ReplaceFontFamily { from: String, to: String },
     /// Replace all matching style property values under one or more
     /// parent ids. Mirrors the TS MCP `replace_all_matching_properties`
     /// operation.

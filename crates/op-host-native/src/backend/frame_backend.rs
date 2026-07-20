@@ -7,7 +7,8 @@
 
 use crate::backend::NativeBackend;
 use op_editor_ui::{
-    Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, RenderBackend, TextLayout,
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
+    TextBaselineRequest, TextLayout,
 };
 
 pub struct NativeFrameBackend<'a> {
@@ -50,12 +51,34 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             .clip_round_rect_per_corner(self.canvas, rect, radii);
     }
 
+    fn clip_oval(&mut self, bounds: Rect) {
+        self.inner.clip_oval(self.canvas, bounds);
+    }
+
+    fn clip_polygon(&mut self, points: &[Point2D]) {
+        self.inner.clip_polygon(self.canvas, points);
+    }
+
+    fn clip_svg_path_in_rect(&mut self, d: &str, rect: Rect, even_odd: bool) {
+        self.inner
+            .clip_svg_path_in_rect(self.canvas, d, rect, even_odd);
+    }
+
     fn save(&mut self) {
         let _ = self.inner.save(self.canvas);
     }
 
     fn push_blur_layer(&mut self, sigma: f32) {
         self.inner.push_blur_layer(self.canvas, sigma);
+    }
+
+    fn push_composite_layer(&mut self, bounds: Rect, opacity: f32, mode: ImageBlendMode) {
+        self.inner
+            .push_composite_layer(self.canvas, bounds, opacity, mode);
+    }
+
+    fn push_blend_layer(&mut self, mode: ImageBlendMode) {
+        self.inner.push_blend_layer(self.canvas, mode);
     }
 
     fn push_backdrop_blur_layer(&mut self, sigma: f32) {
@@ -315,8 +338,12 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.fill_dots(self.canvas, centers, radius, color);
     }
 
-    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
-        self.inner.image_decoded(image_id, encoded)
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
+        self.inner.image_decoded(image_id, encoded, max_edge_px)
+    }
+
+    fn image_resident(&mut self, image_id: u64) -> bool {
+        self.inner.image_resident(image_id)
     }
 
     fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
@@ -384,6 +411,33 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             opacity,
             corner_radius,
             transform,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options_transform_and_blend(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+        blend_mode: ImageBlendMode,
+    ) {
+        self.inner.draw_image_with_options_transform_and_blend(
+            self.canvas,
+            rect,
+            image_id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            transform,
+            blend_mode,
         );
     }
 
@@ -585,6 +639,10 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
 
     fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
         self.inner.text_ascent_family(font_size, family, weight)
+    }
+
+    fn text_first_baseline(&mut self, request: &TextBaselineRequest<'_>) -> f32 {
+        self.inner.text_first_baseline(request)
     }
 
     fn measure_text_styled(

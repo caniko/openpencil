@@ -9,7 +9,7 @@
 //! `on_error`. The same logic therefore works on desktop (worker threads)
 //! and web (fetch) and is fully unit-testable with canned text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use op_editor_core::codegen::{ChunkProgress, ChunkStatus, CodeGenProgress};
 use serde_json::Value;
@@ -20,7 +20,10 @@ use crate::ai::parse::{
     clean_code, compute_execution_order, extract_plan_json, parse_chunk_response, sanitize_name,
     validate_contract,
 };
-use crate::ai::prompts::{assembly_request, chunk_request, plan_request};
+use crate::ai::pipeline_preflight::{
+    self as preflight, assembly_status_label, is_pascal_case, MAX_USER_PROMPT_BYTES,
+};
+use crate::ai::prompts::{assembly_request, chunk_request, plan_request, ChunkPromptInput};
 use crate::ai::types::{
     AssetFile, ChunkResult, CodePlan, CodegenInput, ExecutableChunk, PendingRequest, PipelineStep,
     RequestId, RequestKind,
@@ -31,6 +34,8 @@ enum Phase {
     Planning,
     Chunks,
     Assembly,
+    /// One-shot whole-document generation after chunking produced no code.
+    Rescue,
     /// A terminal state: `step()` keeps returning this value.
     Terminal(PipelineStep),
 }
@@ -61,10 +66,11 @@ pub struct CodegenPipeline {
     input: CodegenInput,
     /// Sanitized node JSON (asset data-URLs swapped for `./assets/...`).
     sanitized_nodes_json: String,
-    /// Recursive id → node Value map, deep-walking `children`. Built ONCE so
-    /// hydration (id presence) and per-chunk node serialization both resolve
-    /// nested ids, not just top-level ones (TS `indexNodes` / `hydratePlan`).
-    node_map: HashMap<String, Value>,
+    /// One owned sanitized forest plus an id set. Chunk hydration borrows
+    /// subtrees from this value on demand, avoiding the old O(N²) clone of
+    /// every descendant subtree into an id → Value map.
+    sanitized_nodes_value: Value,
+    node_ids: HashSet<String>,
     assets: Vec<AssetFile>,
 
     phase: Phase,
@@ -87,6 +93,10 @@ pub struct CodegenPipeline {
     // ── Assembly ──
     assembly_retried: bool,
     assembly_done: Option<bool>,
+
+    /// Ordered failure trail retained across retries and included if the
+    /// one-shot rescue also fails.
+    failures: Vec<String>,
 }
 
 impl CodegenPipeline {
@@ -96,16 +106,14 @@ impl CodegenPipeline {
         let (sanitized_nodes_json, assets) = extract_codegen_assets(&input.nodes_json);
         let sanitized_nodes_value =
             serde_json::from_str(&sanitized_nodes_json).unwrap_or(Value::Null);
-        // Deep-walk the sanitized tree ONCE into an id → node map (TS
-        // `indexNodes`), so both hydration and chunk-node slicing resolve
-        // nested ids.
-        let mut node_map = HashMap::new();
-        index_nodes(&sanitized_nodes_value, &mut node_map);
+        let mut node_ids = HashSet::new();
+        preflight::index_node_ids(&sanitized_nodes_value, &mut node_ids);
 
         Self {
             input,
             sanitized_nodes_json,
-            node_map,
+            sanitized_nodes_value,
+            node_ids,
             assets,
             phase: Phase::Planning,
             next_id: 0,
@@ -117,6 +125,7 @@ impl CodegenPipeline {
             chunks: Vec::new(),
             assembly_retried: false,
             assembly_done: None,
+            failures: Vec::new(),
         }
     }
 
@@ -149,6 +158,7 @@ impl CodegenPipeline {
             Phase::Planning => self.step_planning(),
             Phase::Chunks => self.step_chunks(),
             Phase::Assembly => self.step_assembly(),
+            Phase::Rescue => self.step_rescue(),
         }
     }
 
@@ -161,6 +171,10 @@ impl CodegenPipeline {
             self.planning_retried = true;
             let id = self.register_inflight(RequestKind::Planning);
             let req = plan_request(id, &self.input, true);
+            if req.user_message.len() > MAX_USER_PROMPT_BYTES {
+                self.in_flight.remove(&id);
+                return self.handle_oversized_planning_prompt(req.user_message.len());
+            }
             self.planning_done = Some(false);
             return PipelineStep::Dispatch(vec![req]);
         }
@@ -176,8 +190,29 @@ impl CodegenPipeline {
         // (c) First entry: dispatch the non-strict plan request.
         let id = self.register_inflight(RequestKind::Planning);
         let req = plan_request(id, &self.input, false);
+        if req.user_message.len() > MAX_USER_PROMPT_BYTES {
+            self.in_flight.remove(&id);
+            return self.handle_oversized_planning_prompt(req.user_message.len());
+        }
         self.planning_done = Some(false);
         PipelineStep::Dispatch(vec![req])
+    }
+
+    fn handle_oversized_planning_prompt(&mut self, bytes: usize) -> PipelineStep {
+        self.planning_done = Some(false);
+        self.record_failure(
+            "planning",
+            format!(
+                "prompt is {bytes} bytes (limit {MAX_USER_PROMPT_BYTES}); using hierarchical fallback plan"
+            ),
+        );
+        match fallback_plan_from_nodes_json(&self.sanitized_nodes_json) {
+            Some(plan) => self.apply_plan(plan),
+            None => {
+                self.phase = Phase::Rescue;
+                self.step_rescue()
+            }
+        }
     }
 
     fn resolve_planning(&mut self, _id: RequestId, flight: InFlight) -> PipelineStep {
@@ -198,16 +233,47 @@ impl CodegenPipeline {
     }
 
     fn apply_plan(&mut self, plan: CodePlan) -> PipelineStep {
-        // Hydrate the plan against the real node tree.
-        let exec_chunks = self.hydrate_plan(&plan);
-        if exec_chunks.is_empty() {
-            // TS: `Planning produced no valid chunks` is terminal (no retry).
+        let mut plan = plan;
+        let structure_issue = preflight::plan_structure_issue(&plan.chunks);
+        let mut exec_chunks = if structure_issue.is_none() {
+            self.hydrate_plan(&plan)
+        } else {
+            Vec::new()
+        };
+        if structure_issue.is_none() && exec_chunks.is_empty() {
             self.planning_done = Some(false);
-            let step = PipelineStep::Failed {
-                message: "Planning produced no valid chunks".to_string(),
-            };
-            self.phase = Phase::Terminal(step.clone());
-            return step;
+            self.record_failure("planning", "produced no valid chunks");
+            self.phase = Phase::Rescue;
+            return self.step_rescue();
+        }
+        if let Some(issue) = structure_issue.or_else(|| self.plan_dispatch_issue(&exec_chunks)) {
+            self.record_failure("planning", format!("unsafe model plan: {issue}"));
+            let fallback = fallback_plan_from_nodes_json(&self.sanitized_nodes_json);
+            if let Some(candidate) = fallback {
+                let candidate_structure_issue = preflight::plan_structure_issue(&candidate.chunks);
+                let candidate_chunks = if candidate_structure_issue.is_none() {
+                    self.hydrate_plan(&candidate)
+                } else {
+                    Vec::new()
+                };
+                if candidate_structure_issue.is_none()
+                    && !candidate_chunks.is_empty()
+                    && self.plan_dispatch_issue(&candidate_chunks).is_none()
+                {
+                    plan = candidate;
+                    exec_chunks = candidate_chunks;
+                } else {
+                    self.record_failure("planning fallback", "still contains overlapping chunks");
+                    self.planning_done = Some(false);
+                    self.phase = Phase::Rescue;
+                    return self.step_rescue();
+                }
+            } else {
+                self.record_failure("planning fallback", "could not derive a safe chunk plan");
+                self.planning_done = Some(false);
+                self.phase = Phase::Rescue;
+                return self.step_rescue();
+            }
         }
 
         self.plan = Some(plan);
@@ -228,21 +294,31 @@ impl CodegenPipeline {
 
     fn handle_planning_parse_failure(&mut self) -> PipelineStep {
         if !self.planning_retried {
-            return self.handle_planning_failure("Planning failed".to_string());
+            return self.handle_planning_failure("response was not a valid code plan".to_string());
         }
+        self.record_failure(
+            "planning",
+            "attempt 2: response was not a valid code plan; using deterministic plan fallback",
+        );
         match fallback_plan_from_nodes_json(&self.sanitized_nodes_json) {
             Some(plan) => self.apply_plan(plan),
-            None => self.handle_planning_failure("Planning failed".to_string()),
+            None => {
+                self.planning_done = Some(false);
+                self.phase = Phase::Rescue;
+                self.step_rescue()
+            }
         }
     }
 
     fn handle_planning_failure(&mut self, message: String) -> PipelineStep {
+        let attempt = if self.planning_retried { 2 } else { 1 };
+        self.record_failure("planning", format!("attempt {attempt}: {message}"));
         if self.planning_retried {
-            // Already used the one strict retry — fail terminally.
+            // Chunk planning is unavailable; bypass it with the one-shot
+            // whole-document generator rather than terminating empty-handed.
             self.planning_done = Some(false);
-            let step = PipelineStep::Failed { message };
-            self.phase = Phase::Terminal(step.clone());
-            step
+            self.phase = Phase::Rescue;
+            self.step_rescue()
         } else {
             // Dispatch the strict-prompt retry immediately (TS retries inline
             // within the same planning step).
@@ -259,12 +335,7 @@ impl CodegenPipeline {
         let mut execs: Vec<ExecutableChunk> = plan
             .chunks
             .iter()
-            .filter(|chunk| {
-                chunk
-                    .node_ids
-                    .iter()
-                    .any(|id| self.node_map.contains_key(id))
-            })
+            .filter(|chunk| chunk.node_ids.iter().any(|id| self.node_ids.contains(id)))
             .map(|chunk| ExecutableChunk {
                 plan: chunk.clone(),
                 order: orders.get(&chunk.id).copied().unwrap_or(0),
@@ -275,6 +346,10 @@ impl CodegenPipeline {
         execs
     }
 
+    fn plan_dispatch_issue(&self, chunks: &[ExecutableChunk]) -> Option<String> {
+        preflight::plan_dispatch_issue(chunks, &self.sanitized_nodes_value)
+    }
+
     // ── Phase: Chunks ────────────────────────────────────────────────────
 
     fn step_chunks(&mut self) -> PipelineStep {
@@ -283,75 +358,112 @@ impl CodegenPipeline {
             self.resolve_chunk(id, flight);
         }
 
-        // All chunks terminal → advance to assembly.
-        if self.all_chunks_terminal() {
-            self.phase = Phase::Assembly;
-            return self.step_assembly();
-        }
-
-        // Lowest incomplete order-group gates dispatch (TS batches by order).
-        let Some(active_order) = self.lowest_incomplete_order() else {
-            // Nothing incomplete but not all terminal — only happens with
-            // in-flight chunks; wait for their deltas.
-            return PipelineStep::Waiting;
-        };
-
-        let mut dispatch: Vec<PendingRequest> = Vec::new();
-        let mut idx = 0;
-        while idx < self.chunks.len() {
-            if self.chunks[idx].order() != active_order {
-                idx += 1;
-                continue;
-            }
-            // Skip chunks already settled or in flight.
-            if self.chunks[idx].is_terminal() || self.chunks[idx].in_flight.is_some() {
-                idx += 1;
-                continue;
+        loop {
+            // All chunks terminal → advance to assembly.
+            if self.all_chunks_terminal() {
+                self.phase = Phase::Assembly;
+                return self.step_assembly();
             }
 
-            let chunk_id = self.chunks[idx].exec.plan.id.clone();
-            let deps = self.chunks[idx].exec.plan.dependencies.clone();
+            // Lowest incomplete order-group gates dispatch (TS batches by order).
+            let Some(active_order) = self.lowest_incomplete_order() else {
+                return PipelineStep::Waiting;
+            };
 
-            // If any dependency failed, this chunk is skipped (no dispatch).
-            if deps
-                .iter()
-                .any(|d| self.dep_status(d) == Some(ChunkStatus::Failed))
-            {
-                self.chunks[idx].status = ChunkStatus::Skipped;
+            let mut dispatch: Vec<PendingRequest> = Vec::new();
+            let mut progressed_without_dispatch = false;
+            let mut idx = 0;
+            while idx < self.chunks.len() {
+                if self.chunks[idx].order() != active_order {
+                    idx += 1;
+                    continue;
+                }
+                // Skip chunks already settled or in flight.
+                if self.chunks[idx].is_terminal() || self.chunks[idx].in_flight.is_some() {
+                    idx += 1;
+                    continue;
+                }
+
+                let chunk_id = self.chunks[idx].exec.plan.id.clone();
+                let deps = self.chunks[idx].exec.plan.dependencies.clone();
+
+                let blocked_deps = deps
+                    .iter()
+                    .filter(|dep| {
+                        matches!(
+                            self.dep_status(dep),
+                            Some(ChunkStatus::Failed | ChunkStatus::Skipped)
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !blocked_deps.is_empty() {
+                    self.chunks[idx].status = ChunkStatus::Skipped;
+                    self.record_failure(
+                        format!("chunk {chunk_id}"),
+                        format!(
+                            "skipped because dependencies failed or were skipped: {}",
+                            blocked_deps.join(", ")
+                        ),
+                    );
+                    progressed_without_dispatch = true;
+                    idx += 1;
+                    continue;
+                }
+
+                // Collect dependency contracts (only deps with a component name).
+                let dep_contracts = self.collect_dep_contracts(&deps);
+
+                // Derive the chunk's node JSON + its asset hints.
+                let chunk_nodes_json = self.chunk_nodes_json(&self.chunks[idx].exec.plan.node_ids);
+                let ancestor_context = preflight::ancestor_context_json(
+                    &self.sanitized_nodes_value,
+                    &self.chunks[idx].exec.plan.node_ids,
+                );
+                let asset_hints = collect_chunk_asset_hints(&chunk_nodes_json, &self.assets);
+                let suggested = self.chunks[idx].exec.plan.suggested_component_name.clone();
+
+                let id = self.register_inflight(RequestKind::Chunk {
+                    chunk_id: chunk_id.clone(),
+                });
+                let req = chunk_request(
+                    id,
+                    ChunkPromptInput::new(
+                        &chunk_id,
+                        &chunk_nodes_json,
+                        &suggested,
+                        ancestor_context.as_deref(),
+                        &dep_contracts,
+                        &asset_hints,
+                    ),
+                    &self.input,
+                );
+                if req.user_message.len() > MAX_USER_PROMPT_BYTES {
+                    self.in_flight.remove(&id);
+                    self.chunks[idx].status = ChunkStatus::Failed;
+                    self.record_failure(
+                        format!("chunk {chunk_id}"),
+                        format!(
+                            "prompt is {} bytes (limit {MAX_USER_PROMPT_BYTES}); request was not dispatched",
+                            req.user_message.len()
+                        ),
+                    );
+                    progressed_without_dispatch = true;
+                    idx += 1;
+                    continue;
+                }
+                self.chunks[idx].in_flight = Some(id);
+                self.chunks[idx].status = ChunkStatus::Running;
+                dispatch.push(req);
                 idx += 1;
-                continue;
             }
 
-            // Collect dependency contracts (only deps with a component name).
-            let dep_contracts = self.collect_dep_contracts(&deps);
-
-            // Derive the chunk's node JSON + its asset hints.
-            let chunk_nodes_json = self.chunk_nodes_json(&self.chunks[idx].exec.plan.node_ids);
-            let asset_hints = collect_chunk_asset_hints(&chunk_nodes_json, &self.assets);
-            let suggested = self.chunks[idx].exec.plan.suggested_component_name.clone();
-
-            let id = self.register_inflight(RequestKind::Chunk {
-                chunk_id: chunk_id.clone(),
-            });
-            let req = chunk_request(
-                id,
-                &chunk_id,
-                &chunk_nodes_json,
-                &suggested,
-                &dep_contracts,
-                &asset_hints,
-                &self.input,
-            );
-            self.chunks[idx].in_flight = Some(id);
-            self.chunks[idx].status = ChunkStatus::Running;
-            dispatch.push(req);
-            idx += 1;
-        }
-
-        if dispatch.is_empty() {
-            PipelineStep::Waiting
-        } else {
-            PipelineStep::Dispatch(dispatch)
+            if !dispatch.is_empty() {
+                return PipelineStep::Dispatch(dispatch);
+            }
+            if !progressed_without_dispatch {
+                return PipelineStep::Waiting;
+            }
         }
     }
 
@@ -364,8 +476,13 @@ impl CodegenPipeline {
         };
         self.chunks[idx].in_flight = None;
 
-        // Failure path: retry once, then mark Failed.
-        if flight.error.is_some() {
+        // Transport failure path: retry once, then mark Failed.
+        if let Some(message) = flight.error {
+            let attempt = if self.chunks[idx].retried { 2 } else { 1 };
+            self.record_failure(
+                format!("chunk {chunk_id}"),
+                format!("attempt {attempt}: {message}"),
+            );
             self.fail_or_retry_chunk(idx);
             return;
         }
@@ -373,11 +490,18 @@ impl CodegenPipeline {
         // Parse the buffered chunk response.
         let mut result = parse_chunk_response(&flight.buffer, chunk_id);
 
-        // TS (code-generation-pipeline.ts:296-342) only retries a chunk on a
-        // THROWN stream error (our `on_error`). A successfully-parsed result —
-        // even one with empty/poor code — flows through `validate_contract`
-        // and ends Done (valid) or Degraded (invalid); it is never failed by
-        // empty code. Retry-once lives ONLY on the `on_error` path.
+        // A completed stream with no source is semantically the same as a
+        // failed request. Retry it once; never let an empty result masquerade
+        // as a degraded-but-usable chunk.
+        if result.code.trim().is_empty() {
+            let attempt = if self.chunks[idx].retried { 2 } else { 1 };
+            self.record_failure(
+                format!("chunk {chunk_id}"),
+                format!("attempt {attempt}: model returned empty code"),
+            );
+            self.fail_or_retry_chunk(idx);
+            return;
+        }
 
         // Force a valid PascalCase component name from the suggested label
         // when the model returned an empty / non-PascalCase one.
@@ -408,57 +532,6 @@ impl CodegenPipeline {
         }
     }
 
-    fn collect_dep_contracts(&self, deps: &[String]) -> Vec<crate::ai::types::ChunkContract> {
-        deps.iter()
-            .filter_map(|dep_id| {
-                self.chunks
-                    .iter()
-                    .find(|c| c.exec.plan.id == *dep_id)
-                    .and_then(|c| c.result.as_ref())
-                    .map(|r| r.contract.clone())
-                    .filter(|c| !c.component_name.is_empty())
-            })
-            .collect()
-    }
-
-    fn dep_status(&self, dep_id: &str) -> Option<ChunkStatus> {
-        self.chunks
-            .iter()
-            .find(|c| c.exec.plan.id == dep_id)
-            .map(|c| c.status)
-    }
-
-    /// Serialize exactly the nodes whose `id` is in `node_ids`, in `node_ids`
-    /// order, resolved from the RECURSIVE id map (TS `hydratePlan` resolves
-    /// each id from `nodeMap`, so a nested child id yields just that child —
-    /// not the whole tree). Falls back to the whole sanitized tree only when
-    /// none of the ids resolve.
-    fn chunk_nodes_json(&self, node_ids: &[String]) -> String {
-        let subset: Vec<&Value> = node_ids
-            .iter()
-            .filter_map(|id| self.node_map.get(id))
-            .collect();
-        if !subset.is_empty() {
-            return serde_json::to_string(&subset)
-                .unwrap_or_else(|_| self.sanitized_nodes_json.clone());
-        }
-        // Fallback: pass the whole sanitized tree (still valid input for the
-        // chunk prompt; hints just won't narrow).
-        self.sanitized_nodes_json.clone()
-    }
-
-    fn all_chunks_terminal(&self) -> bool {
-        self.chunks.iter().all(|c| c.is_terminal())
-    }
-
-    fn lowest_incomplete_order(&self) -> Option<usize> {
-        self.chunks
-            .iter()
-            .filter(|c| !c.is_terminal())
-            .map(|c| c.order())
-            .min()
-    }
-
     // ── Phase: Assembly ──────────────────────────────────────────────────
 
     fn step_assembly(&mut self) -> PipelineStep {
@@ -472,14 +545,15 @@ impl CodegenPipeline {
 
         let chunk_blocks = self.build_chunk_blocks();
 
-        // No chunk produced any code → terminal failure (TS: throw).
-        if self.chunks.iter().all(|c| self.chunk_code(c).is_empty()) {
+        if self
+            .chunks
+            .iter()
+            .all(|c| self.chunk_code(c).trim().is_empty())
+        {
             self.assembly_done = Some(false);
-            let step = PipelineStep::Failed {
-                message: "All chunks failed — no code to assemble".to_string(),
-            };
-            self.phase = Phase::Terminal(step.clone());
-            return step;
+            self.record_failure("assembly", "all chunks failed; no code to assemble");
+            self.phase = Phase::Rescue;
+            return self.step_rescue();
         }
 
         let plan_summary = self.build_plan_summary();
@@ -491,26 +565,35 @@ impl CodegenPipeline {
 
         let id = self.register_inflight(RequestKind::Assembly);
         let req = assembly_request(id, &chunk_blocks, &plan_summary, &self.input, &asset_paths);
+        if req.user_message.len() > MAX_USER_PROMPT_BYTES {
+            self.in_flight.remove(&id);
+            self.record_failure(
+                "assembly",
+                format!(
+                    "prompt is {} bytes (limit {MAX_USER_PROMPT_BYTES}); using whole-document rescue",
+                    req.user_message.len()
+                ),
+            );
+            self.phase = Phase::Rescue;
+            return self.step_rescue();
+        }
         self.assembly_done = Some(false);
         PipelineStep::Dispatch(vec![req])
     }
 
     fn resolve_assembly(&mut self, flight: InFlight) -> PipelineStep {
         let degraded = self.any_chunk_degraded_or_worse();
+        let code = clean_code(&flight.buffer);
+        let failure = flight
+            .error
+            .or_else(|| preflight::model_output_failure(self.input.framework, &code));
 
-        if flight.error.is_some() {
+        if let Some(message) = failure {
+            let attempt = if self.assembly_retried { 2 } else { 1 };
+            self.record_failure("assembly", format!("attempt {attempt}: {message}"));
             if self.assembly_retried {
-                // Second failure → best-effort fallback to concatenation of
-                // ONLY the chunks that produced code (TS filters empty ones).
-                self.assembly_done = Some(false);
-                let code = self.build_fallback_code();
-                let step = PipelineStep::Done {
-                    code,
-                    degraded: true,
-                    assets: self.assets.clone(),
-                };
-                self.phase = Phase::Terminal(step.clone());
-                return step;
+                self.phase = Phase::Rescue;
+                return self.step_rescue();
             }
             // First failure → re-dispatch immediately (TS retries inline).
             self.assembly_retried = true;
@@ -518,7 +601,6 @@ impl CodegenPipeline {
             return self.step_assembly();
         }
 
-        let code = clean_code(&flight.buffer);
         self.assembly_done = Some(true);
         let step = PipelineStep::Done {
             code,
@@ -563,28 +645,6 @@ impl CodegenPipeline {
             .join("\n\n")
     }
 
-    /// Best-effort fallback when assembly fails twice: concatenate ONLY the
-    /// chunks that actually produced code (TS code-generation-pipeline.ts:
-    /// 451-454 filters to `c.code` first), joined by the status header. An
-    /// empty failed/skipped chunk must NOT contribute a header-only section.
-    fn build_fallback_code(&self) -> String {
-        self.chunks
-            .iter()
-            .filter(|c| !self.chunk_code(c).is_empty())
-            .map(|c| {
-                let name = if c.exec.plan.name.is_empty() {
-                    c.exec.plan.id.as_str()
-                } else {
-                    c.exec.plan.name.as_str()
-                };
-                let status = assembly_status_label(c.status);
-                let code = self.chunk_code(c);
-                format!("// ── {name} ({status}) ──\n\n{code}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    }
-
     /// Full rootLayout + sharedStyles for the assembly prompt (TS
     /// codegen-prompts.ts:170-171 sends `Root layout: {json}` and
     /// `Shared styles: {json}`), so the assembler has direction / gap /
@@ -600,7 +660,18 @@ impl CodegenPipeline {
             .as_ref()
             .and_then(|p| serde_json::to_string(&p.shared_styles).ok())
             .unwrap_or_else(|| "[]".to_string());
-        format!("Root layout: {root_layout_json}\nShared styles: {shared_styles_json}")
+        let node_ids = self
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.exec.plan.node_ids.iter().cloned())
+            .collect::<Vec<_>>();
+        let ancestor_context =
+            preflight::ancestor_context_json(&self.sanitized_nodes_value, &node_ids)
+                .unwrap_or_else(|| "[]".to_string());
+        format!(
+            "Root layout: {root_layout_json}\nShared styles: {shared_styles_json}\n\
+             Ancestor wrapper context: {ancestor_context}"
+        )
     }
 
     fn chunk_code<'a>(&self, c: &'a ChunkState) -> &'a str {
@@ -692,364 +763,12 @@ impl ChunkState {
     }
 }
 
-/// True PascalCase check — port of /^[A-Z][a-zA-Z0-9]*$/. Mirrors the
-/// private helper in `parse.rs` (not re-exported there).
-fn is_pascal_case(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_uppercase() => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric())
-}
+#[path = "pipeline_chunk_helpers.rs"]
+mod chunk_helpers;
 
-/// Map a chunk status to the TS assembly-block label
-/// (`done → successful`, `degraded → degraded`, everything else → failed).
-fn assembly_status_label(status: ChunkStatus) -> &'static str {
-    match status {
-        ChunkStatus::Done => "successful",
-        ChunkStatus::Degraded => "degraded",
-        _ => "failed",
-    }
-}
-
-/// Deep-walk the node JSON tree into an id → node Value map (TS
-/// `indexNodes`, code-generation-pipeline.ts:49-55). Recurses through
-/// `children` so nested ids resolve to their own subtree node. Used by both
-/// hydration (id presence) and per-chunk node serialization. The first node
-/// seen for an id wins (matching the TS Map insert order — top-level before
-/// descendants).
-fn index_nodes(value: &Value, out: &mut HashMap<String, Value>) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                index_nodes(item, out);
-            }
-        }
-        Value::Object(map) => {
-            if let Some(id) = map.get("id").and_then(Value::as_str) {
-                out.entry(id.to_string()).or_insert_with(|| value.clone());
-            }
-            if let Some(children) = map.get("children") {
-                index_nodes(children, out);
-            }
-        }
-        _ => {}
-    }
-}
+#[path = "pipeline_rescue.rs"]
+mod rescue;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ai::types::{CodegenInput, PipelineStep, RequestKind};
-    use op_ai::chat_provider::{EffortLevel, ThinkingMode};
-    use op_editor_core::codegen::Framework;
-
-    fn input() -> CodegenInput {
-        CodegenInput {
-            nodes_json: "[{\"type\":\"frame\",\"id\":\"n1\",\"children\":[]}]".into(),
-            framework: Framework::React,
-            variables_json: None,
-            max_output_tokens: 3000,
-            thinking: ThinkingMode::Adaptive,
-            effort: EffortLevel::Low,
-        }
-    }
-
-    #[test]
-    fn single_chunk_run_reaches_done() {
-        let mut p = CodegenPipeline::new(input());
-        let reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].kind, RequestKind::Planning);
-        let plan_id = reqs[0].id;
-        p.on_delta(plan_id, "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Root\",\"nodeIds\":[\"n1\"],\"role\":\"root\",\"suggestedComponentName\":\"Root\",\"dependencies\":[]}],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}");
-        p.on_complete(plan_id);
-        let reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(reqs.len(), 1);
-        let chunk_id = reqs[0].id;
-        p.on_delta(
-            chunk_id,
-            "export default function Root(){ return null }\n---CONTRACT---\n{\"componentName\":\"Root\"}",
-        );
-        p.on_complete(chunk_id);
-        let reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("{other:?}"),
-        };
-        let asm_id = reqs[0].id;
-        p.on_delta(asm_id, "export default function App(){ return <Root/> }");
-        p.on_complete(asm_id);
-        match p.step() {
-            PipelineStep::Done { code, degraded, .. } => {
-                assert!(code.contains("function App"));
-                assert!(!degraded);
-            }
-            other => panic!("expected Done, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn planning_parse_failure_retries_once_then_uses_fallback_plan() {
-        let mut p = CodegenPipeline::new(CodegenInput {
-            nodes_json: r#"[{"type":"frame","id":"hero","name":"Hero","children":[]}]"#.into(),
-            ..input()
-        });
-        let id1 = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            _ => panic!(),
-        };
-        p.on_delta(id1, "not json at all");
-        p.on_complete(id1);
-        let reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("{other:?}"),
-        };
-        assert!(reqs[0].user_message.contains("ONLY valid JSON"));
-        let id2 = reqs[0].id;
-        p.on_delta(id2, "still not json");
-        p.on_complete(id2);
-        let reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected fallback chunk dispatch, got {other:?}"),
-        };
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(
-            reqs[0].kind,
-            RequestKind::Chunk {
-                chunk_id: "chunk-1".into()
-            }
-        );
-        assert!(
-            reqs[0].user_message.contains("Hero"),
-            "fallback plan should preserve the selected node name in the chunk prompt"
-        );
-    }
-
-    #[test]
-    fn assembly_failure_falls_back_to_concatenation() {
-        let mut p = CodegenPipeline::new(input());
-        let id = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            _ => panic!(),
-        };
-        p.on_delta(id, "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Root\",\"nodeIds\":[\"n1\"],\"role\":\"r\",\"suggestedComponentName\":\"Root\",\"dependencies\":[]}],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}");
-        p.on_complete(id);
-        let cid = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            _ => panic!(),
-        };
-        p.on_delta(
-            cid,
-            "export default function Root(){}\n---CONTRACT---\n{\"componentName\":\"Root\"}",
-        );
-        p.on_complete(cid);
-        let a1 = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            _ => panic!(),
-        };
-        p.on_error(a1, "boom".into());
-        let a2 = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            _ => panic!(),
-        };
-        p.on_error(a2, "boom again".into());
-        match p.step() {
-            PipelineStep::Done { code, degraded, .. } => {
-                assert!(degraded);
-                assert!(code.contains("Root"));
-            }
-            other => panic!("expected degraded Done, got {other:?}"),
-        }
-    }
-
-    /// Drive `p` through planning with `plan_json`, returning the dispatched
-    /// chunk request ids (in order).
-    fn run_planning(p: &mut CodegenPipeline, plan_json: &str) -> Vec<RequestId> {
-        let id = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            other => panic!("expected planning dispatch, got {other:?}"),
-        };
-        p.on_delta(id, plan_json);
-        p.on_complete(id);
-        match p.step() {
-            PipelineStep::Dispatch(r) => r.iter().map(|q| q.id).collect(),
-            other => panic!("expected chunk dispatch, got {other:?}"),
-        }
-    }
-
-    // ── FIX 3: parsed-but-poor chunk is Degraded, not Failed ──────────────
-
-    #[test]
-    fn chunk_with_code_but_no_contract_ends_degraded_not_failed() {
-        let mut p = CodegenPipeline::new(input());
-        let chunk_ids = run_planning(
-            &mut p,
-            "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Root\",\"nodeIds\":[\"n1\"],\"role\":\"r\",\"suggestedComponentName\":\"Root\",\"dependencies\":[]}],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}",
-        );
-        let cid = chunk_ids[0];
-        // Non-empty code with NO contract and NO matching component name in
-        // the body → validation fails → Degraded (never retried/Failed).
-        p.on_delta(cid, "const x = 1; // no component, no contract");
-        p.on_complete(cid);
-        // Advancing to assembly proves the chunk settled (Degraded) and the
-        // pipeline proceeded rather than retrying.
-        let asm = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected assembly dispatch, got {other:?}"),
-        };
-        assert_eq!(asm[0].kind, RequestKind::Assembly);
-        let prog = p.progress();
-        assert_eq!(prog.chunks[0].status, ChunkStatus::Degraded);
-    }
-
-    #[test]
-    fn chunk_on_error_retries_once_then_fails() {
-        let mut p = CodegenPipeline::new(input());
-        let chunk_ids = run_planning(
-            &mut p,
-            "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Root\",\"nodeIds\":[\"n1\"],\"role\":\"r\",\"suggestedComponentName\":\"Root\",\"dependencies\":[]}],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}",
-        );
-        // First on_error → retry (re-dispatch the same chunk).
-        p.on_error(chunk_ids[0], "stream broke".into());
-        let retry = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected retry dispatch, got {other:?}"),
-        };
-        assert!(matches!(retry[0].kind, RequestKind::Chunk { .. }));
-        // Second on_error → Failed. The only chunk failed → assembly has no
-        // code → terminal Failed.
-        p.on_error(retry[0].id, "stream broke again".into());
-        match p.step() {
-            PipelineStep::Failed { message } => {
-                assert!(message.contains("no code to assemble"));
-            }
-            other => panic!("expected Failed, got {other:?}"),
-        }
-    }
-
-    // ── FIX 4: recursive id resolution selects the nested child ───────────
-
-    #[test]
-    fn chunk_node_json_resolves_nested_child_not_whole_tree() {
-        let mut input = input();
-        // A frame whose child is the chunk's only node_id. The child carries a
-        // distinctive name/type so we can confirm slicing (the chunk request's
-        // `compact_nodes` strips the raw `id` field, so we assert on content).
-        input.nodes_json =
-            "[{\"type\":\"frame\",\"id\":\"root\",\"name\":\"RootFrame\",\"children\":[{\"type\":\"text\",\"id\":\"label\",\"name\":\"HelloChild\"}]}]"
-                .into();
-        let mut p = CodegenPipeline::new(input);
-        // Capture the chunk dispatch directly so we can inspect its user msg.
-        let plan_id = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            other => panic!("expected planning dispatch, got {other:?}"),
-        };
-        p.on_delta(plan_id, "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Label\",\"nodeIds\":[\"label\"],\"role\":\"r\",\"suggestedComponentName\":\"Label\",\"dependencies\":[]}],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}");
-        p.on_complete(plan_id);
-        let chunk_reqs = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected chunk dispatch, got {other:?}"),
-        };
-        // The chunk request's user message must carry the CHILD node, not the
-        // whole frame tree.
-        let msg = &chunk_reqs[0].user_message;
-        assert!(msg.contains("HelloChild"));
-        assert!(msg.contains("text"));
-        // The parent frame must NOT be embedded (we sliced just the child).
-        assert!(!msg.contains("RootFrame"));
-        assert!(!msg.contains("frame"));
-    }
-
-    // ── FIX 5: assembly carries full rootLayout + sharedStyles ────────────
-
-    #[test]
-    fn assembly_request_includes_layout_gap_and_shared_style_name() {
-        let mut p = CodegenPipeline::new(input());
-        let chunk_ids = run_planning(
-            &mut p,
-            "{\"chunks\":[{\"id\":\"c1\",\"name\":\"Root\",\"nodeIds\":[\"n1\"],\"role\":\"r\",\"suggestedComponentName\":\"Root\",\"dependencies\":[]}],\"sharedStyles\":[{\"name\":\"brandPrimary\",\"description\":\"main\"}],\"rootLayout\":{\"direction\":\"row\",\"gap\":24,\"responsive\":true}}",
-        );
-        p.on_delta(
-            chunk_ids[0],
-            "export default function Root(){ return null }\n---CONTRACT---\n{\"componentName\":\"Root\"}",
-        );
-        p.on_complete(chunk_ids[0]);
-        let asm = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected assembly dispatch, got {other:?}"),
-        };
-        let msg = &asm[0].user_message;
-        assert!(msg.contains("\"gap\":24"));
-        assert!(msg.contains("\"responsive\":true"));
-        assert!(msg.contains("brandPrimary"));
-    }
-
-    // ── FIX 6: fallback filters empty-code chunks ─────────────────────────
-
-    #[test]
-    fn assembly_fallback_skips_empty_code_chunks() {
-        let mut input = input();
-        input.nodes_json =
-            "[{\"type\":\"frame\",\"id\":\"a\",\"children\":[]},{\"type\":\"frame\",\"id\":\"b\",\"children\":[]}]"
-                .into();
-        let mut p = CodegenPipeline::new(input);
-        // Two independent chunks. `c1` (Good) produces code; `c2` (Bad) errors
-        // twice → Failed (empty code).
-        let chunk_ids = run_planning(
-            &mut p,
-            "{\"chunks\":[\
-                {\"id\":\"c1\",\"name\":\"Good\",\"nodeIds\":[\"a\"],\"role\":\"r\",\"suggestedComponentName\":\"Good\",\"dependencies\":[]},\
-                {\"id\":\"c2\",\"name\":\"Bad\",\"nodeIds\":[\"b\"],\"role\":\"r\",\"suggestedComponentName\":\"Bad\",\"dependencies\":[]}\
-             ],\"sharedStyles\":[],\"rootLayout\":{\"direction\":\"column\",\"gap\":0,\"responsive\":false}}",
-        );
-        assert_eq!(chunk_ids.len(), 2);
-        // Chunks dispatch in plan order: chunk_ids[0] = c1 (Good),
-        // chunk_ids[1] = c2 (Bad).
-        let good_id = chunk_ids[0];
-        let bad_id = chunk_ids[1];
-        // Resolve Good with code.
-        p.on_delta(
-            good_id,
-            "export default function Good(){}\n---CONTRACT---\n{\"componentName\":\"Good\"}",
-        );
-        p.on_complete(good_id);
-        // Error Bad twice → Failed.
-        p.on_error(bad_id, "boom".into());
-        // step to re-dispatch Bad's retry
-        let retry = match p.step() {
-            PipelineStep::Dispatch(r) => r,
-            other => panic!("expected Bad retry dispatch, got {other:?}"),
-        };
-        p.on_error(retry[0].id, "boom2".into());
-        // Now assembly dispatches; fail it twice.
-        let a1 = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            other => panic!("expected assembly dispatch, got {other:?}"),
-        };
-        p.on_error(a1, "asm boom".into());
-        let a2 = match p.step() {
-            PipelineStep::Dispatch(r) => r[0].id,
-            other => panic!("expected assembly retry dispatch, got {other:?}"),
-        };
-        p.on_error(a2, "asm boom2".into());
-        match p.step() {
-            PipelineStep::Done { code, degraded, .. } => {
-                assert!(degraded);
-                // The good chunk's code is present...
-                assert!(code.contains("function Good"));
-                assert!(code.contains("Good (successful)"));
-                // ...and the failed chunk contributes NO header-only section.
-                assert!(!code.contains("Bad (failed)"));
-                assert!(!code.contains("Bad"));
-            }
-            other => panic!("expected degraded Done, got {other:?}"),
-        }
-    }
-}
+#[path = "pipeline_tests.rs"]
+mod tests;

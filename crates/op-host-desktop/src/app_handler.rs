@@ -1301,12 +1301,34 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                             // in-flight session first so two imports
                             // in quick succession don't race.
                             op_host_services::doc_io::ActionOutcome::FigmaImportStarted(path) => {
+                                // Cancel BOTH workers: a late result from
+                                // the other importer would overwrite the
+                                // document this one is about to produce.
                                 figma_import_session::cancel(
                                     &mut self.host,
                                     &mut self.current_figma_import,
                                 );
+                                html_import_session::cancel(
+                                    &mut self.host,
+                                    &mut self.current_html_import,
+                                );
                                 self.current_figma_import =
                                     Some(figma_import_session::spawn(&mut self.host, path));
+                                self.request_redraw(true);
+                            }
+                            // User picked a saved page; same background
+                            // session discipline as the Figma branch.
+                            op_host_services::doc_io::ActionOutcome::HtmlImportStarted(path) => {
+                                figma_import_session::cancel(
+                                    &mut self.host,
+                                    &mut self.current_figma_import,
+                                );
+                                html_import_session::cancel(
+                                    &mut self.host,
+                                    &mut self.current_html_import,
+                                );
+                                self.current_html_import =
+                                    Some(html_import_session::spawn(&mut self.host, path));
                                 self.request_redraw(true);
                             }
                             op_host_services::doc_io::ActionOutcome::Noop => {}

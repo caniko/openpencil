@@ -12,8 +12,8 @@ use super::helpers::{GIT_PANEL_CARET_GAP, TOOLBAR_INSET_X, TOOLBAR_INSET_Y};
 use super::WidgetHostNative;
 use op_editor_ui::widgets::{
     AlignToolbar, GitPanel, GitPanelHit, LayoutCx, LocalePicker, ShapePicker, Toolbar, TopBar,
-    Widget, GIT_PANEL_INSET, ICON_PICKER_PANEL_H, ICON_PICKER_PANEL_W, LOCALE_PICKER_WIDTH,
-    SHAPE_PICKER_WIDTH, TOOLBAR_WIDTH, TOP_BAR_HEIGHT,
+    Widget, GIT_PANEL_INSET, ICON_PICKER_PANEL_H, ICON_PICKER_PANEL_W, IMPORT_MENU_WIDTH,
+    LOCALE_PICKER_WIDTH, SHAPE_PICKER_WIDTH, TOOLBAR_WIDTH, TOP_BAR_HEIGHT,
 };
 use op_editor_ui::{Point2D, Rect};
 
@@ -313,9 +313,24 @@ impl WidgetHostNative {
         let ui = &self.editor_state.editor_ui;
         (ui.shape_picker.open && (self.shape_picker_rect(viewport_w, viewport_h)).contains(p))
             || (ui.locale_picker.open && (self.locale_picker_rect(viewport_w)).contains(p))
+            || (ui.import_menu_open && (self.import_menu_rect(viewport_w, viewport_h)).contains(p))
             || self
                 .file_menu_rect(viewport_w)
                 .is_some_and(|r| (r).contains(p))
+    }
+
+    /// Painted bounds of the import dropdown — the overlay predicates
+    /// need the popup rect, not just its anchor, or the part of the
+    /// menu hanging over the layer panel is treated as panel chrome
+    /// (which swallowed hover on the menu's left edge).
+    pub(in crate::widget_host) fn import_menu_rect(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> Rect {
+        use op_editor_ui::widgets::ImportMenu;
+        let (anchor, viewport) = self.import_menu_anchor(viewport_w, viewport_h);
+        ImportMenu::for_editor_ui(&self.editor_state.editor_ui).popup_rect(anchor, viewport)
     }
 
     /// Whether `(x, y)` is over ANY floating overlay that paints on top
@@ -420,6 +435,38 @@ impl WidgetHostNative {
             origin: Point2D::new(x, y),
             size: Point2D::new(SHAPE_PICKER_WIDTH, panel_h),
         }
+    }
+
+    /// `(anchor, viewport)` for the top-bar import dropdown. The
+    /// anchor is the import button itself, so the shared `Select`
+    /// clamps the popup into the window like every other dropdown.
+    pub(in crate::widget_host) fn import_menu_anchor(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> (Rect, Rect) {
+        let top_bar_rect = Rect {
+            origin: Point2D::new(0.0, 0.0),
+            size: Point2D::new(viewport_w, TOP_BAR_HEIGHT),
+        };
+        let button =
+            TopBar::for_editor_ui(&self.editor_state.editor_ui).import_button_rect(top_bar_rect);
+        let anchor = Rect {
+            origin: button.origin,
+            size: Point2D::new(IMPORT_MENU_WIDTH, button.size.y),
+        };
+        let viewport = Rect {
+            origin: Point2D::new(0.0, 0.0),
+            size: Point2D::new(viewport_w, viewport_h),
+        };
+        (anchor, viewport)
+    }
+
+    /// Close the import dropdown and clear its hover row.
+    pub(in crate::widget_host) fn close_import_menu(&mut self) {
+        self.editor_state.editor_ui.import_menu_open = false;
+        self.editor_state.editor_ui.import_menu.open = false;
+        self.editor_state.editor_ui.import_menu.hover = None;
     }
 
     pub(in crate::widget_host) fn locale_picker_rect(&self, viewport_w: f32) -> Rect {

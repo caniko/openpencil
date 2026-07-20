@@ -176,13 +176,13 @@ fn two_screen_tabbed_doc() -> jian_ops_schema::PenDocument {
     )
 }
 
-/// Records every `fill_rect` call's alpha channel — cheap enough to
-/// distinguish "two layers cross-fading" from "one settled layer",
-/// and to prove the alpha actually MOVES between two real samples
-/// inside the animation window.
+/// Records every `fill_rect` alpha plus the opacity applied by an isolated
+/// fill-stack layer. Canonical multi-fill scenes apply node opacity when the
+/// layer is composited, rather than mutating every fill colour.
 #[derive(Default)]
 struct AlphaCaptureBackend {
     fill_alphas: Vec<f32>,
+    composite_alphas: Vec<f32>,
 }
 
 impl op_editor_ui::RenderBackend for AlphaCaptureBackend {
@@ -195,6 +195,14 @@ impl op_editor_ui::RenderBackend for AlphaCaptureBackend {
     fn draw_text(&mut self, _: &op_editor_ui::TextLayout, _: op_editor_ui::Point2D) {}
     fn clip_rect(&mut self, _: op_editor_ui::Rect) {}
     fn save(&mut self) {}
+    fn push_composite_layer(
+        &mut self,
+        _: op_editor_ui::Rect,
+        opacity: f32,
+        _: op_editor_ui::ImageBlendMode,
+    ) {
+        self.composite_alphas.push(opacity);
+    }
     fn restore(&mut self) {}
     fn translate(&mut self, _: op_editor_ui::Point2D) {}
     fn stroke_line(
@@ -283,7 +291,7 @@ fn tab_switch_animates_across_real_frames_through_the_production_paint_path() {
     );
     assert_eq!(late.fill_alphas.len(), 2);
     assert_ne!(
-        early.fill_alphas, late.fill_alphas,
+        early.composite_alphas, late.composite_alphas,
         "the composited alpha must move between two real frames sampled \
          inside the 160ms window — a transition that paints identical \
          alpha at two different real timestamps is indistinguishable \
@@ -299,5 +307,9 @@ fn tab_switch_animates_across_real_frames_through_the_production_paint_path() {
         vec![1.0],
         "once the 160ms window elapses only the destination screen \
          paints, at full alpha"
+    );
+    assert!(
+        settled.composite_alphas.is_empty(),
+        "the settled opaque fill stack no longer needs an opacity layer"
     );
 }

@@ -122,6 +122,36 @@ fn paste_figma_nodes_centres_fresh_ids_and_selects() {
 }
 
 #[test]
+fn paste_figma_nodes_recomputes_missing_fonts() {
+    let mut host = WidgetHostNative::new();
+    seed(&mut host, ONE_FRAME);
+    host.editor_state_mut().editor_ui.system_fonts_loaded = true;
+    host.editor_state_mut().editor_ui.system_font_families =
+        std::sync::Arc::new(vec!["Arial".to_string()]);
+    let incoming = jian_ops_schema::load_str(
+        r#"{"version":"1.0.0","children":[
+            {"type":"text","id":"label","name":"Label","x":0,"y":0,"width":100,"height":24,
+             "content":"Pasted from Figma","fontFamily":"__MissingFigmaClipboardFont__"}
+        ]}"#,
+    )
+    .expect("fixture parses")
+    .value
+    .children;
+
+    assert!(host.paste_figma_nodes(incoming, 1200.0, 800.0));
+
+    let ui = &host.editor_state().editor_ui;
+    assert!(ui.missing_fonts_modal_open);
+    assert_eq!(
+        ui.missing_fonts_prompt
+            .as_ref()
+            .and_then(|prompt| prompt.entries.first())
+            .map(|entry| entry.family.as_str()),
+        Some("__MissingFigmaClipboardFont__")
+    );
+}
+
+#[test]
 fn cursor_move_tracks_canvas_hover_node() {
     let mut host = WidgetHostNative::new();
     seed(&mut host, ONE_RECT);

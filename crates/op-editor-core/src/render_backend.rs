@@ -7,5 +7,6 @@
 
 pub use jian_widgets::geometry::{Color, Point2D, Rect};
 pub use jian_widgets::painter::{
-    ImageAdjustments, ImageDrawMode, Painter as RenderBackend, TextLayout,
+    ImageAdjustments, ImageBlendMode, ImageDrawMode, Painter as RenderBackend, TextBaselineRequest,
+    TextLayout,
 };

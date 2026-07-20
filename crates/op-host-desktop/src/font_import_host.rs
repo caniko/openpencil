@@ -155,6 +155,25 @@ mod tests {
     use super::*;
     use op_editor_core::missing_fonts::{MissingFontEntry, MissingFontsPrompt};
 
+    fn state_with_text(family: &str) -> op_editor_core::EditorState {
+        let doc = serde_json::from_value(serde_json::json!({
+            "version": "0.8.0",
+            "children": [{
+                "type": "text",
+                "id": "t1",
+                "name": "t",
+                "x": 0,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+                "content": "hi",
+                "fontFamily": family
+            }]
+        }))
+        .expect("document");
+        op_editor_core::EditorState::from_document(doc)
+    }
+
     #[test]
     fn supplied_font_with_another_family_records_a_mismatch_note() {
         let bytes = include_bytes!("../assets/fonts/InstrumentSerif-Regular.ttf");
@@ -162,6 +181,8 @@ mod tests {
             .expect("fixture metadata")
             .family;
         let mut host = WidgetHostNative::new();
+        *host.editor_state_mut() = state_with_text("Katibeh");
+        host.editor_state_mut().editor_ui.system_fonts_loaded = true;
         host.editor_state_mut().editor_ui.missing_fonts_prompt = Some(MissingFontsPrompt {
             entries: vec![MissingFontEntry {
                 family: "Katibeh".to_string(),

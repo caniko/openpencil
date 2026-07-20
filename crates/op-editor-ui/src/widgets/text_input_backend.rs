@@ -13,7 +13,10 @@
 //! surface — forwarding to `inner` is the only correct behaviour for a
 //! transparent wrapper — so the three copies collapse into one.
 
-use crate::{Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, RenderBackend, TextLayout};
+use crate::{
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
+    TextLayout,
+};
 
 pub(crate) struct BaselineAdjustingBackend<'a> {
     pub(crate) inner: &'a mut dyn RenderBackend,
@@ -246,8 +249,12 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
         self.inner.stroke_polygon(points, color, width);
     }
 
-    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
-        self.inner.image_decoded(image_id, encoded)
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
+        self.inner.image_decoded(image_id, encoded, max_edge_px)
+    }
+
+    fn image_resident(&mut self, image_id: u64) -> bool {
+        self.inner.image_resident(image_id)
     }
 
     fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
@@ -312,6 +319,32 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
             opacity,
             corner_radius,
             transform,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options_transform_and_blend(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+        blend_mode: ImageBlendMode,
+    ) {
+        self.inner.draw_image_with_options_transform_and_blend(
+            rect,
+            image_id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            transform,
+            blend_mode,
         );
     }
 
@@ -381,6 +414,14 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
 
     fn push_blur_layer(&mut self, sigma: f32) {
         self.inner.push_blur_layer(sigma);
+    }
+
+    fn push_composite_layer(&mut self, bounds: Rect, opacity: f32, mode: ImageBlendMode) {
+        self.inner.push_composite_layer(bounds, opacity, mode);
+    }
+
+    fn push_blend_layer(&mut self, mode: ImageBlendMode) {
+        self.inner.push_blend_layer(mode);
     }
 
     fn push_backdrop_blur_layer(&mut self, sigma: f32) {

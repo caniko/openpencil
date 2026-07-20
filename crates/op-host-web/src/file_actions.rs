@@ -17,6 +17,7 @@
 use base64::Engine as _;
 use op_editor_core::editor_ui_state::ExportFormat;
 use op_editor_core::{uikit_io, EditorState, UIKit};
+use std::collections::HashMap;
 
 /// An ingested document plus the loader's best-effort schema
 /// warnings (the desktop logs these to stderr; the web glue routes
@@ -24,6 +25,14 @@ use op_editor_core::{uikit_io, EditorState, UIKit};
 pub struct IngestedDoc {
     pub state: EditorState,
     pub warnings: Vec<String>,
+}
+
+/// One browser-selected file belonging to a saved-page bundle. Paths are
+/// relative to the selected directory; bytes are collected asynchronously by
+/// `dom_io` before the synchronous HTML converter runs.
+pub struct HtmlBundleFile {
+    pub relative_path: String,
+    pub bytes: Vec<u8>,
 }
 
 /// Serialize the canonical document to the `.op` JSON the desktop /
@@ -304,6 +313,85 @@ pub fn ingest_html_source(source: &str, file_name: &str) -> Result<IngestedDoc, 
     })
 }
 
+const HTML_BUNDLE_ORIGIN: &str = "https://openpencil.local/";
+
+/// Parse a browser-selected saved-page directory. Browser sandboxes do not
+/// expose sibling files after a single `.html` pick, so `dom_io` supplies the
+/// directory as an in-memory bundle and this helper presents it to `op-html`
+/// through the same synchronous resource-fetch seam used by the desktop.
+pub fn ingest_html_bundle(files: Vec<HtmlBundleFile>) -> Result<IngestedDoc, String> {
+    let mut resources = HashMap::new();
+    let mut html_candidates = Vec::new();
+
+    for file in files {
+        let Some(path) = normalize_bundle_path(&file.relative_path) else {
+            continue;
+        };
+        let Some(url) = op_html::resources::resolve_url(Some(HTML_BUNDLE_ORIGIN), &path) else {
+            continue;
+        };
+        if is_html_path(&path) {
+            html_candidates.push((html_candidate_rank(&path), url.clone(), path));
+        }
+        resources.insert(url, file.bytes);
+    }
+
+    html_candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let (_, html_url, html_path) = html_candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| "selected files contain no .html or .htm file".to_string())?;
+    let source = resources
+        .get(&html_url)
+        .ok_or_else(|| "selected HTML file could not be read".to_string())?;
+    let source = String::from_utf8_lossy(source);
+    let fetcher = |url: &str| {
+        let without_suffix = url.split_once(['?', '#']).map_or(url, |(path, _)| path);
+        resources.get(without_suffix).cloned()
+    };
+    let file_name = html_path.rsplit('/').next().unwrap_or(&html_path);
+    let options = op_html::HtmlImportOptions {
+        document_name: Some(file_stem(file_name).to_string()),
+        base_url: Some(html_url),
+        ..Default::default()
+    };
+    let imported = op_html::import_html_document(&source, &options, Some(&fetcher), None);
+    Ok(IngestedDoc {
+        state: EditorState::from_document(imported.document),
+        warnings: imported.warnings,
+    })
+}
+
+fn normalize_bundle_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+fn is_html_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+fn html_candidate_rank(path: &str) -> (usize, u8, String) {
+    let file_name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let is_index = matches!(file_name.as_str(), "index.html" | "index.htm");
+    (
+        path.matches('/').count(),
+        u8::from(!is_index),
+        path.to_ascii_lowercase(),
+    )
+}
+
 /// Carry app-level preferences from the state being replaced into a
 /// freshly ingested one. Port of the desktop's
 /// `persistence::preserve_app_preferences` (private there, so
@@ -314,6 +402,11 @@ pub fn preserve_app_preferences(previous: &EditorState, next: &mut EditorState) 
     next.editor_ui.theme_mode = previous.editor_ui.theme_mode;
     next.editor_ui.locale = previous.editor_ui.locale;
     next.editor_ui.recent_files = previous.editor_ui.recent_files.clone();
+    next.editor_ui.font_import_supported = previous.editor_ui.font_import_supported;
+    next.editor_ui.system_fonts_loaded = previous.editor_ui.system_fonts_loaded;
+    next.editor_ui.system_font_families = previous.editor_ui.system_font_families.clone();
+    next.editor_ui.bundled_font_families = previous.editor_ui.bundled_font_families.clone();
+    next.editor_ui.imported_font_families = previous.editor_ui.imported_font_families.clone();
     next.editor_ui.agent_settings = previous.editor_ui.agent_settings.clone();
     next.editor_ui.chat_selected_agent = previous.editor_ui.chat_selected_agent;
     next.chat.discovered_models = previous.chat.discovered_models.clone();
@@ -412,6 +505,25 @@ pub fn attachment_file_name(name: &str) -> String {
 mod tests {
     use super::*;
     use op_editor_core::PenNodeExt;
+
+    #[test]
+    fn app_preferences_preserve_runtime_font_availability() {
+        let mut previous = EditorState::new();
+        previous.editor_ui.font_import_supported = true;
+        previous.editor_ui.system_fonts_loaded = true;
+        previous.editor_ui.system_font_families = std::sync::Arc::new(vec!["PingFang SC".into()]);
+        previous.editor_ui.bundled_font_families = std::sync::Arc::new(vec!["Inter".into()]);
+        previous.editor_ui.imported_font_families = std::sync::Arc::new(vec!["Brand Sans".into()]);
+        let mut next = EditorState::new();
+
+        preserve_app_preferences(&previous, &mut next);
+
+        assert!(next.editor_ui.font_import_supported);
+        assert!(next.editor_ui.system_fonts_loaded);
+        assert_eq!(&*next.editor_ui.system_font_families, &["PingFang SC"]);
+        assert_eq!(&*next.editor_ui.bundled_font_families, &["Inter"]);
+        assert_eq!(&*next.editor_ui.imported_font_families, &["Brand Sans"]);
+    }
 
     #[test]
     fn attachment_media_type_matches_desktop_image_extensions() {
@@ -608,5 +720,60 @@ mod tests {
     fn ingest_html_source_builds_state() {
         let ingested = ingest_html_source("<h1>T</h1>", "page").expect("HTML import");
         assert_eq!(ingested.state.doc.children.len(), 1);
+    }
+
+    #[test]
+    fn ingest_html_bundle_resolves_relative_stylesheets_and_images() {
+        let files = vec![
+            HtmlBundleFile {
+                relative_path: "pages/index.html".into(),
+                bytes: br#"<link rel="stylesheet" href="../assets/site.css">
+                    <div class="hero"></div>"#
+                    .to_vec(),
+            },
+            HtmlBundleFile {
+                relative_path: "assets/site.css".into(),
+                bytes: br#".hero { width: 40px; height: 30px;
+                    background-image: url('./hero icon.png?v=1'); }"#
+                    .to_vec(),
+            },
+            HtmlBundleFile {
+                relative_path: "assets/hero icon.png".into(),
+                bytes: vec![0x89, 0x50, 0x4e, 0x47, 1, 2, 3],
+            },
+        ];
+
+        let ingested = ingest_html_bundle(files).expect("saved-page bundle imports");
+        let json = serde_json::to_string(&ingested.state.doc).expect("document serializes");
+
+        assert!(json.contains("data:image/png;base64,"));
+        assert!(!ingested
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("external stylesheet skipped")));
+    }
+
+    #[test]
+    fn ingest_html_bundle_prefers_index_and_rejects_missing_html() {
+        let ingested = ingest_html_bundle(vec![
+            HtmlBundleFile {
+                relative_path: "other.html".into(),
+                bytes: b"<h1>Other</h1>".to_vec(),
+            },
+            HtmlBundleFile {
+                relative_path: "INDEX.HTML".into(),
+                bytes: b"<h1>Index chosen</h1>".to_vec(),
+            },
+        ])
+        .expect("index candidate imports");
+        let json = serde_json::to_string(&ingested.state.doc).expect("document serializes");
+        assert!(json.contains("Index chosen"));
+        assert!(!json.contains("Other"));
+
+        assert!(ingest_html_bundle(vec![HtmlBundleFile {
+            relative_path: "style.css".into(),
+            bytes: b"body {}".to_vec(),
+        }])
+        .is_err());
     }
 }

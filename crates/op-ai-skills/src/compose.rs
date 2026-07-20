@@ -44,6 +44,14 @@ mod tests {
     }
 
     #[test]
+    fn planning_skill_uses_non_overlapping_subtree_roots() {
+        let prompt = compose_system_prompt(&["codegen-planning"], 0);
+        assert!(prompt.contains("subtree roots, not an exhaustive node list"));
+        assert!(prompt.contains("Never list both an ancestor"));
+        assert!(prompt.contains("between 1 and 15 chunks"));
+    }
+
+    #[test]
     fn unknown_names_are_skipped() {
         let only_known = compose_system_prompt(&["codegen-planning"], 0);
         let with_bogus = compose_system_prompt(&["codegen-planning", "not-a-skill"], 0);

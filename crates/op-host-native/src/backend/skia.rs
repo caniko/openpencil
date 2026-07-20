@@ -70,6 +70,7 @@ pub(super) fn jian_color_to_color4f(c: Color) -> skia_safe::Color4f {
 mod gradient;
 mod image;
 mod image_diagnostics;
+mod layer;
 mod path;
 mod text;
 #[cfg(test)]
@@ -92,6 +93,8 @@ pub struct NativeBackend {
     /// jian-skia's `SkiaMeasure`, so geometry sees the same typeface
     /// and synthetic-bold branch the painter uses.
     font_resolver: jian_skia::FontResolver,
+    /// Cached Paragraph shaper used only for authored line-box baselines.
+    paragraph_baseline: jian_skia::ParagraphBaseline,
     /// Pre-rasterized image cache keyed by stable source id. Paint only
     /// reads this cache; encoded bytes are decoded on desktop workers.
     image_cache: std::collections::HashMap<u64, ImageCacheEntry>,
@@ -113,11 +116,14 @@ pub struct NativeBackend {
     shader_cache: jian_skia::ShaderCache,
 }
 
-/// One resident raster image and its LRU accounting.
+/// One resident raster image and its LRU accounting. `covers_edge_px`
+/// is the longest edge this raster can serve sharply — either the level
+/// it was decoded for, or the source's own size when that is smaller.
 struct ImageCacheEntry {
     image: skia_safe::Image,
     bytes: usize,
     last_used: u64,
+    covers_edge_px: u32,
 }
 
 /// Raster-byte budget for decoded images (four bytes per pixel).
@@ -128,9 +134,45 @@ const IMAGE_CACHE_MAX_ENTRIES: usize = 4096;
 /// Decode encoded bytes and force their pixels into a CPU raster image.
 /// This function is called by host workers, never by paint.
 pub fn decode_raster(encoded: &[u8]) -> Option<skia_safe::Image> {
+    decode_raster_capped(encoded, u32::MAX).map(|(image, _)| image)
+}
+
+/// Decode into a raster no larger than `max_edge_px` on its longest
+/// edge, returning the raster and the edge it can serve sharply.
+///
+/// Sizing the raster to what the view shows is what keeps an
+/// image-dense page cheap: 700 thumbnails at 128 px cost ~45 MB
+/// together, where the same images at their authored 2048 px would be
+/// 16 MB EACH and evict one another every frame.
+pub fn decode_raster_capped(encoded: &[u8], max_edge_px: u32) -> Option<(skia_safe::Image, u32)> {
     image_diagnostics::record_full_decode();
     let lazy = skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded))?;
-    lazy.make_raster_image(None, None)
+    let (w, h) = (lazy.width().max(1), lazy.height().max(1));
+    let source_edge = w.max(h) as u32;
+    if max_edge_px >= source_edge {
+        // Already no larger than requested — the full raster IS the
+        // sharpest level, so record the source size as its coverage.
+        return lazy.make_raster_image(None, None).map(|i| (i, u32::MAX));
+    }
+    let scale = max_edge_px as f32 / source_edge as f32;
+    let (dst_w, dst_h) = (
+        ((w as f32 * scale).round() as i32).max(1),
+        ((h as f32 * scale).round() as i32).max(1),
+    );
+    let info = skia_safe::ImageInfo::new_n32_premul((dst_w, dst_h), None);
+    let mut surface = skia_safe::surfaces::raster(&info, None, None)?;
+    let sampling = skia_safe::SamplingOptions::new(
+        skia_safe::FilterMode::Linear,
+        skia_safe::MipmapMode::Linear,
+    );
+    surface.canvas().draw_image_rect_with_sampling_options(
+        &lazy,
+        None,
+        skia_safe::Rect::from_xywh(0.0, 0.0, dst_w as f32, dst_h as f32),
+        sampling,
+        &skia_safe::Paint::default(),
+    );
+    Some((surface.image_snapshot(), max_edge_px))
 }
 
 const ROBOTO_TTF: &[u8] = include_bytes!("../../assets/Roboto-Regular.ttf");
@@ -182,13 +224,14 @@ impl NativeBackend {
             let default_typeface = font_mgr.new_from_data(ROBOTO_TTF, None);
             (font_mgr, default_typeface)
         });
+        let font_resolver =
+            jian_skia::FontResolver::with_default_typeface(font_mgr, default_typeface);
+        let paragraph_baseline = jian_skia::ParagraphBaseline::new(&font_resolver);
         let mut this = Self {
             skia,
             dpi,
-            font_resolver: jian_skia::FontResolver::with_default_typeface(
-                font_mgr,
-                default_typeface,
-            ),
+            font_resolver,
+            paragraph_baseline,
             image_cache: std::collections::HashMap::new(),
             image_cache_bytes: 0,
             image_cache_tick: 0,
@@ -316,6 +359,25 @@ impl NativeBackend {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
         canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+    }
+
+    pub fn clip_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect) {
+        let oval = skia_safe::RRect::new_oval(to_sk_rect(bounds));
+        canvas.clip_rrect(oval, skia_safe::ClipOp::Intersect, true);
+    }
+
+    pub fn clip_polygon(&self, canvas: &skia_safe::Canvas, points: &[Point2D]) {
+        if points.len() < 3 {
+            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            return;
+        }
+        let mut builder = skia_safe::PathBuilder::new();
+        builder.move_to((points[0].x, points[0].y));
+        for point in &points[1..] {
+            builder.line_to((point.x, point.y));
+        }
+        builder.close();
+        canvas.clip_path(&builder.detach(), skia_safe::ClipOp::Intersect, true);
     }
 
     /// Stroke a single line segment. Step 4 visual lift addition —
@@ -624,7 +686,9 @@ impl NativeBackend {
     }
 
     /// Install worker-decoded pixels into the paint-side LRU.
-    pub fn install_raster_image(&mut self, id: u64, image: skia_safe::Image) {
+    /// `covers_edge_px` records how sharp this raster is, so a later
+    /// zoom-in can tell that it needs a finer decode.
+    pub fn install_raster_image(&mut self, id: u64, image: skia_safe::Image, covers_edge_px: u32) {
         self.image_cache_tick += 1;
         let bytes = (image.width().max(0) as usize)
             .saturating_mul(image.height().max(0) as usize)
@@ -639,15 +703,27 @@ impl NativeBackend {
                 image,
                 bytes,
                 last_used: self.image_cache_tick,
+                covers_edge_px,
             },
         );
         self.evict_images_over(IMAGE_CACHE_BYTE_BUDGET, IMAGE_CACHE_MAX_ENTRIES);
     }
 
     /// Readiness hook used by `NativeFrameBackend`; never decodes.
-    pub fn image_decoded(&mut self, id: u64, encoded: &[u8]) -> bool {
+    /// A cached raster that is too coarse for the requested size reports
+    /// `false` so paint queues a sharper decode — the existing raster
+    /// still draws in the meantime (paint falls back to `raster_image`),
+    /// so zooming in sharpens progressively instead of blanking.
+    pub fn image_decoded(&mut self, id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
         let _ = encoded;
-        self.raster_image(id).is_some()
+        self.image_cache
+            .get(&id)
+            .is_some_and(|entry| entry.covers_edge_px >= max_edge_px)
+    }
+
+    /// Whether any raster for `id` is resident, at any sharpness.
+    pub fn image_resident(&self, id: u64) -> bool {
+        self.image_cache.contains_key(&id)
     }
 
     /// Evict least-recently-used image entries until the cache fits

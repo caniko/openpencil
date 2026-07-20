@@ -9,7 +9,8 @@
 //! backend implements, so all shell-core UI code is shared across platforms.
 
 use op_editor_ui::{
-    Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, RenderBackend, TextLayout,
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
+    TextBaselineRequest, TextLayout,
 };
 use wasm_bindgen::prelude::*;
 
@@ -263,11 +264,18 @@ extern "C" {
         adjustments: &[f32],
         opacity: f32,
         corner_radius: f32,
+        blend_mode: u8,
     );
     #[wasm_bindgen(method, js_name = imageDecoded)]
-    fn image_decoded(this: &OpCk, image_id_lo: u32, image_id_hi: u32) -> bool;
+    fn image_decoded(this: &OpCk, image_id_lo: u32, image_id_hi: u32, max_edge_px: u32) -> bool;
     #[wasm_bindgen(method, js_name = decodeImage)]
-    fn decode_image(this: &OpCk, image_id_lo: u32, image_id_hi: u32, encoded: &[u8]) -> bool;
+    fn decode_image(
+        this: &OpCk,
+        image_id_lo: u32,
+        image_id_hi: u32,
+        encoded: &[u8],
+        max_edge_px: u32,
+    ) -> bool;
     #[wasm_bindgen(method, js_name = drawImageThumb)]
     fn draw_image_thumb(
         this: &OpCk,
@@ -285,6 +293,16 @@ extern "C" {
     fn measure_text_styled(this: &OpCk, t: &str, sz: f32, weight: i32, italic: bool) -> f32;
     #[wasm_bindgen(method, js_name = textAscent)]
     fn text_ascent(this: &OpCk, family: &str, sz: f32, weight: i32) -> f32;
+    #[wasm_bindgen(method, js_name = textFirstBaseline)]
+    fn text_first_baseline(
+        this: &OpCk,
+        text: &str,
+        family: &str,
+        sz: f32,
+        weight: i32,
+        italic: bool,
+        line_height: f32,
+    ) -> f32;
     /// Family-aware measure: when `family` resolves to a registered imported
     /// font the whole run is measured with that single typeface, so the caret /
     /// layout geometry agrees to sub-pixel with what `drawText` paints for the
@@ -329,8 +347,26 @@ extern "C" {
         bottom_right: f32,
         bottom_left: f32,
     );
+    #[wasm_bindgen(method, js_name = clipOval)]
+    fn clip_oval(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
+    #[wasm_bindgen(method, js_name = clipPolygon)]
+    fn clip_polygon(this: &OpCk, points: &[f32]);
+    #[wasm_bindgen(method, js_name = clipSvgPathInRect)]
+    fn clip_svg_path_in_rect(this: &OpCk, d: &str, x: f32, y: f32, w: f32, h: f32, even_odd: bool);
     #[wasm_bindgen(method)]
     fn save(this: &OpCk);
+    #[wasm_bindgen(method, js_name = pushCompositeLayer)]
+    fn push_composite_layer(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        opacity: f32,
+        blend_mode: u8,
+    );
+    #[wasm_bindgen(method, js_name = pushBlendLayer)]
+    fn push_blend_layer(this: &OpCk, blend_mode: u8);
     #[wasm_bindgen(method, js_name = pushBackdropBlurLayer)]
     fn push_backdrop_blur_layer(this: &OpCk, sigma: f32);
     #[wasm_bindgen(method)]
@@ -393,6 +429,22 @@ fn image_draw_mode_code(mode: ImageDrawMode) -> u8 {
         ImageDrawMode::Crop => 2,
         ImageDrawMode::Tile => 3,
         ImageDrawMode::Stretch => 4,
+    }
+}
+
+fn image_blend_mode_code(mode: ImageBlendMode) -> u8 {
+    match mode {
+        ImageBlendMode::Normal => 0,
+        ImageBlendMode::Darken => 1,
+        ImageBlendMode::Multiply => 2,
+        ImageBlendMode::Screen => 3,
+        ImageBlendMode::Overlay => 4,
+        ImageBlendMode::Lighten => 5,
+        ImageBlendMode::Difference => 6,
+        ImageBlendMode::Hue => 7,
+        ImageBlendMode::Saturation => 8,
+        ImageBlendMode::Color => 9,
+        ImageBlendMode::Luminosity => 10,
     }
 }
 
@@ -462,11 +514,14 @@ impl CanvasKitBackend {
     fn drain_pending_decodes(&mut self, max: usize) -> usize {
         use crate::image_decode_queue::{finish_web_decode, take_web_decode_batch};
         let batch = take_web_decode_batch(max);
-        for (id, bytes) in &batch {
-            let decoded = self
-                .ck
-                .decode_image(*id as u32, (*id >> 32) as u32, bytes.as_ref());
-            finish_web_decode(*id, decoded);
+        for job in &batch {
+            let decoded = self.ck.decode_image(
+                job.id as u32,
+                (job.id >> 32) as u32,
+                job.bytes.as_ref(),
+                job.max_edge_px,
+            );
+            finish_web_decode(job.id, decoded);
         }
         batch.len()
     }
@@ -854,10 +909,15 @@ impl RenderBackend for CanvasKitBackend {
             );
         }
     }
-    fn image_decoded(&mut self, image_id: u64, encoded: &[u8]) -> bool {
+    fn image_decoded(&mut self, image_id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
         let _ = encoded;
         self.ck
-            .image_decoded(image_id as u32, (image_id >> 32) as u32)
+            .image_decoded(image_id as u32, (image_id >> 32) as u32, max_edge_px)
+    }
+    fn image_resident(&mut self, image_id: u64) -> bool {
+        // A zero quality requirement asks only whether any raster is cached.
+        self.ck
+            .image_decoded(image_id as u32, (image_id >> 32) as u32, 0)
     }
     fn draw_image_thumb(&mut self, rect: Rect, image_id: u64, jpeg: &[u8]) {
         self.ck.draw_image_thumb(
@@ -927,12 +987,38 @@ impl RenderBackend for CanvasKitBackend {
         &mut self,
         rect: Rect,
         image_id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+    ) {
+        self.draw_image_with_options_transform_and_blend(
+            rect,
+            image_id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            transform,
+            ImageBlendMode::Normal,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image_with_options_transform_and_blend(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
         _encoded: &[u8],
         mode: ImageDrawMode,
         adjustments: ImageAdjustments,
         opacity: f32,
         corner_radius: f32,
         transform: Option<[f32; 6]>,
+        blend_mode: ImageBlendMode,
     ) {
         let transform = transform.as_ref().map_or(&[][..], |value| &value[..]);
         let adjustment_values = [
@@ -956,6 +1042,7 @@ impl RenderBackend for CanvasKitBackend {
             &adjustment_values,
             opacity,
             corner_radius,
+            image_blend_mode_code(blend_mode),
         );
     }
     fn measure_text(&mut self, text: &str, font_size: f32) -> f32 {
@@ -970,6 +1057,16 @@ impl RenderBackend for CanvasKitBackend {
     }
     fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
         self.ck.text_ascent(family, font_size, i32::from(weight))
+    }
+    fn text_first_baseline(&mut self, request: &TextBaselineRequest<'_>) -> f32 {
+        self.ck.text_first_baseline(
+            request.text,
+            request.font_family,
+            request.font_size,
+            i32::from(request.font_weight),
+            request.italic,
+            request.line_height,
+        )
     }
     fn measure_text_styled(
         &mut self,
@@ -1026,8 +1123,46 @@ impl RenderBackend for CanvasKitBackend {
             radii[3],
         );
     }
+    fn clip_oval(&mut self, bounds: Rect) {
+        self.ck.clip_oval(
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.x,
+            bounds.size.y,
+        );
+    }
+    fn clip_polygon(&mut self, points: &[Point2D]) {
+        let mut flat = Vec::with_capacity(points.len() * 2);
+        for point in points {
+            flat.extend_from_slice(&[point.x, point.y]);
+        }
+        self.ck.clip_polygon(&flat);
+    }
+    fn clip_svg_path_in_rect(&mut self, d: &str, rect: Rect, even_odd: bool) {
+        self.ck.clip_svg_path_in_rect(
+            d,
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.x,
+            rect.size.y,
+            even_odd,
+        );
+    }
     fn save(&mut self) {
         self.ck.save();
+    }
+    fn push_composite_layer(&mut self, bounds: Rect, opacity: f32, mode: ImageBlendMode) {
+        self.ck.push_composite_layer(
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.x,
+            bounds.size.y,
+            opacity,
+            image_blend_mode_code(mode),
+        );
+    }
+    fn push_blend_layer(&mut self, mode: ImageBlendMode) {
+        self.ck.push_blend_layer(image_blend_mode_code(mode));
     }
     fn push_backdrop_blur_layer(&mut self, sigma: f32) {
         self.ck.push_backdrop_blur_layer(sigma);
@@ -1163,7 +1298,7 @@ impl CkInner {
         if self.host.layout_transition_active() {
             crate::repaint_coalescer::request();
         }
-        if op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes() {
+        if op_editor_ui::image_runtime::has_pending_decodes() {
             crate::repaint_coalescer::request();
         }
     }
@@ -1470,7 +1605,7 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
             }
         }));
     }
-    if op_editor_ui::widgets::canvas_viewport_image::has_pending_decodes() {
+    if op_editor_ui::image_runtime::has_pending_decodes() {
         crate::repaint_coalescer::request();
     }
     crate::web_fonts::drain_font_requests(&inner);
@@ -2044,6 +2179,57 @@ mod tests {
         let draw = &bridge[draw_start..draw_end];
         assert!(draw.contains("imageCaches.fullImage(imageIdLo, imageIdHi)"));
         assert!(!draw.contains("MakeImageFromEncoded"));
+    }
+
+    #[test]
+    fn composite_layer_bridge_is_bounded_and_never_degrades_to_plain_save() {
+        let bridge = include_str!("op_ck_bridge.js");
+        let start = bridge
+            .find("pushCompositeLayer(")
+            .expect("composite layer bridge method");
+        let end = bridge[start..]
+            .find("\n    },")
+            .expect("composite layer bridge end")
+            + start;
+        let method = &bridge[start..end];
+        assert!(method.contains("paint.setAlphaf("));
+        assert!(method.contains("paint.setBlendMode("));
+        assert!(method.contains("canvas.saveLayer(paint, CK.LTRBRect("));
+        assert!(method.contains("paint.delete()"));
+        assert!(!method.contains("canvas.save();"));
+    }
+
+    #[test]
+    fn svg_path_fitting_prefers_tight_bounds_with_a_compatibility_fallback() {
+        let bridge = include_str!("op_ck_bridge.js");
+        let start = bridge
+            .find("const fitPathToRect =")
+            .expect("SVG path fitting helper");
+        let end = bridge[start..]
+            .find("\n\n  // Parsed-SVG-path cache")
+            .expect("SVG path fitting helper end")
+            + start;
+        let helper = &bridge[start..end];
+        let tight = helper
+            .find("path.computeTightBounds()")
+            .expect("tight bounds call");
+        let loose = helper
+            .find("path.getBounds()")
+            .expect("loose bounds fallback");
+
+        assert!(tight < loose, "tight bounds must be attempted first");
+        assert!(helper.contains("if (!pathIsFinite(bounds))"));
+    }
+
+    #[test]
+    fn image_residency_uses_the_real_canvaskit_cache() {
+        let backend = include_str!("canvaskit.rs");
+        let start = backend
+            .find("fn image_resident(&mut self, image_id: u64)")
+            .expect("CanvasKit residency override");
+        let method = &backend[start..start + 360.min(backend.len() - start)];
+        assert!(method.contains(".image_decoded("));
+        assert!(method.contains(", 0)"));
     }
 
     #[test]

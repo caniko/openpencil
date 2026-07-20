@@ -814,6 +814,12 @@ impl WidgetHostNative {
         if self.apply_image_panel_delete() {
             return true;
         }
+        // The open font picker owns Delete. Its search draft handles
+        // Backspace separately; forward-delete must never reach the canvas
+        // selection behind the overlay.
+        if self.editor_state.editor_ui.font_picker.open {
+            return true;
+        }
         if self
             .editor_state
             .editor_ui
@@ -1572,6 +1578,16 @@ impl WidgetHostNative {
             self.mark_dirty();
             return true;
         }
+        if self.editor_state.editor_ui.font_picker.open
+            && matches!(
+                self.editor_state.editor_ui.font_picker_purpose,
+                Some(op_editor_core::FontPickerPurpose::MissingFont { .. })
+            )
+        {
+            self.close_font_picker();
+            self.mark_dirty();
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings_open {
             self.editor_state.editor_ui.agent_settings_open = false;
             self.editor_state.editor_ui.agent_settings_drag = None;
@@ -1585,6 +1601,11 @@ impl WidgetHostNative {
         }
         if self.editor_state.editor_ui.figma_import_open {
             self.editor_state.editor_ui.figma_import_open = false;
+            self.mark_dirty();
+            return true;
+        }
+        if self.editor_state.editor_ui.import_menu_open {
+            self.close_import_menu();
             self.mark_dirty();
             return true;
         }

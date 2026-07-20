@@ -12,31 +12,31 @@
 //! query changed.
 //!
 //! `font_picker_entries` is a PURE function of `(imported_families,
-//! system_families, query)` — no per-document identity leaks into its
+//! bundled_families, system_families, query)` — no document identity leaks into its
 //! result — so an identical triple always yields an identical result
 //! regardless of which `EditorState` produced it. That is what lets this
 //! cache skip owner-scoping entirely (unlike `layer_panel_cache`, whose
 //! per-document revision counter CAN coincidentally collide across
 //! independent documents at the same revision number): the key compares
-//! `imported_families` / `system_families` by FULL VALUE equality (never a
+//! all three family lists by FULL VALUE equality (never a
 //! pointer or a length shortcut), so a collision is impossible except when
 //! the inputs are truly byte-identical — in which case serving the cached
 //! result is correct by construction.
 //!
 //! One shared slot suffices (not a per-caller/per-owner set): every caller
-//! within a frame reads the SAME live `imported_families` /
-//! `system_families` / query off `EditorState`, so they all hit the same
-//! slot.
+//! within a frame reads the same live lists and query off `EditorState`, so
+//! they all hit the same slot.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::property_panel_typography::FontPickerEntry;
 
-/// Identity of a cached [`resolve`] result — the two family lists plus the
+/// Identity of a cached [`resolve`] result — the three family lists plus the
 /// normalized search query, all compared by value.
 struct FontEntriesKey {
     imported: Vec<String>,
+    bundled: Vec<String>,
     system: Vec<String>,
     query: String,
 }
@@ -50,7 +50,7 @@ thread_local! {
 }
 
 /// Resolve the picker's entries, memoized on `(imported_families,
-/// system_families, query)` by value. `build` runs only on a cache miss;
+/// bundled_families, system_families, query)` by value. `build` runs only on a cache miss;
 /// `query` must already be the normalized (trimmed + lowercased) search
 /// string `build` was constructed against.
 ///
@@ -62,6 +62,7 @@ thread_local! {
 /// per-frame accessors.
 pub(crate) fn resolve(
     imported_families: &[String],
+    bundled_families: &[String],
     system_families: &[String],
     query: &str,
     build: impl FnOnce() -> Vec<FontPickerEntry>,
@@ -69,6 +70,7 @@ pub(crate) fn resolve(
     let hit = CACHE.with(|cell| {
         cell.borrow().as_ref().and_then(|(key, entries)| {
             (key.imported.as_slice() == imported_families
+                && key.bundled.as_slice() == bundled_families
                 && key.system.as_slice() == system_families
                 && key.query == query)
                 .then(|| entries.clone())
@@ -83,6 +85,7 @@ pub(crate) fn resolve(
         *cell.borrow_mut() = Some((
             FontEntriesKey {
                 imported: imported_families.to_vec(),
+                bundled: bundled_families.to_vec(),
                 system: system_families.to_vec(),
                 query: query.to_string(),
             },

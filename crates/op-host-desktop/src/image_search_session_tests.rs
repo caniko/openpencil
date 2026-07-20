@@ -15,6 +15,7 @@ fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
         },
         src: src.into(),
         object_fit: None,
+        blend_mode: None,
         width: Some(SizingBehavior::Number(240.0)),
         height: Some(SizingBehavior::Number(160.0)),
         corner_radius: None,

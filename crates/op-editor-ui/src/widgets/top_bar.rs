@@ -7,7 +7,7 @@
 
 use crate::theme::Theme;
 use crate::widgets::editor_state_ext::{theme_for, translate};
-use crate::widgets::icons::{draw_icon, Icon};
+use crate::widgets::icons::{draw_icon, draw_import_icon, Icon};
 use crate::widgets::{LayoutBox, LayoutCx, PaintCx, Widget, WidgetId};
 use crate::{Color, Point2D, Rect};
 use op_editor_core::editor_ui_state::EditorUiState;
@@ -78,7 +78,7 @@ pub enum TopBarHit {
     /// Folder + chevron compound — toggle the file menu dropdown.
     ToggleFileMenu,
     /// Figma logo — open the .fig import modal.
-    OpenFigmaImport,
+    OpenImportMenu,
     /// Sun icon — flip theme dark↔light.
     ToggleTheme,
     /// Globe icon — cycle through UI locales.
@@ -362,22 +362,15 @@ impl TopBar {
         // controls are hidden (`show_traffic_controls = false` → inset 0), so
         // the static rect would shift the hover/hit area right of the painted
         // folder button by the traffic-cluster width.
-        // File-scoped chrome (file menu, Figma import) — hidden inside a
+        // File-scoped chrome (file menu, import) — hidden inside a
         // VS Code embed, where the workbench owns file identity.
         if self.file_controls_visible() {
             let file_menu_rect = self.file_menu_rect_for(rect);
-            let file_menu_x = file_menu_rect.origin.x;
-            let divider_span = DIVIDER_GAP + DIVIDER_W + DIVIDER_GAP;
             if (file_menu_rect).contains(point) {
                 return Some(TopBarHit::ToggleFileMenu);
             }
-            let figma_x = file_menu_x + FILE_MENU_BUTTON_WIDTH + divider_span;
-            let figma_rect = Rect {
-                origin: Point2D::new(figma_x, icon_y),
-                size: Point2D::new(ICON_BUTTON, ICON_BUTTON),
-            };
-            if (figma_rect).contains(point) {
-                return Some(TopBarHit::OpenFigmaImport);
+            if (self.import_button_rect(rect)).contains(point) {
+                return Some(TopBarHit::OpenImportMenu);
             }
         }
         // Git-panel toggle, just right of the centred file name (desktop
@@ -567,7 +560,7 @@ pub(super) fn paint_file_menu_button(
     paint_compound_icon_button(cx, theme, button_rect, Icon::FolderOpen, hovered, pressed);
 }
 
-pub(super) fn paint_figma_button(
+pub(super) fn paint_import_button(
     cx: &mut PaintCx<'_>,
     theme: &Theme,
     x: f32,
@@ -577,17 +570,31 @@ pub(super) fn paint_figma_button(
 ) {
     let button_rect = Rect {
         origin: Point2D::new(x, center_y - ICON_BUTTON / 2.0),
-        size: Point2D::new(ICON_BUTTON, ICON_BUTTON),
+        size: Point2D::new(FILE_MENU_BUTTON_WIDTH, ICON_BUTTON),
     };
+    const PAD_X: f32 = 8.0;
+    const CHEVRON: f32 = 14.0;
     let color = paint_hover_bg(cx, theme, button_rect, hovered, pressed);
-    crate::widgets::brand_icons::paint_figma_logo(
+    let glyph = ICON_SIZE + 1.0;
+    draw_import_icon(
         cx.backend,
         Point2D::new(
-            x + (ICON_BUTTON - ICON_SIZE) / 2.0,
-            center_y - ICON_SIZE / 2.0,
+            button_rect.origin.x + PAD_X,
+            button_rect.origin.y + (button_rect.size.y - glyph) / 2.0,
         ),
-        ICON_SIZE,
+        glyph,
         color,
+    );
+    draw_icon(
+        cx.backend,
+        Icon::ChevronDown,
+        Point2D::new(
+            button_rect.origin.x + button_rect.size.x - PAD_X - CHEVRON,
+            button_rect.origin.y + (button_rect.size.y - CHEVRON) / 2.0,
+        ),
+        CHEVRON,
+        color,
+        1.5,
     );
 }
 

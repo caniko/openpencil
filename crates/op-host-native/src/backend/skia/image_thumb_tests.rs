@@ -110,7 +110,7 @@ fn paint_diagnostics_distinguish_blur_up_from_sharp_rasters() {
     assert_eq!(blur.paint_thread_full_decodes, 0);
 
     let sharp = decode_raster(&jpeg).expect("valid JPEG rasterizes");
-    backend.install_raster_image(17, sharp);
+    backend.install_raster_image(17, sharp, u32::MAX);
     backend.draw_image(
         surface.canvas(),
         Rect::xywh(0.0, 0.0, 80.0, 40.0),

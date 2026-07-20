@@ -3239,6 +3239,7 @@ dependencies = [
  "op-editor-core",
  "op-orchestrator",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -3450,6 +3451,7 @@ dependencies = [
  "jian-ops-schema",
  "markup5ever_rcdom",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -3510,6 +3512,7 @@ dependencies = [
  "jian-scene",
  "jian-skia",
  "op-editor-core",
+ "op-html",
  "serde",
  "serde_json",
  "serde_stacker",

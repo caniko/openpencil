@@ -235,6 +235,40 @@ impl Default for CodegenState {
 }
 
 impl CodegenState {
+    /// Select a different output framework and discard every artifact that
+    /// belongs to the previous one. The framework strip keeps its horizontal
+    /// scroll position, but generated code must never be shown, copied, or
+    /// exported under a framework it was not produced for.
+    ///
+    /// The UI disables framework tabs while generation is active. Keeping the
+    /// same guard here prevents a synthetic/stale action from relabelling an
+    /// in-flight run whose completion still targets the original framework.
+    pub fn select_framework(&mut self, framework: Framework) -> bool {
+        if framework == self.framework || self.phase == CodegenPhase::Generating {
+            return false;
+        }
+
+        self.framework = framework;
+        self.framework_hover = None;
+        self.action_hover = None;
+        self.phase = CodegenPhase::Idle;
+        self.progress = CodeGenProgress::default();
+        self.code.clear();
+        self.code_scroll = Default::default();
+        self.code_selection = None;
+        self.degraded = false;
+        self.assets.clear();
+        self.selection_snapshot.clear();
+        self.error = None;
+        self.copied_at = None;
+        self.pending_generate = false;
+        self.pending_regenerate = false;
+        self.pending_download = false;
+        self.pending_export_bundle = false;
+        self.pending_cancel = false;
+        true
+    }
+
     pub fn selected_code_text(&self) -> Option<&str> {
         let selection = self.code_selection?;
         if selection.is_collapsed() || self.code.is_empty() {
@@ -310,5 +344,76 @@ mod tests {
         };
 
         assert_eq!(s.selected_code_text(), Some("import"));
+    }
+
+    #[test]
+    fn selecting_a_different_framework_discards_previous_output() {
+        let mut s = CodegenState {
+            framework_scroll: jian_core::scroll::ScrollState { offset: 18.0 },
+            framework_hover: Some(Framework::Vue),
+            action_hover: Some(CodegenHover::Copy),
+            phase: CodegenPhase::Error,
+            progress: CodeGenProgress {
+                planning_done: Some(true),
+                chunks: vec![ChunkProgress {
+                    chunk_id: "hero".into(),
+                    name: "Hero".into(),
+                    status: ChunkStatus::Failed,
+                }],
+                assembly_done: Some(false),
+            },
+            code: "export const App = () => null".into(),
+            code_scroll: jian_core::scroll::ScrollState { offset: 42.0 },
+            code_selection: Some(CodeSelection {
+                anchor: 0,
+                focus: 6,
+            }),
+            degraded: true,
+            assets: vec![AssetMeta {
+                relative_path: "assets/hero.png".into(),
+                byte_len: 128,
+            }],
+            selection_snapshot: vec!["hero".into()],
+            error: Some("chunk failed".into()),
+            copied_at: Some(99),
+            pending_download: true,
+            pending_export_bundle: true,
+            ..CodegenState::default()
+        };
+
+        assert!(s.select_framework(Framework::Vue));
+        assert_eq!(s.framework, Framework::Vue);
+        assert_eq!(s.framework_scroll.offset, 18.0);
+        assert_eq!(s.phase, CodegenPhase::Idle);
+        assert_eq!(s.progress, CodeGenProgress::default());
+        assert!(s.code.is_empty());
+        assert_eq!(s.code_scroll.offset, 0.0);
+        assert!(s.code_selection.is_none());
+        assert!(!s.degraded);
+        assert!(s.assets.is_empty());
+        assert!(s.selection_snapshot.is_empty());
+        assert!(s.error.is_none());
+        assert!(s.copied_at.is_none());
+        assert!(!s.pending_download);
+        assert!(!s.pending_export_bundle);
+    }
+
+    #[test]
+    fn selecting_the_current_or_an_in_flight_framework_is_a_noop() {
+        let mut complete = CodegenState {
+            code: "react output".into(),
+            phase: CodegenPhase::Complete,
+            ..CodegenState::default()
+        };
+        assert!(!complete.select_framework(Framework::React));
+        assert_eq!(complete.code, "react output");
+
+        let mut generating = CodegenState {
+            phase: CodegenPhase::Generating,
+            ..CodegenState::default()
+        };
+        assert!(!generating.select_framework(Framework::Vue));
+        assert_eq!(generating.framework, Framework::React);
+        assert_eq!(generating.phase, CodegenPhase::Generating);
     }
 }

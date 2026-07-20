@@ -539,3 +539,41 @@ fn preset_name_input_escape_cancels_without_saving() {
     assert!(host.editor_state.editor_ui.variables_preset_menu_open);
     assert!(host.editor_state.ui.property_input_draft.is_empty());
 }
+
+#[test]
+fn font_picker_owns_keyboard_and_resets_import_hover_while_searching() {
+    use op_editor_core::Tool;
+
+    let mut host = WidgetHost::new();
+    host.editor_state.tool = Tool::Select;
+    host.editor_state.editor_ui.toggle_font_picker();
+    host.editor_state.editor_ui.font_picker_import_hover = true;
+
+    assert!(host.input_active());
+    assert!(!host.apply_tool_shortcut("r"));
+    assert_eq!(host.editor_state.tool, Tool::Select);
+
+    let ime = crate::event::ime::composition_end("苹方".to_string());
+    assert!(host.apply_ime(&ime));
+    assert_eq!(host.editor_state.editor_ui.font_picker_search, "苹方");
+    assert!(!host.editor_state.editor_ui.font_picker_import_hover);
+
+    host.editor_state.editor_ui.font_picker_import_hover = true;
+    assert!(host.apply_backspace());
+    assert_eq!(host.editor_state.editor_ui.font_picker_search, "苹");
+    assert!(!host.editor_state.editor_ui.font_picker_import_hover);
+}
+
+#[test]
+fn escape_closes_settings_font_picker_before_settings() {
+    let mut host = WidgetHost::new();
+    host.editor_state.editor_ui.agent_settings_open = true;
+    host.editor_state.editor_ui.toggle_font_picker();
+
+    assert!(host.apply_escape());
+    assert!(!host.editor_state.editor_ui.font_picker.open);
+    assert!(host.editor_state.editor_ui.agent_settings_open);
+
+    assert!(host.apply_escape());
+    assert!(!host.editor_state.editor_ui.agent_settings_open);
+}

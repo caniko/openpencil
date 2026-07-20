@@ -415,6 +415,7 @@ mod tests {
     use super::*;
     use crate::widgets::canvas_viewport_image::{
         cached_bytes_for, lock_decode_registry_for_tests, mark_decode_done, take_pending_decodes,
+        PendingDecode,
     };
     use crate::widgets::property_panel_test_support::CountingBackend;
 
@@ -445,6 +446,7 @@ mod tests {
         let id = jian_ops_schema::node::image_src::paint_image_id(src);
         let mut backend = CountingBackend {
             image_decode_ready: Some(false),
+            image_resident_ready: Some(false),
             ..Default::default()
         };
 
@@ -458,7 +460,13 @@ mod tests {
         );
 
         assert!(backend.images.is_empty(), "pending rasters must not draw");
-        assert_eq!(take_pending_decodes(8), vec![id]);
+        assert_eq!(
+            take_pending_decodes(8),
+            vec![PendingDecode {
+                id,
+                max_edge_px: 64,
+            }]
+        );
         assert!(cached_bytes_for(id).is_some());
 
         mark_decode_done(id);

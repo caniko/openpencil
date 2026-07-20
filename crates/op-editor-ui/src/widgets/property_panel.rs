@@ -182,6 +182,7 @@ pub struct PropertyPanel {
     /// (see `property_panel_typography`).
     pub font_picker_search: String,
     pub system_font_families: std::sync::Arc<Vec<String>>,
+    pub bundled_font_families: std::sync::Arc<Vec<String>>,
     /// User-imported font families (see `editor_ui.imported_font_families`).
     /// The picker paints these first, above bundled + system.
     pub imported_font_families: std::sync::Arc<Vec<String>>,
@@ -476,6 +477,10 @@ impl PropertyPanel {
         let mut codegen = state.codegen.clone();
         codegen.selection_snapshot = live_codegen_target_ids(state);
         let corner_expand_open = ui.corner_expand_open && snapshot.supports_per_corner;
+        let mut font_picker = ui.font_picker.clone();
+        if ui.font_picker_purpose != Some(op_editor_core::FontPickerPurpose::PropertyText) {
+            font_picker.open = false;
+        }
         Self {
             id: WidgetId::new(2000),
             snapshot,
@@ -523,9 +528,10 @@ impl PropertyPanel {
             stroke_variable_ref,
             color_variable_count,
             image_fill_popover_open: ui.image_fill_popover_open,
-            font_picker: ui.font_picker.clone(),
+            font_picker,
             font_picker_search: ui.font_picker_search.clone(),
             system_font_families: ui.system_font_families.clone(),
+            bundled_font_families: ui.bundled_font_families.clone(),
             imported_font_families: ui.imported_font_families.clone(),
             font_import_supported: ui.font_import_supported,
             font_picker_import_hover: ui.font_picker_import_hover,

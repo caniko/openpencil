@@ -201,7 +201,14 @@ impl WidgetHost {
             op_editor_ui::widgets::MissingFontsPanel::for_editor(&self.editor_state)
                 .map(|panel| panel.rect(viewport_width, viewport_height));
         if let Some(panel_rect) = missing_fonts_rect {
-            if self.dispatch_missing_fonts_press(panel_rect, Point2D::new(x, y)) {
+            if self.dispatch_missing_fonts_press(
+                panel_rect,
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                Point2D::new(x, y),
+            ) {
                 self.close_image_popovers_for_higher_overlay();
                 return true;
             }
@@ -288,6 +295,39 @@ impl WidgetHost {
             self.mark_dirty();
             return true;
         }
+        // 0a0. Import dropdown — same overlay tier as the locale picker.
+        if self.editor_state.editor_ui.import_menu_open {
+            use op_editor_ui::widgets::{ImportMenu, ImportMenuChoice};
+            let (anchor, menu_viewport) = self.import_menu_anchor(viewport_width, viewport_height);
+            let menu = ImportMenu::for_editor_ui(&self.editor_state.editor_ui);
+            let point = Point2D::new(x, y);
+            if matches!(
+                menu.hit(anchor, menu_viewport, point),
+                op_editor_ui::widgets::import_menu::SelectHit::Inside
+            ) {
+                return true;
+            }
+            let choice = menu.choice_at(anchor, menu_viewport, point);
+            self.close_import_menu();
+            match choice {
+                Some(ImportMenuChoice::Figma) => {
+                    self.editor_state.editor_ui.import_source =
+                        op_editor_core::figma_import_state::ImportSource::Figma;
+                    self.editor_state.editor_ui.figma_import_open = true;
+                }
+                Some(ImportMenuChoice::Html) => {
+                    self.editor_state.editor_ui.import_source =
+                        op_editor_core::figma_import_state::ImportSource::Html;
+                    self.editor_state.editor_ui.figma_import_open = true;
+                }
+                None => {
+                    self.blur_text_inputs_on_blank_press();
+                }
+            }
+            self.mark_dirty();
+            return true;
+        }
+
         // 0a. Locale picker overlay — top-most when open. Row hit
         //     sets locale + closes; ANY other hit (including the
         //     Globe button itself) closes the picker AND swallows
@@ -387,8 +427,11 @@ impl WidgetHost {
                     self.editor_state.editor_ui.file_menu.hover = None;
                     self.clear_layer_panel_hover();
                 }
-                TopBarHit::OpenFigmaImport => {
-                    self.editor_state.editor_ui.figma_import_open = true;
+                TopBarHit::OpenImportMenu => {
+                    let open = !self.editor_state.editor_ui.import_menu_open;
+                    self.editor_state.editor_ui.import_menu_open = open;
+                    self.editor_state.editor_ui.import_menu.open = open;
+                    self.editor_state.editor_ui.import_menu.hover = None;
                 }
                 TopBarHit::ToggleGitPanel => {
                     self.editor_state.editor_ui.git_panel.open ^= true;

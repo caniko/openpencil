@@ -133,6 +133,7 @@ mod canvas_path_overlay;
 mod canvas_selection_overlay;
 pub mod canvas_text_edit;
 pub mod canvas_viewport;
+mod canvas_viewport_fill_layers;
 mod canvas_viewport_grid;
 // `pub` for the remote-image miss-queue API (`take_remote_image_requests`
 // / `store_remote_image_bytes` / …) the desktop host drains per frame;
@@ -266,6 +267,7 @@ mod git_panel_tracked_picker;
 mod git_panel_tracked_picker_tests;
 pub mod icon_picker_panel;
 pub mod ime_preedit_overlay;
+pub mod import_menu;
 pub mod locale_picker;
 pub mod login_modal;
 pub mod missing_fonts_panel;
@@ -321,6 +323,7 @@ pub use icon_picker_panel::{
     IconPickerHit, IconPickerPanel, ICONIFY_LOAD_MORE_LIMIT, ICON_PICKER_PANEL_H,
     ICON_PICKER_PANEL_W,
 };
+pub use import_menu::{ImportMenu, ImportMenuChoice, IMPORT_MENU_WIDTH};
 pub use locale_picker::{LocalePicker, LOCALE_PICKER_WIDTH};
 pub use missing_fonts_panel::{MissingFontsHit, MissingFontsPanel};
 pub use shape_picker::{ShapeChoice, ShapePicker, SHAPE_PICKER_WIDTH};

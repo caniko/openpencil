@@ -70,6 +70,8 @@ mod chat_model_picker_caret_tests;
 #[cfg(test)]
 mod chat_send_tests;
 mod click;
+#[cfg(test)]
+mod codegen_framework_tests;
 mod color_picker_press;
 mod component_browser_press;
 #[cfg(test)]
@@ -84,6 +86,8 @@ mod figma_import_tests;
 #[cfg(test)]
 mod font_generation_scene_tests;
 mod font_picker_dispatch;
+#[cfg(test)]
+mod font_picker_keyboard_tests;
 mod geometry;
 mod geometry_settings_hover;
 #[cfg(test)]
@@ -1412,6 +1416,7 @@ impl WidgetHostNative {
         }
         self.editor_state.history_push_past(snap);
         self.mark_dirty();
+        self.refresh_missing_fonts_after_document_change();
         true
     }
 

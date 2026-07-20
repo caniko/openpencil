@@ -149,6 +149,20 @@ pub fn paint_fill_then_stroke(
             cx.backend.fill_rect(world_rect, fill);
         }
     }
+    paint_node_stroke(cx, node, world_rect, zoom);
+}
+
+/// Paint only a node's stroke. Layered-fill nodes use this after painting all
+/// background layers so the outline lands exactly once above the stack.
+pub(crate) fn paint_node_stroke(
+    cx: &mut PaintCx<'_>,
+    node: &SceneNode,
+    world_rect: Rect,
+    zoom: f32,
+) {
+    let r = node.corner_radius * zoom;
+    let use_round = r > 0.5;
+    let per_corner = scaled_non_uniform_corner_radii(node, zoom);
     if let Some(stroke) = node.stroke {
         if let Some(sides) = stroke
             .sides
@@ -416,14 +430,26 @@ pub(super) fn wrap_text(
     font_size: f32,
     max_w: f32,
     weight: u16,
+    letter_spacing: f32,
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for segment in text.split('\n') {
-        if max_w <= 0.0 || backend.measure_text_weighted(segment, font_size, weight) <= max_w {
+        if max_w <= 0.0
+            || measure_text_with_letter_spacing(backend, segment, font_size, weight, letter_spacing)
+                <= max_w
+        {
             out.push(segment.to_string());
             continue;
         }
-        wrap_segment(backend, segment, font_size, max_w, weight, &mut out);
+        wrap_segment(
+            backend,
+            segment,
+            font_size,
+            max_w,
+            weight,
+            letter_spacing,
+            &mut out,
+        );
     }
     if out.is_empty() {
         out.push(String::new());
@@ -438,6 +464,7 @@ fn wrap_segment(
     font_size: f32,
     max_w: f32,
     weight: u16,
+    letter_spacing: f32,
     out: &mut Vec<String>,
 ) {
     let chars: Vec<char> = segment.chars().collect();
@@ -449,7 +476,8 @@ fn wrap_segment(
         if is_cjk(ch) {
             let mut ch_buf = [0; 4];
             build_probe(&mut probe, &current, ch.encode_utf8(&mut ch_buf));
-            if backend.measure_text_weighted(&probe, font_size, weight) > max_w
+            if measure_text_with_letter_spacing(backend, &probe, font_size, weight, letter_spacing)
+                > max_w
                 && !current.is_empty()
             {
                 out.push(std::mem::take(&mut current));
@@ -460,7 +488,8 @@ fn wrap_segment(
             i += 1;
         } else if ch == ' ' {
             build_probe(&mut probe, &current, " ");
-            if backend.measure_text_weighted(&probe, font_size, weight) > max_w
+            if measure_text_with_letter_spacing(backend, &probe, font_size, weight, letter_spacing)
+                > max_w
                 && !current.is_empty()
             {
                 out.push(std::mem::take(&mut current));
@@ -475,7 +504,8 @@ fn wrap_segment(
                 i += 1;
             }
             build_probe(&mut probe, &current, &word);
-            if backend.measure_text_weighted(&probe, font_size, weight) > max_w
+            if measure_text_with_letter_spacing(backend, &probe, font_size, weight, letter_spacing)
+                > max_w
                 && !current.is_empty()
             {
                 out.push(std::mem::take(&mut current));
@@ -488,6 +518,18 @@ fn wrap_segment(
     if !current.is_empty() {
         out.push(current);
     }
+}
+
+fn measure_text_with_letter_spacing(
+    backend: &mut dyn crate::RenderBackend,
+    text: &str,
+    font_size: f32,
+    weight: u16,
+    letter_spacing: f32,
+) -> f32 {
+    let base = backend.measure_text_weighted(text, font_size, weight);
+    let gaps = text.chars().count().saturating_sub(1) as f32;
+    (base + gaps * letter_spacing).max(0.0)
 }
 
 fn build_probe(probe: &mut String, current: &str, suffix: &str) {
@@ -555,7 +597,7 @@ mod wrap_tests {
         // Greedy walk: "hello " (60) fits, "hello world" (110)
         // exceeds — flush "hello ", start with "world". Then
         // "world " (60), "world foo" (90) fits.
-        let lines = wrap_text(&mut b, "hello world foo", 13.0, 100.0, 400);
+        let lines = wrap_text(&mut b, "hello world foo", 13.0, 100.0, 400, 0.0);
         assert_eq!(lines, vec!["hello ", "world foo"]);
     }
 
@@ -565,7 +607,7 @@ mod wrap_tests {
         // 8 CJK chars × 10 px = 80. Budget 50 forces a break every
         // 5 chars. Pure split_whitespace would treat the whole
         // string as one word and return a single 80-px line.
-        let lines = wrap_text(&mut b, "中文测试段落很长哦", 13.0, 50.0, 400);
+        let lines = wrap_text(&mut b, "中文测试段落很长哦", 13.0, 50.0, 400, 0.0);
         assert!(lines.len() >= 2, "got {:?}", lines);
         for line in &lines {
             assert!(line.chars().count() <= 5, "line too long: {:?}", line);
@@ -578,7 +620,7 @@ mod wrap_tests {
         // "ab\ncd\nef" — each segment fits the 100 px budget, but
         // we still split on `\n`. Pure wrap (no newline handling)
         // would join everything as "abcdef" and return one line.
-        let lines = wrap_text(&mut b, "ab\ncd\nef", 13.0, 100.0, 400);
+        let lines = wrap_text(&mut b, "ab\ncd\nef", 13.0, 100.0, 400, 0.0);
         assert_eq!(lines, vec!["ab", "cd", "ef"]);
     }
 
@@ -588,7 +630,7 @@ mod wrap_tests {
         // "para1\n\npara2" — the empty segment between the two
         // paragraphs must paint as a blank line so authored gaps
         // survive.
-        let lines = wrap_text(&mut b, "para1\n\npara2", 13.0, 200.0, 400);
+        let lines = wrap_text(&mut b, "para1\n\npara2", 13.0, 200.0, 400, 0.0);
         assert_eq!(lines, vec!["para1", "", "para2"]);
     }
 
@@ -598,14 +640,14 @@ mod wrap_tests {
         // "hello world\nfoo bar baz" with budget 100. First segment
         // "hello world" = 110 → wraps to ["hello ", "world"].
         // Second segment "foo bar baz" = 110 → ["foo bar ", "baz"].
-        let lines = wrap_text(&mut b, "hello world\nfoo bar baz", 13.0, 100.0, 400);
+        let lines = wrap_text(&mut b, "hello world\nfoo bar baz", 13.0, 100.0, 400, 0.0);
         assert_eq!(lines, vec!["hello ", "world", "foo bar ", "baz"]);
     }
 
     #[test]
     fn cjk_latin_mix_breaks_within_cjk_run() {
         let mut b = UniformBackend;
-        let lines = wrap_text(&mut b, "hello 中文段落", 13.0, 60.0, 400);
+        let lines = wrap_text(&mut b, "hello 中文段落", 13.0, 60.0, 400, 0.0);
         assert!(lines.len() >= 2, "got {:?}", lines);
         assert!(lines[0].starts_with("hello"));
     }
@@ -656,10 +698,18 @@ mod wrap_tests {
         // At weight 400 (110 px) it'd fit on one line — codex's
         // BLOCK: wrap was measuring at 400 while paint used 700.
         let mut b = WeightedBackend;
-        let bold = wrap_text(&mut b, "hello world", 13.0, 120.0, 700);
-        let regular = wrap_text(&mut b, "hello world", 13.0, 120.0, 400);
+        let bold = wrap_text(&mut b, "hello world", 13.0, 120.0, 700, 0.0);
+        let regular = wrap_text(&mut b, "hello world", 13.0, 120.0, 400, 0.0);
         assert_eq!(regular, vec!["hello world"], "weight 400 fits");
         assert!(bold.len() >= 2, "weight 700 must wrap: {:?}", bold);
+    }
+
+    #[test]
+    fn wrap_includes_negative_letter_spacing() {
+        let mut b = UniformBackend;
+        // Base width is 110 px; ten -1 px gaps bring it to exactly 100 px.
+        let lines = wrap_text(&mut b, "hello world", 13.0, 100.0, 400, -1.0);
+        assert_eq!(lines, vec!["hello world"]);
     }
 
     #[test]

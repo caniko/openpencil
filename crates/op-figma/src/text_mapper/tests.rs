@@ -17,6 +17,18 @@ fn plain_text_when_no_style_runs() {
 }
 
 #[test]
+fn figma_family_with_css_separators_is_quoted_for_the_canonical_stack() {
+    assert_eq!(canonical_font_family_value("Inter"), "Inter");
+    for family in ["ACME, Display", "ACME \\\" Display"] {
+        let value = canonical_font_family_value(family);
+        assert_eq!(
+            op_editor_core::font_catalog::split_font_family_stack(&value),
+            vec![family]
+        );
+    }
+}
+
+#[test]
 fn font_weight_parsed_from_style_name() {
     assert_eq!(parse_font_weight("semibold italic"), Some(600));
     // "extra light" contains "light" → 300 (no "extralight" token).

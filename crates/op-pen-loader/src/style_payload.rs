@@ -30,6 +30,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         w: 0.0,
         h: 0.0,
         fill: None,
+        fill_layers: Vec::new(),
         stroke: None,
         text: None,
         font_family: String::new(),
@@ -71,6 +72,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         background_blur: None,
         image_src: None,
         image_fit: None,
+        image_blend_mode: None,
         image_transform: None,
         image_adjustments: None,
         widget: None,
@@ -107,6 +109,10 @@ pub(crate) fn apply_container_style(
 }
 
 pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) {
+    // Preserve the complete canonical stack for renderers that understand
+    // layered fills. Keep populating the historical primary-fill projection
+    // below so serialized payloads remain consumable by older clients.
+    p.fill_layers = fills.unwrap_or_default().to_vec();
     p.fill = first_solid_color(fills);
     p.fill_type = first_fill_type(fills);
     p.gradient = first_gradient(fills);
@@ -139,7 +145,7 @@ fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
     }
 }
 
-fn image_fill_mode_to_payload(mode: Option<&ImageFillMode>) -> String {
+pub(crate) fn image_fill_mode_to_payload(mode: Option<&ImageFillMode>) -> String {
     match mode {
         Some(ImageFillMode::Fit) => "fit",
         Some(ImageFillMode::Crop) => "crop",
@@ -160,7 +166,7 @@ pub(crate) fn image_node_fit_to_payload(mode: &ImageFitMode) -> String {
     .into()
 }
 
-fn image_fill_adjustments(
+pub(crate) fn image_fill_adjustments(
     body: &jian_ops_schema::style::ImageFillBody,
 ) -> Option<ImageAdjustmentPayload> {
     adjustments_payload(
@@ -216,9 +222,12 @@ fn adjustments_payload(
 }
 
 fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
-    let fills = fills?;
-    let first = fills.first()?;
-    match first {
+    gradient_payload(fills?.first()?)
+}
+
+/// Resolve one canonical gradient layer without projecting away siblings.
+pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
+    match fill {
         PenFill::LinearGradient(body) => {
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Linear {
@@ -256,7 +265,12 @@ fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
 /// mid-gray, so a host that can't compile the program still paints a
 /// visible block. SkSL source stays untrusted — not validated here.
 fn first_shader(fills: Option<&[PenFill]>) -> Option<ShaderPayload> {
-    let PenFill::Shader(body) = fills?.first()? else {
+    shader_payload(fills?.first()?)
+}
+
+/// Resolve one canonical shader layer without projecting away siblings.
+pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
+    let PenFill::Shader(body) = fill else {
         return None;
     };
     if body.sksl.trim().is_empty() {
@@ -346,54 +360,56 @@ fn gradient_stops(
 }
 
 fn first_solid_color(fills: Option<&[PenFill]>) -> Option<[f32; 4]> {
-    let fills = fills?;
-    for fill in fills {
-        match fill {
-            PenFill::Solid(body) => {
-                if let Some(rgba) = parse_hex(&body.color) {
+    fills?.iter().find_map(fill_fallback_color)
+}
+
+/// Paintable solid fallback for one canonical fill layer.
+pub(crate) fn fill_fallback_color(fill: &PenFill) -> Option<[f32; 4]> {
+    match fill {
+        PenFill::Solid(body) => {
+            if let Some(rgba) = parse_hex(&body.color) {
+                return Some(apply_alpha(rgba, body.opacity));
+            }
+        }
+        PenFill::LinearGradient(body) => {
+            if let Some(stop) = body.stops.first() {
+                if let Some(rgba) = parse_hex(&stop.color) {
                     return Some(apply_alpha(rgba, body.opacity));
                 }
             }
-            PenFill::LinearGradient(body) => {
-                if let Some(stop) = body.stops.first() {
-                    if let Some(rgba) = parse_hex(&stop.color) {
-                        return Some(apply_alpha(rgba, body.opacity));
-                    }
+        }
+        PenFill::RadialGradient(body) => {
+            if let Some(stop) = body.stops.first() {
+                if let Some(rgba) = parse_hex(&stop.color) {
+                    return Some(apply_alpha(rgba, body.opacity));
                 }
             }
-            PenFill::RadialGradient(body) => {
-                if let Some(stop) = body.stops.first() {
-                    if let Some(rgba) = parse_hex(&stop.color) {
-                        return Some(apply_alpha(rgba, body.opacity));
-                    }
+        }
+        PenFill::MeshGradient(body) => {
+            // First-vertex colour is the documented solid fallback
+            // baked into `node.fill` (backends without per-vertex
+            // support paint this flat).
+            if let Some(stop) = body.stops.first() {
+                if let Some(rgba) = parse_hex(&stop.color) {
+                    return Some(apply_alpha(rgba, body.opacity));
                 }
             }
-            PenFill::MeshGradient(body) => {
-                // First-vertex colour is the documented solid fallback
-                // baked into `node.fill` (backends without per-vertex
-                // support paint this flat).
-                if let Some(stop) = body.stops.first() {
-                    if let Some(rgba) = parse_hex(&stop.color) {
-                        return Some(apply_alpha(rgba, body.opacity));
-                    }
-                }
-            }
-            PenFill::Shader(body) => {
-                // Fallback solid baked into `node.fill`: the first colour
-                // uniform if any, else mid-gray. Backends that can't
-                // compile the program paint this flat.
-                let from_uniform = body.uniforms.as_ref().and_then(|m| {
-                    m.values().find_map(|v| match v {
-                        ShaderUniformValue::Color(hex) => parse_hex(hex),
-                        _ => None,
-                    })
-                });
-                let rgba = from_uniform.unwrap_or([0.5, 0.5, 0.5, 1.0]);
-                return Some(apply_alpha(rgba, body.opacity));
-            }
-            PenFill::Image(_) => {
-                return Some([0.85, 0.86, 0.88, 1.0]);
-            }
+        }
+        PenFill::Shader(body) => {
+            // Fallback solid baked into `node.fill`: the first colour
+            // uniform if any, else mid-gray. Backends that can't
+            // compile the program paint this flat.
+            let from_uniform = body.uniforms.as_ref().and_then(|m| {
+                m.values().find_map(|v| match v {
+                    ShaderUniformValue::Color(hex) => parse_hex(hex),
+                    _ => None,
+                })
+            });
+            let rgba = from_uniform.unwrap_or([0.5, 0.5, 0.5, 1.0]);
+            return Some(apply_alpha(rgba, body.opacity));
+        }
+        PenFill::Image(_) => {
+            return Some([0.85, 0.86, 0.88, 1.0]);
         }
     }
     None
@@ -444,7 +460,7 @@ pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> 
     })
 }
 
-fn apply_alpha(rgba: [f32; 4], opacity: Option<f32>) -> [f32; 4] {
+pub(crate) fn apply_alpha(rgba: [f32; 4], opacity: Option<f32>) -> [f32; 4] {
     let a = opacity.unwrap_or(1.0).clamp(0.0, 1.0);
     [rgba[0], rgba[1], rgba[2], rgba[3] * a]
 }

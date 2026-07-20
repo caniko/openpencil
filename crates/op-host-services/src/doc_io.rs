@@ -262,6 +262,11 @@ pub fn preserve_app_preferences(previous: &EditorState, next: &mut EditorState) 
     next.editor_ui.theme_mode = previous.editor_ui.theme_mode;
     next.editor_ui.locale = previous.editor_ui.locale;
     next.editor_ui.recent_files = previous.editor_ui.recent_files.clone();
+    next.editor_ui.font_import_supported = previous.editor_ui.font_import_supported;
+    next.editor_ui.system_fonts_loaded = previous.editor_ui.system_fonts_loaded;
+    next.editor_ui.system_font_families = previous.editor_ui.system_font_families.clone();
+    next.editor_ui.bundled_font_families = previous.editor_ui.bundled_font_families.clone();
+    next.editor_ui.imported_font_families = previous.editor_ui.imported_font_families.clone();
     // Imported UIKits are app-level (persisted in `uikits.json`), not
     // document state — `from_document` reset them to the built-ins.
     next.ui_kits = previous.ui_kits.clone();
@@ -352,6 +357,10 @@ pub enum ActionOutcome {
     /// drains the worker's result + rebinds the Git session itself
     /// (the previously-open repo binding goes stale on import).
     FigmaImportStarted(PathBuf),
+    /// User picked a saved web page and the desktop runner should spawn
+    /// the background HTML import worker (`html_import_session::spawn`),
+    /// which applies the parsed document when it lands.
+    HtmlImportStarted(PathBuf),
     /// Nothing to reconcile — export, recent-list edits, or a user
     /// cancel / error.
     Noop,
@@ -389,6 +398,25 @@ mod tests {
         assert!(is_supported_html_import(Path::new("A.HTM")));
         assert!(!is_supported_html_import(Path::new("a.svg")));
         assert!(!is_supported_html_import(Path::new("html")));
+    }
+
+    #[test]
+    fn app_preferences_preserve_runtime_font_availability() {
+        let mut previous = EditorState::new();
+        previous.editor_ui.font_import_supported = true;
+        previous.editor_ui.system_fonts_loaded = true;
+        previous.editor_ui.system_font_families = std::sync::Arc::new(vec!["PingFang SC".into()]);
+        previous.editor_ui.bundled_font_families = std::sync::Arc::new(vec!["Inter".into()]);
+        previous.editor_ui.imported_font_families = std::sync::Arc::new(vec!["Brand Sans".into()]);
+        let mut next = EditorState::new();
+
+        preserve_app_preferences(&previous, &mut next);
+
+        assert!(next.editor_ui.font_import_supported);
+        assert!(next.editor_ui.system_fonts_loaded);
+        assert_eq!(&*next.editor_ui.system_font_families, &["PingFang SC"]);
+        assert_eq!(&*next.editor_ui.bundled_font_families, &["Inter"]);
+        assert_eq!(&*next.editor_ui.imported_font_families, &["Brand Sans"]);
     }
 
     use super::*;

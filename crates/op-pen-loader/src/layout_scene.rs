@@ -23,12 +23,12 @@
 
 use jian_scene::layout_scene::NodeKind;
 use jian_scene::layout_scene::{
-    stable_image_source_id, DropShadow, Effect, LayoutScene, SceneFillType, SceneGradient,
-    SceneGradientStop, SceneImageFit, SceneNode, ScenePage, SceneShader, SceneShaderUniform,
-    SceneStroke, SceneStrokeAlign, SceneTextAlign, SceneTextRun, SceneTextVerticalAlign,
-    SceneWidget, SceneWidgetOption,
+    stable_image_source_id, DropShadow, Effect, LayoutScene, SceneFillLayer, SceneFillType,
+    SceneGradient, SceneGradientStop, SceneImageFit, SceneNode, ScenePage, SceneShader,
+    SceneShaderUniform, SceneStroke, SceneStrokeAlign, SceneTextAlign, SceneTextRun,
+    SceneTextVerticalAlign, SceneWidget, SceneWidgetOption,
 };
-use op_editor_core::render_backend::Color;
+use op_editor_core::render_backend::{Color, ImageBlendMode};
 use op_editor_core::scene_vars::VariableTable;
 
 use crate::editor_state_var_table;
@@ -236,6 +236,7 @@ fn node_payload_to_scene(
         .map(|c| node_payload_to_scene(c, var_table, cum_opacity))
         .collect();
     let aggregate_bounds_cache = SceneNode::compute_aggregate_bounds(bounds, &children);
+    let variable_fill = var_table.fill_for(&node_id);
     SceneNode {
         id: node.id.clone(),
         kind: str_to_kind(&node.kind),
@@ -254,10 +255,10 @@ fn node_payload_to_scene(
         // Paint-time `$ref` resolution: a registered fill ref wins,
         // else the node's own fill. Same precedence as the canvas
         // painter's `node_fill` helper.
-        fill: var_table
-            .fill_for(&node_id)
+        fill: variable_fill
             .or_else(|| node.fill.map(array_to_color))
             .map(|c| mul_alpha(c, cum_opacity)),
+        fill_layers: fill_layers_to_scene(&node.fill_layers, variable_fill),
         fill_type: str_to_scene_fill_type(&node.fill_type),
         gradient: node
             .gradient
@@ -314,6 +315,7 @@ fn node_payload_to_scene(
             .map(stable_image_source_id)
             .unwrap_or(0),
         image_fit: image_fit_to_scene(node.image_fit.as_deref()),
+        image_blend_mode: image_blend_mode_to_scene(node.image_blend_mode.as_ref()),
         image_transform: node.image_transform,
         image_adjustments: image_adjustments_to_scene(node.image_adjustments),
         effects: crate::effects::effects_from_payload_ref(&node.effects)
@@ -484,6 +486,126 @@ fn image_fit_to_scene(value: Option<&str>) -> SceneImageFit {
         Some("tile") => SceneImageFit::Tile,
         Some("stretch") => SceneImageFit::Stretch,
         _ => SceneImageFit::Fill,
+    }
+}
+
+/// Resolve every canonical fill without collapsing the stack. Canonical arrays
+/// are front-to-back; the scene preserves that order and painters reverse it.
+/// Layer alpha stays authored; `SceneNode::opacity` owns cumulative opacity.
+fn fill_layers_to_scene(
+    fills: &[jian_ops_schema::style::PenFill],
+    variable_fill: Option<Color>,
+) -> Vec<SceneFillLayer> {
+    use jian_ops_schema::style::PenFill;
+
+    if fills.is_empty() {
+        return variable_fill
+            .map(|color| SceneFillLayer::Solid {
+                color,
+                blend_mode: ImageBlendMode::Normal,
+            })
+            .into_iter()
+            .collect();
+    }
+
+    fills
+        .iter()
+        .enumerate()
+        .filter_map(|(index, fill)| {
+            let blend_mode = fill_blend_mode_to_scene(fill);
+            // Override only the primary paint; retain its compositing metadata
+            // and every layer behind it.
+            if index == 0 {
+                if let Some(color) = variable_fill {
+                    return Some(SceneFillLayer::Solid {
+                        color: mul_alpha(color, fill_opacity(fill)),
+                        blend_mode,
+                    });
+                }
+            }
+            let fallback = || {
+                crate::style_payload::fill_fallback_color(fill)
+                    .map(array_to_color)
+                    .map(|color| SceneFillLayer::Solid { color, blend_mode })
+            };
+            match fill {
+                PenFill::Solid(_) => fallback(),
+                PenFill::LinearGradient(_)
+                | PenFill::RadialGradient(_)
+                | PenFill::MeshGradient(_) => crate::style_payload::gradient_payload(fill)
+                    .map(|gradient| payload_gradient_to_scene(&gradient))
+                    .map(|gradient| SceneFillLayer::Gradient {
+                        gradient,
+                        blend_mode,
+                    })
+                    .or_else(fallback),
+                PenFill::Shader(_) => crate::style_payload::shader_payload(fill)
+                    .map(|shader| payload_shader_to_scene(&shader, 1.0))
+                    .map(|shader| SceneFillLayer::Shader { shader, blend_mode })
+                    .or_else(fallback),
+                PenFill::Image(body) if !body.url.trim().is_empty() => {
+                    let fit = crate::style_payload::image_fill_mode_to_payload(body.mode.as_ref());
+                    Some(SceneFillLayer::Image {
+                        src: body.url.as_arc(),
+                        src_id: stable_image_source_id(body.url.as_ref()),
+                        fit: image_fit_to_scene(Some(&fit)),
+                        transform: body
+                            .transform
+                            .as_ref()
+                            .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]),
+                        adjustments: image_adjustments_to_scene(
+                            crate::style_payload::image_fill_adjustments(body),
+                        ),
+                        opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                        blend_mode,
+                    })
+                }
+                PenFill::Image(_) => None,
+            }
+        })
+        .collect()
+}
+
+fn fill_opacity(fill: &jian_ops_schema::style::PenFill) -> f32 {
+    use jian_ops_schema::style::PenFill;
+    let opacity = match fill {
+        PenFill::Solid(body) => body.opacity,
+        PenFill::LinearGradient(body) => body.opacity,
+        PenFill::RadialGradient(body) => body.opacity,
+        PenFill::MeshGradient(body) => body.opacity,
+        PenFill::Shader(body) => body.opacity,
+        PenFill::Image(body) => body.opacity,
+    };
+    opacity.unwrap_or(1.0).clamp(0.0, 1.0)
+}
+
+fn fill_blend_mode_to_scene(fill: &jian_ops_schema::style::PenFill) -> ImageBlendMode {
+    use jian_ops_schema::style::PenFill;
+    let blend = match fill {
+        PenFill::Solid(body) => body.blend_mode.as_ref(),
+        PenFill::LinearGradient(body) => body.blend_mode.as_ref(),
+        PenFill::RadialGradient(body) => body.blend_mode.as_ref(),
+        PenFill::MeshGradient(body) => body.blend_mode.as_ref(),
+        PenFill::Shader(body) => body.blend_mode.as_ref(),
+        PenFill::Image(body) => body.blend_mode.as_ref(),
+    };
+    image_blend_mode_to_scene(blend)
+}
+
+fn image_blend_mode_to_scene(value: Option<&jian_ops_schema::style::BlendMode>) -> ImageBlendMode {
+    use jian_ops_schema::style::BlendMode;
+    match value {
+        Some(BlendMode::Darken) => ImageBlendMode::Darken,
+        Some(BlendMode::Multiply) => ImageBlendMode::Multiply,
+        Some(BlendMode::Screen) => ImageBlendMode::Screen,
+        Some(BlendMode::Overlay) => ImageBlendMode::Overlay,
+        Some(BlendMode::Lighten) => ImageBlendMode::Lighten,
+        Some(BlendMode::Difference) => ImageBlendMode::Difference,
+        Some(BlendMode::Hue) => ImageBlendMode::Hue,
+        Some(BlendMode::Saturation) => ImageBlendMode::Saturation,
+        Some(BlendMode::Color) => ImageBlendMode::Color,
+        Some(BlendMode::Luminosity) => ImageBlendMode::Luminosity,
+        Some(BlendMode::Normal) | None => ImageBlendMode::Normal,
     }
 }
 

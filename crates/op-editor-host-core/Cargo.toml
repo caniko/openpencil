@@ -14,6 +14,7 @@ op-codegen = { path = "../op-codegen", features = ["ai"], optional = true }
 op-editor-core = { path = "../op-editor-core" }
 op-orchestrator = { path = "../op-orchestrator", optional = true }
 serde_json = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [features]
 default = ["chat", "codegen", "design"]
@@ -24,5 +25,6 @@ codegen = [
   "dep:op-ai-skills",
   "dep:op-codegen",
   "dep:serde_json",
+  "dep:tracing",
 ]
 design = ["dep:op-orchestrator"]

@@ -419,7 +419,8 @@ fn canvaskit_svg_path_nodes_fit_to_destination_rect() {
     .expect("CanvasKit bridge source is readable");
     for marker in [
         "const fitPathToRect = (path, x, y, w, h)",
-        "const bounds = path.getBounds();",
+        "path.computeTightBounds()",
+        "path.getBounds()",
         "const sx = Math.abs(nativeW) > 0.01 ? w / nativeW : 1;",
         "const sy = Math.abs(nativeH) > 0.01 ? h / nativeH : 1;",
         "fillSvgPathInRect(d, x, y, w, h, evenOdd, r, g, b, a)",
@@ -427,7 +428,7 @@ fn canvaskit_svg_path_nodes_fit_to_destination_rect() {
     ] {
         assert!(
             bridge.contains(marker),
-            "CanvasKit bridge must preserve `{marker}` so arbitrary .op path nodes fit their own bounds"
+            "CanvasKit bridge must preserve `{marker}` so arbitrary .op path nodes fit tight bounds with a compatibility fallback"
         );
     }
 

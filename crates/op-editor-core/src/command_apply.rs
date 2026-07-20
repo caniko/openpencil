@@ -898,6 +898,9 @@ impl EditorState {
                 property,
                 value,
             } => self.cmd_set_node_layout_prop(&node_id, &property, &value),
+            EditorCommand::ReplaceFontFamily { from, to } => {
+                self.replace_font_family_everywhere(&from, &to) > 0
+            }
             EditorCommand::ReplaceAllMatchingProperties {
                 page_id,
                 parent_ids,

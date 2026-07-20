@@ -78,6 +78,25 @@ pub use crate::property_panel_state::{
     PaddingEditMode, PropertyTab,
 };
 
+/// Surface that opened the shared searchable font picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingFontSurface {
+    Prompt,
+    Settings,
+}
+
+/// The shared font picker serves both the selected text node and missing-font
+/// replacement rows. Keeping the purpose explicit prevents a modal picker
+/// click from accidentally writing the current canvas selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontPickerPurpose {
+    PropertyText,
+    MissingFont {
+        row: usize,
+        surface: MissingFontSurface,
+    },
+}
+
 /// File-menu actions the host runner has to handle (rfd dialogs +
 /// serde live host-side, not here). `ExportImage` opens the picker;
 /// `ExportImageConfirm` commits.
@@ -90,6 +109,10 @@ pub enum FileAction {
     ExportImage,
     ExportImageConfirm,
     ImportFigma,
+    /// User chose `从 HTML 导入` in the top-bar import menu — host
+    /// opens a file dialog for a saved page / snapshot and hands the
+    /// path to the background HTML import worker.
+    ImportHtml,
     /// User chose `Import image or SVG…` in the toolbar shape picker
     /// — host opens a file dialog, then inserts the raster image as a
     /// new Image node (or parses the SVG into nodes; SVG path lands
@@ -989,8 +1012,14 @@ pub struct EditorUiState {
     /// Horizontal scroll offset (px, ≥ 0) of the LayerPanel's 图层
     /// tree content. Needed for deeply nested layer trees.
     pub layer_layers_h_scroll: jian_core::scroll::ScrollState,
-    /// "Import from Figma" modal.
+    /// Top-bar import dropdown (`从 Figma 导入` / `从 HTML 导入`).
+    pub import_menu_open: bool,
+    /// Shared `Select` scroll / hover state for that dropdown.
+    pub import_menu: jian_widgets::components::select::SelectState,
+    /// Import modal (shared by the Figma and HTML sources).
     pub figma_import_open: bool,
+    /// Which source that modal is importing.
+    pub import_source: crate::figma_import_state::ImportSource,
     /// Which Figma-import target the cursor is over (close / drop-zone)
     /// — drives the `theme.button_hover` wash. Host updates on cursor-move.
     pub figma_import_hover: Option<crate::figma_import_state::FigmaImportButton>,
@@ -1230,6 +1259,7 @@ pub struct EditorUiState {
     pub image_fill_popover_open: bool,
     /// Text font-family picker select state.
     pub font_picker: jian_widgets::components::select::SelectState,
+    pub font_picker_purpose: Option<FontPickerPurpose>,
     /// Whether the cursor is over the picker's bottom "Import font…"
     /// (`ImportAction`) row — drives its hover wash, like `font_picker.hover`
     /// does for entry rows. The host tracks it on cursor-move when the picker
@@ -1242,6 +1272,9 @@ pub struct EditorUiState {
     /// the bundled set). Empty until a host enumerates; the picker
     /// then falls back to the TS `FALLBACK_SYSTEM_FONTS` list.
     pub system_font_families: std::sync::Arc<Vec<String>>,
+    /// App-shipped font families that the active renderer actually
+    /// registered. Hosts without bundled font blobs leave this empty.
+    pub bundled_font_families: std::sync::Arc<Vec<String>>,
     /// User-imported font families (from the host `FontStore` /
     /// `jian-skia` registry). Threaded in by the host exactly like
     /// `system_font_families`; the picker paints these first, above
@@ -1249,10 +1282,9 @@ pub struct EditorUiState {
     /// the imported-font generation changes (import / remove), so no
     /// separate "loaded" flag is needed.
     pub imported_font_families: std::sync::Arc<Vec<String>>,
-    /// Whether this host can import / remove user fonts. Only the
-    /// desktop host drains the import/remove requests, so it sets this
-    /// `true`; web leaves it `false` and the picker omits the Import
-    /// row + imported group entirely (no dead controls).
+    /// Whether this host can import / remove user fonts. Desktop and the
+    /// CanvasKit web host drain these requests; unsupported hosts leave it
+    /// `false` so the picker omits dead import/remove controls.
     pub font_import_supported: bool,
     /// Whether a host already ran font enumeration (so an empty list
     /// is "machine has none" rather than "not loaded yet").
@@ -1263,6 +1295,9 @@ pub struct EditorUiState {
     /// Whether the one-shot modal is visible. Dismissal keeps prompt data so
     /// the Settings Fonts tab can continue to expose unresolved rows.
     pub missing_fonts_modal_open: bool,
+    /// Vertical scroll offset of the one-shot missing-font rows. The header
+    /// and dismiss action stay fixed while long family lists scroll.
+    pub missing_fonts_scroll: jian_core::scroll::ScrollState,
     /// Detection was requested before system-font enumeration completed.
     pub missing_fonts_pending_detect: bool,
     /// Row whose choose-file action is waiting for a platform import drain.
@@ -1511,7 +1546,10 @@ impl Default for EditorUiState {
             layer_layers_scroll: Default::default(),
             layer_pages_h_scroll: Default::default(),
             layer_layers_h_scroll: Default::default(),
+            import_menu_open: false,
+            import_menu: jian_widgets::components::select::SelectState::default(),
             figma_import_open: false,
+            import_source: crate::figma_import_state::ImportSource::default(),
             figma_import_hover: None,
             figma_import_in_progress: false,
             file_drop_active: false,
@@ -1588,14 +1626,17 @@ impl Default for EditorUiState {
             property_color_variable_picker_open: None,
             image_fill_popover_open: false,
             font_picker: jian_widgets::components::select::SelectState::default(),
+            font_picker_purpose: None,
             font_picker_import_hover: false,
             font_picker_search: String::new(),
             system_font_families: std::sync::Arc::new(Vec::new()),
+            bundled_font_families: std::sync::Arc::new(Vec::new()),
             imported_font_families: std::sync::Arc::new(Vec::new()),
             font_import_supported: false,
             system_fonts_loaded: false,
             missing_fonts_prompt: None,
             missing_fonts_modal_open: false,
+            missing_fonts_scroll: jian_core::scroll::ScrollState::default(),
             missing_fonts_pending_detect: false,
             missing_fonts_import_row: None,
             missing_fonts_hover: None,
@@ -1824,20 +1865,30 @@ impl EditorUiState {
     }
 
     pub fn toggle_font_picker(&mut self) {
-        let opening = !self.font_picker.open;
+        let opening = !self.font_picker.open
+            || self.font_picker_purpose != Some(FontPickerPurpose::PropertyText);
         self.close_font_picker();
         if opening {
             self.font_picker.open = true;
+            self.font_picker_purpose = Some(FontPickerPurpose::PropertyText);
         }
+    }
+
+    pub fn open_missing_font_picker(&mut self, row: usize, surface: MissingFontSurface) {
+        self.close_font_picker();
+        self.font_picker.open = true;
+        self.font_picker_purpose = Some(FontPickerPurpose::MissingFont { row, surface });
     }
 
     pub fn close_font_picker(&mut self) -> bool {
         let changed = self.font_picker.open
+            || self.font_picker_purpose.is_some()
             || self.font_picker.hover.is_some()
             || self.font_picker.pressed.is_some()
             || self.font_picker.scroll.offset != 0.0
             || !self.font_picker_search.is_empty();
         self.font_picker.open = false;
+        self.font_picker_purpose = None;
         self.font_picker.hover = None;
         self.font_picker.pressed = None;
         self.font_picker.scroll.offset = 0.0;

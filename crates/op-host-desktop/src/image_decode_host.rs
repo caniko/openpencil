@@ -9,7 +9,7 @@ use op_editor_ui::widgets::canvas_viewport_image::{
     cached_bytes_for, mark_decode_done, mark_decode_failed, pending_decode_count,
     take_pending_decodes,
 };
-use op_host_native::{decode_raster, NativeBackend};
+use op_host_native::{decode_raster_capped, NativeBackend};
 use skia_safe::{ConditionallySend, Sendable};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -22,11 +22,15 @@ const MAX_QUEUED_DECODES: usize = 4;
 struct DecodeJob {
     id: u64,
     bytes: Arc<[u8]>,
+    /// Longest raster edge paint asked for (device px).
+    max_edge_px: u32,
 }
 
 struct DecodeResult {
     id: u64,
     image: Option<Sendable<skia_safe::Image>>,
+    /// Edge the produced raster serves sharply.
+    covers_edge_px: u32,
 }
 
 pub struct ImageDecodeHost {
@@ -93,7 +97,8 @@ impl ImageDecodeHost {
     pub fn pump(&mut self, backend: &mut NativeBackend) -> bool {
         let mut changed = self.poll_results(backend);
         let free = MAX_QUEUED_DECODES.saturating_sub(self.in_flight);
-        for id in take_pending_decodes(free) {
+        for pending in take_pending_decodes(free) {
+            let id = pending.id;
             let Some(bytes) = cached_bytes_for(id) else {
                 mark_decode_done(id);
                 continue;
@@ -102,7 +107,11 @@ impl ImageDecodeHost {
                 mark_decode_done(id);
                 continue;
             };
-            match tx.send(DecodeJob { id, bytes }) {
+            match tx.send(DecodeJob {
+                id,
+                bytes,
+                max_edge_px: pending.max_edge_px,
+            }) {
                 Ok(()) => {
                     self.in_flight += 1;
                     changed = true;
@@ -121,7 +130,7 @@ impl ImageDecodeHost {
         while let Ok(result) = self.result_rx.try_recv() {
             self.in_flight = self.in_flight.saturating_sub(1);
             if let Some(image) = result.image {
-                backend.install_raster_image(result.id, image.into_inner());
+                backend.install_raster_image(result.id, image.into_inner(), result.covers_edge_px);
                 if let Some(stats) = self.stats.as_mut() {
                     stats.record_install(result.id);
                 }
@@ -157,7 +166,9 @@ fn decode_worker(
             },
             Err(_) => break,
         };
-        let decoded = decode_raster(&job.bytes);
+        let decoded = decode_raster_capped(&job.bytes, job.max_edge_px);
+        let covers_edge_px = decoded.as_ref().map(|(_, covers)| *covers).unwrap_or(0);
+        let decoded = decoded.map(|(image, _)| image);
         let thumbnail = decoded.as_ref().and_then(|image| {
             if jian_ops_schema::image_thumbs::thumb_for(job.id).is_none() {
                 crate::image_downscale::make_blur_thumbnail_from_image(image)
@@ -171,7 +182,14 @@ fn decode_worker(
                 jian_ops_schema::image_thumbs::store_thumb(job.id, thumbnail);
             }
         }
-        if results.send(DecodeResult { id: job.id, image }).is_err() {
+        if results
+            .send(DecodeResult {
+                id: job.id,
+                image,
+                covers_edge_px,
+            })
+            .is_err()
+        {
             break;
         }
         if let Some(proxy) = wake_proxy.lock().ok().and_then(|wake| wake.clone()) {
@@ -222,20 +240,20 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let id = 0xDEC0_DE01;
         for stale in take_pending_decodes(usize::MAX) {
-            mark_decode_done(stale);
+            mark_decode_done(stale.id);
         }
         let png = encode_test_png();
         store_remote_image_bytes(id, png);
         assert!(cached_bytes_for(id).is_some());
-        note_pending_decode(id);
+        note_pending_decode(id, 256);
 
         let mut host = ImageDecodeHost::new();
         let mut backend = NativeBackend::with_dpi(1.0);
-        assert!(!backend.image_decoded(id, &[]));
+        assert!(!backend.image_decoded(id, &[], 64));
         assert!(host.pump(&mut backend), "first pump submits queued decode");
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !backend.image_decoded(id, &[]) {
+        while !backend.image_decoded(id, &[], 64) {
             host.pump(&mut backend);
             assert!(Instant::now() < deadline, "decode worker never landed");
             std::thread::yield_now();
@@ -251,10 +269,10 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let id = 0xDEC0_7A11;
         for stale in take_pending_decodes(usize::MAX) {
-            mark_decode_done(stale);
+            mark_decode_done(stale.id);
         }
         store_remote_image_bytes(id, encode_test_png());
-        note_pending_decode(id);
+        note_pending_decode(id, 256);
 
         let mut host = ImageDecodeHost::new();
         let mut backend = NativeBackend::with_dpi(1.0);
@@ -284,10 +302,10 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let id = 0xDEC0_BAD1;
         for stale in take_pending_decodes(usize::MAX) {
-            mark_decode_done(stale);
+            mark_decode_done(stale.id);
         }
         store_remote_image_bytes(id, b"not an encoded image".to_vec());
-        note_pending_decode(id);
+        note_pending_decode(id, 256);
 
         let mut host = ImageDecodeHost::new();
         let mut backend = NativeBackend::with_dpi(1.0);
@@ -300,8 +318,8 @@ mod tests {
             std::thread::yield_now();
         }
 
-        assert!(!backend.image_decoded(id, &[]));
-        note_pending_decode(id);
+        assert!(!backend.image_decoded(id, &[], 64));
+        note_pending_decode(id, 256);
         assert!(
             take_pending_decodes(1).is_empty(),
             "a failed payload must remain negatively cached"

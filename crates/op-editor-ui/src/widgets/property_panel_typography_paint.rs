@@ -4,7 +4,8 @@
 //! `property_panel_typography::paint_font_picker`.
 
 use super::{
-    display_font_family, font_picker_layout, FontPickerEntry, FontPickerRow, PAD_X, REMOVE_X_SIZE,
+    display_font_family, font_picker_layout, font_picker_layout_at, FontPickerEntry,
+    FontPickerLayout, FontPickerRow, PAD_X, REMOVE_X_SIZE,
 };
 use crate::theme::Theme;
 use crate::widgets::button::paint_button_feedback_wash;
@@ -42,6 +43,78 @@ pub fn paint_font_picker(
     ) else {
         return;
     };
+    paint_font_picker_layout(
+        cx,
+        theme,
+        locale,
+        entries,
+        search,
+        state,
+        import_hover,
+        active_family,
+        now_ms,
+        &layout,
+    );
+}
+
+/// Paint the same picker against an arbitrary row trigger. Missing-font
+/// surfaces use this without depending on PropertyPanel layout internals.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_font_picker_at(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    trigger: Rect,
+    popup_width: f32,
+    bounds: Rect,
+    locale: op_editor_core::Locale,
+    entries: &[FontPickerEntry],
+    allow_import: bool,
+    allow_remove: bool,
+    search: &str,
+    state: &SelectState,
+    import_hover: bool,
+    active_family: &str,
+    now_ms: u64,
+) {
+    if !state.open {
+        return;
+    }
+    let layout = font_picker_layout_at(
+        trigger,
+        popup_width,
+        bounds,
+        entries,
+        allow_import,
+        allow_remove,
+        state.scroll.offset,
+    );
+    paint_font_picker_layout(
+        cx,
+        theme,
+        locale,
+        entries,
+        search,
+        state,
+        import_hover,
+        active_family,
+        now_ms,
+        &layout,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_font_picker_layout(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    locale: op_editor_core::Locale,
+    entries: &[FontPickerEntry],
+    search: &str,
+    state: &SelectState,
+    import_hover: bool,
+    active_family: &str,
+    now_ms: u64,
+    layout: &FontPickerLayout,
+) {
     cx.backend.fill_round_rect(layout.popup, 8.0, theme.popover);
     cx.backend
         .stroke_round_rect(layout.popup, 8.0, theme.border, 1.0);
@@ -201,7 +274,7 @@ pub fn paint_font_picker(
                 let Some(entry) = entries.get(*i) else {
                     continue;
                 };
-                let is_active = entry.family == active;
+                let is_active = entry.family.eq_ignore_ascii_case(active);
                 let row_rect = Rect {
                     origin: Point2D::new(rect.origin.x + 2.0, rect.origin.y),
                     size: Point2D::new(rect.size.x - 4.0, rect.size.y),

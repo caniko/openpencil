@@ -11,6 +11,8 @@
 //!   / `TopBar` / settings modal / pickers), the `CanvasViewport`
 //!   center canvas, the lucide icon glyph drawer, and `editor_state_ext`
 //!   (theme / translation derivations over `EditorUiState`).
+//! - [`image_runtime`] — host-facing encoded-image cache and decode-queue
+//!   handoff used by native and web renderers.
 //! - [`theme`] — shadcn-dark palette tokens.
 //! - [`layout_scene`] / [`layout_scene_hit`] — a paint-only,
 //!   layout-resolved render scene + its hit-test (input path).
@@ -32,6 +34,7 @@ pub use op_editor_core::render_backend;
 
 pub mod accessibility;
 pub mod font_catalog;
+pub mod image_runtime;
 // The render scene now lives in the `jian-scene` crate and `scene_vars` in
 // op-editor-core. Re-exported here so existing consumer paths keep resolving
 // (`op_editor_ui::layout_scene::*` / `::layout_scene_hit::*` / `::scene_vars::*`),
@@ -46,7 +49,8 @@ pub mod widgets;
 // Re-export the primary API for the hosts / widgets / tests.
 pub use layout_scene::{SceneTextAlign, SceneTextVerticalAlign};
 pub use op_editor_core::render_backend::{
-    Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, RenderBackend, TextLayout,
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
+    TextBaselineRequest, TextLayout,
 };
 pub use theme::Theme;
 // Brand-logo catalog registration, surfaced at the crate root so non-widget

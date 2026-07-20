@@ -5,6 +5,10 @@ use crate::widgets::editor_state_ext::translate;
 use crate::widgets::missing_fonts_panel::{
     paint_missing_font_row, paint_text, row_button_rect, ROW_HEIGHT,
 };
+use crate::widgets::property_panel_typography::{
+    font_picker_action_in_layout, font_picker_entries, font_picker_hit_in_layout,
+    font_picker_layout_at, paint_font_picker_at, FontPickerAction, FontPickerLayout,
+};
 use crate::widgets::PaintCx;
 use crate::{Point2D, Rect};
 use jian_widgets::centered_text_baseline_y;
@@ -17,10 +21,15 @@ const EMPTY_BODY_HEIGHT: f32 = 44.0;
 const SECTION_GAP: f32 = 28.0;
 const BOTTOM_PAD: f32 = 24.0;
 const REMOVE_HEIGHT: f32 = 28.0;
+const IMPORTED_ROW_HEIGHT: f32 = 44.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontsHit {
-    ChooseFile(usize),
+    ChooseFont(usize),
+    SelectFont(usize),
+    ImportFont(usize),
+    ClosePicker,
+    PickerInside,
     RemoveImportedFont(usize),
     None,
 }
@@ -57,9 +66,9 @@ pub(crate) fn missing_row_rect(content: Rect, row: usize) -> Rect {
 fn imported_row_rect(content: Rect, ui: &EditorUiState, row: usize) -> Rect {
     Rect::xywh(
         content.origin.x,
-        imported_section_top(content, ui) + SECTION_TITLE_HEIGHT + row as f32 * ROW_HEIGHT,
+        imported_section_top(content, ui) + SECTION_TITLE_HEIGHT + row as f32 * IMPORTED_ROW_HEIGHT,
         content.size.x,
-        ROW_HEIGHT,
+        IMPORTED_ROW_HEIGHT,
     )
 }
 
@@ -68,7 +77,7 @@ pub(crate) fn imported_remove_rect(content: Rect, ui: &EditorUiState, row: usize
     let width = super::missing_fonts_panel::fit_button_width(translate(ui, "common.delete"), 11.0);
     Rect::xywh(
         row.origin.x + row.size.x - width,
-        row.origin.y + (ROW_HEIGHT - REMOVE_HEIGHT) / 2.0,
+        row.origin.y + (IMPORTED_ROW_HEIGHT - REMOVE_HEIGHT) / 2.0,
         width,
         REMOVE_HEIGHT,
     )
@@ -80,15 +89,77 @@ pub(super) fn content_height(ui: &EditorUiState) -> f32 {
         + missing_body_height(ui)
         + SECTION_GAP
         + SECTION_TITLE_HEIGHT
-        + ui.imported_font_families.len() as f32 * ROW_HEIGHT
+        + ui.imported_font_families.len() as f32 * IMPORTED_ROW_HEIGHT
         + BOTTOM_PAD
 }
 
-pub fn hit_test(content: Rect, ui: &EditorUiState, scrolled: Point2D) -> FontsHit {
+fn picker_row(ui: &EditorUiState) -> Option<usize> {
+    match ui.font_picker_purpose {
+        Some(op_editor_core::FontPickerPurpose::MissingFont {
+            row,
+            surface: op_editor_core::MissingFontSurface::Settings,
+        }) if ui.font_picker.open => Some(row),
+        _ => None,
+    }
+}
+
+pub(crate) fn picker_layout(
+    panel: Rect,
+    content: Rect,
+    ui: &EditorUiState,
+    scroll_y: f32,
+) -> Option<FontPickerLayout> {
+    let row = picker_row(ui)?;
+    if missing_entries(ui).get(row)?.resolved {
+        return None;
+    }
+    let entries = font_picker_entries(
+        &ui.imported_font_families,
+        &ui.bundled_font_families,
+        &ui.system_font_families,
+        &ui.font_picker_search,
+    );
+    let mut trigger = row_button_rect(missing_row_rect(content, row), ui);
+    trigger.origin.y -= scroll_y;
+    Some(font_picker_layout_at(
+        trigger,
+        300.0,
+        panel,
+        &entries,
+        ui.font_import_supported,
+        false,
+        ui.font_picker.scroll.offset,
+    ))
+}
+
+pub fn hit_test(
+    panel: Rect,
+    content: Rect,
+    ui: &EditorUiState,
+    point: Point2D,
+    scroll_y: f32,
+) -> FontsHit {
+    if let Some(row) = picker_row(ui) {
+        if let Some(layout) = picker_layout(panel, content, ui, scroll_y) {
+            if let Some(action) = font_picker_action_in_layout(&layout, point) {
+                return match action {
+                    FontPickerAction::Select(index) => FontsHit::SelectFont(index),
+                    FontPickerAction::Import => FontsHit::ImportFont(row),
+                    FontPickerAction::Remove(_) => FontsHit::PickerInside,
+                };
+            }
+            return match font_picker_hit_in_layout(&layout, point) {
+                jian_widgets::components::select::SelectHit::Outside => FontsHit::ClosePicker,
+                _ => FontsHit::PickerInside,
+            };
+        }
+        return FontsHit::ClosePicker;
+    }
+    let scrolled = Point2D::new(point.x, point.y + scroll_y);
     for (row, entry) in missing_entries(ui).iter().enumerate() {
         if !entry.resolved && row_button_rect(missing_row_rect(content, row), ui).contains(scrolled)
         {
-            return FontsHit::ChooseFile(row);
+            return FontsHit::ChooseFont(row);
         }
     }
     for row in 0..ui.imported_font_families.len() {
@@ -97,6 +168,47 @@ pub fn hit_test(content: Rect, ui: &EditorUiState, scrolled: Point2D) -> FontsHi
         }
     }
     FontsHit::None
+}
+
+pub(super) fn paint_picker(
+    cx: &mut PaintCx<'_>,
+    theme: &Theme,
+    panel: Rect,
+    content: Rect,
+    ui: &EditorUiState,
+    scroll_y: f32,
+    now_ms: u64,
+) {
+    let Some(row) = picker_row(ui) else {
+        return;
+    };
+    let Some(entry) = missing_entries(ui).get(row) else {
+        return;
+    };
+    let entries = font_picker_entries(
+        &ui.imported_font_families,
+        &ui.bundled_font_families,
+        &ui.system_font_families,
+        &ui.font_picker_search,
+    );
+    let mut trigger = row_button_rect(missing_row_rect(content, row), ui);
+    trigger.origin.y -= scroll_y;
+    paint_font_picker_at(
+        cx,
+        theme,
+        trigger,
+        300.0,
+        panel,
+        ui.locale,
+        &entries,
+        ui.font_import_supported,
+        false,
+        &ui.font_picker_search,
+        &ui.font_picker,
+        ui.font_picker_import_hover,
+        &entry.family,
+        now_ms,
+    );
 }
 
 pub(super) fn paint_fonts_tab(
@@ -295,8 +407,14 @@ mod tests {
         );
 
         assert_eq!(
-            hit_test(content_rect(), &state.editor_ui, point),
-            FontsHit::ChooseFile(0)
+            hit_test(
+                Rect::xywh(0.0, 0.0, 720.0, 720.0),
+                content_rect(),
+                &state.editor_ui,
+                point,
+                0.0,
+            ),
+            FontsHit::ChooseFont(0)
         );
     }
 
@@ -311,8 +429,54 @@ mod tests {
         );
 
         assert_eq!(
-            hit_test(content_rect(), &state.editor_ui, point),
+            hit_test(
+                Rect::xywh(0.0, 0.0, 720.0, 720.0),
+                content_rect(),
+                &state.editor_ui,
+                point,
+                0.0,
+            ),
             FontsHit::RemoveImportedFont(0)
+        );
+    }
+
+    #[test]
+    fn settings_missing_row_uses_the_shared_system_font_picker() {
+        let mut state = state_with_missing(&["Katibeh"]);
+        state.editor_ui.system_font_families = Arc::new(vec!["Arial".into()]);
+        state
+            .editor_ui
+            .open_missing_font_picker(0, op_editor_core::MissingFontSurface::Settings);
+        let panel = Rect::xywh(0.0, 0.0, 720.0, 720.0);
+        let layout =
+            picker_layout(panel, content_rect(), &state.editor_ui, 0.0).expect("settings picker");
+        let entries = font_picker_entries(
+            &state.editor_ui.imported_font_families,
+            &state.editor_ui.bundled_font_families,
+            &state.editor_ui.system_font_families,
+            &state.editor_ui.font_picker_search,
+        );
+        let arial = entries
+            .iter()
+            .position(|entry| entry.family == "Arial")
+            .expect("Arial entry");
+        let row = layout
+            .rows
+            .iter()
+            .find_map(|(row, rect)| {
+                matches!(
+                    row,
+                    crate::widgets::property_panel_typography::FontPickerRow::Entry(index)
+                        if *index == arial
+                )
+                .then_some(*rect)
+            })
+            .expect("Arial row");
+        let point = Point2D::new(row.origin.x + 12.0, row.origin.y + row.size.y / 2.0);
+
+        assert_eq!(
+            hit_test(panel, content_rect(), &state.editor_ui, point, 0.0),
+            FontsHit::SelectFont(arial)
         );
     }
 }

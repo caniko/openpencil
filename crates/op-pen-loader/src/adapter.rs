@@ -989,6 +989,7 @@ fn image_to_payload(n: &ImageNode) -> NodePayload {
     // (corrupt url / unsupported codec).
     p.image_src = Some(n.src.clone());
     p.image_fit = n.object_fit.as_ref().map(image_node_fit_to_payload);
+    p.image_blend_mode = n.blend_mode.clone();
     p.image_adjustments = image_node_adjustments(n);
     p.fill = Some([0.85, 0.86, 0.88, 1.0]);
     p.name = if n.base.name.as_deref().unwrap_or("").is_empty() {

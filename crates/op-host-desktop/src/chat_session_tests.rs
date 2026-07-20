@@ -192,6 +192,15 @@ fn apply_poll_error_replaces_content_and_ends_stream() {
 
 #[test]
 fn drain_stop_request_drops_session_without_clearing_transcript() {
+    // `drain_stop_request` retires the process-global active indicator epoch.
+    // Serialize this test with every reveal/indicator test so a parallel Stop
+    // cannot clear another test's epoch between its `begin()` and first
+    // `batch_design` reveal registration.
+    let _guard = crate::agent_indicator_test_lock::LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    op_editor_core::agent_indicators::clear();
+
     let provider = Box::new(EchoProvider {
         script: vec![ChatDelta::TextDelta("late".into())],
     });
@@ -221,6 +230,7 @@ fn drain_stop_request_drops_session_without_clearing_transcript() {
     assert!(!host.editor_state().chat.pending_stop_chat);
     assert_eq!(host.editor_state().chat.messages.len(), 1);
     assert!(!host.editor_state().chat.messages[0].streaming);
+    op_editor_core::agent_indicators::clear();
 }
 
 #[test]

@@ -40,6 +40,13 @@ use jian_widgets::components::select::{SelectHit, SelectState};
 /// Desktop capability — the Import row + imported group render.
 const ALLOW_IMPORT: bool = true;
 
+fn bundled() -> Vec<String> {
+    BUNDLED_FONT_FAMILIES
+        .iter()
+        .map(|family| (*family).to_string())
+        .collect()
+}
+
 fn visible_text() -> VisibleSections {
     VisibleSections {
         text: true,
@@ -68,7 +75,7 @@ fn open_state(scroll: f32) -> SelectState {
 
 #[test]
 fn entries_fall_back_to_ts_system_list_when_unenumerated() {
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     assert_eq!(
         entries.len(),
         BUNDLED_FONT_FAMILIES.len() + FALLBACK_SYSTEM_FONTS.len()
@@ -83,22 +90,22 @@ fn entries_fall_back_to_ts_system_list_when_unenumerated() {
 #[test]
 fn entries_use_host_enumeration_and_filter_by_search() {
     let system = vec!["Avenir".to_string(), "Menlo".to_string()];
-    let entries = font_picker_entries(&[], &system, "");
+    let entries = font_picker_entries(&[], &bundled(), &system, "");
     assert_eq!(entries.len(), BUNDLED_FONT_FAMILIES.len() + 2);
     // Case-insensitive substring filter (TS `filtered` memo).
-    let filtered = font_picker_entries(&[], &system, "men");
+    let filtered = font_picker_entries(&[], &bundled(), &system, "menl");
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].family, "Menlo");
     assert!(!filtered[0].bundled);
     // No matches → empty (panel paints the no-results row).
-    assert!(font_picker_entries(&[], &system, "zzz").is_empty());
+    assert!(font_picker_entries(&[], &bundled(), &system, "zzz").is_empty());
 }
 
 #[test]
 fn imported_group_is_ordered_first_and_filters_by_search() {
     let imported = vec!["My Brand Sans".to_string(), "My Serif".to_string()];
     let system = vec!["Avenir".to_string()];
-    let entries = font_picker_entries(&imported, &system, "");
+    let entries = font_picker_entries(&imported, &bundled(), &system, "");
     // Imported entries lead, flagged imported (never bundled).
     assert!(entries[0].imported);
     assert!(!entries[0].bundled);
@@ -108,7 +115,7 @@ fn imported_group_is_ordered_first_and_filters_by_search() {
     // Bundled group starts right after the imported ones.
     assert!(entries[2].bundled);
     // Same substring filter applies to the imported group.
-    let filtered = font_picker_entries(&imported, &system, "serif");
+    let filtered = font_picker_entries(&imported, &bundled(), &system, "my serif");
     assert_eq!(filtered.len(), 1);
     assert!(filtered[0].imported);
     assert_eq!(filtered[0].family, "My Serif");
@@ -118,12 +125,24 @@ fn imported_group_is_ordered_first_and_filters_by_search() {
 fn display_name_strips_fallback_stack_and_quotes() {
     assert_eq!(display_font_family("Arial, sans-serif"), "Arial");
     assert_eq!(display_font_family("\"DM Sans\", sans-serif"), "DM Sans");
+    assert_eq!(
+        display_font_family("\"ACME, Display\", sans-serif"),
+        "ACME, Display"
+    );
+    assert_eq!(
+        display_font_family(r"ACME\, Display, serif"),
+        r"ACME\, Display"
+    );
+    assert_eq!(
+        display_font_family(r#""'Tis a Font", serif"#),
+        "'Tis a Font"
+    );
     assert_eq!(display_font_family("Inter"), "Inter");
 }
 
 #[test]
 fn entry_hit_maps_back_to_the_clicked_family() {
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     // First entry row (after the bundled group header).
@@ -166,7 +185,7 @@ fn entry_hit_maps_back_to_the_clicked_family() {
 #[test]
 fn remove_x_hit_wins_over_entry_and_maps_to_remove_imported_font() {
     let imported = vec!["My Brand Sans".to_string()];
-    let entries = font_picker_entries(&imported, &[], "");
+    let entries = font_picker_entries(&imported, &bundled(), &[], "");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     // The remove-x sub-rect resolves to RemoveImportedFont.
@@ -219,7 +238,7 @@ fn remove_x_hit_wins_over_entry_and_maps_to_remove_imported_font() {
 #[test]
 fn import_action_row_is_always_present_and_maps_to_import_font() {
     // Even a no-results search keeps the bottom import action.
-    let empty = font_picker_entries(&[], &[], "zzzznomatch");
+    let empty = font_picker_entries(&[], &bundled(), &[], "zzzznomatch");
     assert!(empty.is_empty());
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &empty, ALLOW_IMPORT, 0.0).unwrap();
@@ -254,7 +273,7 @@ fn no_import_capability_omits_the_import_row_entirely() {
     // Web host (allow_import = false): the layout must carry NO
     // ImportAction row, and a click where it would sit yields no
     // ImportFont action (no dead control on web).
-    let entries = font_picker_entries(&[], &[], "playfair");
+    let entries = font_picker_entries(&[], &bundled(), &[], "inter");
     let layout = font_picker_layout(panel_rect(), visible_text(), &entries, false, 0.0).unwrap();
     assert!(
         !layout
@@ -286,13 +305,13 @@ fn no_import_capability_omits_the_import_row_entirely() {
 fn list_viewport_caps_at_max_height_and_scrolls() {
     // 22 entries (11 + 11 fallback) + headers + import row exceed the
     // viewport, so the dropdown must report scrollable overflow.
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     assert!(layout.viewport.size.y <= MAX_LIST_VIEWPORT_H + 0.01);
     assert!(layout.max_scroll > 0.0);
     // A row scrolled above the viewport is not hittable.
-    let entries2 = font_picker_entries(&[], &[], "");
+    let entries2 = font_picker_entries(&[], &bundled(), &[], "");
     let first_entry_rect = layout
         .rows
         .iter()
@@ -318,7 +337,7 @@ fn list_viewport_caps_at_max_height_and_scrolls() {
 
 #[test]
 fn picker_contains_covers_search_row() {
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     let in_search = Point2D::new(layout.search.origin.x + 5.0, layout.search.origin.y + 5.0);
@@ -345,7 +364,7 @@ fn picker_contains_covers_search_row() {
 
 #[test]
 fn font_picker_hit_uses_shared_select_state_protocol() {
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     let state = SelectState {
         open: true,
         ..Default::default()
@@ -398,7 +417,7 @@ fn font_picker_hit_uses_shared_select_state_protocol() {
 
 #[test]
 fn pressed_font_picker_entry_uses_shared_select_feedback() {
-    let entries = font_picker_entries(&[], &[], "");
+    let entries = font_picker_entries(&[], &bundled(), &[], "");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     let (entry_index, entry_rect) = layout
@@ -451,7 +470,7 @@ fn import_action_at_returns_true_over_the_import_row() {
     // centre resolves to `true`, while a point on a plain entry does not.
     // A narrow search keeps the list short so the import row (bottom of
     // content) stays inside the viewport at scroll 0.
-    let entries = font_picker_entries(&[], &[], "playfair");
+    let entries = font_picker_entries(&[], &bundled(), &[], "inter");
     let layout =
         font_picker_layout(panel_rect(), visible_text(), &entries, ALLOW_IMPORT, 0.0).unwrap();
     let (_, import_rect) = layout
@@ -514,7 +533,7 @@ fn font_picker_entries_cache_hits_on_unchanged_inputs_and_recomputes_on_change()
     let system = vec!["Avenir".to_string(), "Menlo".to_string()];
 
     let before = crate::widgets::font_picker_cache::build_count();
-    let first = font_picker_entries(&imported, &system, "men");
+    let first = font_picker_entries(&imported, &bundled(), &system, "men");
     let after_first = crate::widgets::font_picker_cache::build_count();
     assert!(
         after_first > before,
@@ -523,7 +542,7 @@ fn font_picker_entries_cache_hits_on_unchanged_inputs_and_recomputes_on_change()
 
     // Same inputs, called again (mirrors a second accessor reading the
     // same live state within one frame, or the next unchanged repaint).
-    let second = font_picker_entries(&imported, &system, "men");
+    let second = font_picker_entries(&imported, &bundled(), &system, "men");
     assert_eq!(
         crate::widgets::font_picker_cache::build_count(),
         after_first,
@@ -538,7 +557,7 @@ fn font_picker_entries_cache_hits_on_unchanged_inputs_and_recomputes_on_change()
     );
 
     // A changed query must invalidate + rebuild.
-    let _ = font_picker_entries(&imported, &system, "avenir");
+    let _ = font_picker_entries(&imported, &bundled(), &system, "avenir");
     assert!(
         crate::widgets::font_picker_cache::build_count() > after_first,
         "a changed query must invalidate the cache and rebuild"
@@ -549,7 +568,7 @@ fn font_picker_entries_cache_hits_on_unchanged_inputs_and_recomputes_on_change()
     // invalidate + rebuild, even with the same query.
     let mut system2 = system.clone();
     system2.push("Georgia".to_string());
-    let _ = font_picker_entries(&imported, &system2, "avenir");
+    let _ = font_picker_entries(&imported, &bundled(), &system2, "avenir");
     assert!(
         crate::widgets::font_picker_cache::build_count() > after_query_change,
         "a changed family list must invalidate the cache and rebuild"

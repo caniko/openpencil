@@ -1,12 +1,9 @@
-// Browser boundary: Local Font Access permission and CanvasKit font-byte loading
-// need browser smoke; pure classifiers and fallback routing are unit-tested.
+// Local Font Access permission and CanvasKit font-byte loading need browser smoke;
+// pure classifiers and fallback routing are unit-tested.
 //! Browser Local Font Access bridge for the web host.
 //!
-//! The wasm Skia backend cannot see operating-system fonts by itself. The
-//! browser can expose installed font faces through `window.queryLocalFonts()`,
-//! but only after the user grants permission. We query once from the web host,
-//! then load only the families used by the active document plus platform text
-//! fallbacks needed by the shell UI.
+//! The wasm Skia backend cannot see operating-system fonts. After permission,
+//! `window.queryLocalFonts()` supplies the active document and shell fallbacks.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -17,7 +14,6 @@ use crate::repaint_ctx::RepaintContext;
 use jian_ops_schema::node::{PenNode, TextContent};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use op_editor_core::pen_node_ext::PenNodeExt;
-use op_editor_ui::font_catalog::BUNDLED_FONT_FAMILIES;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -182,7 +178,7 @@ fn start_system_font_query<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
 }
 
 fn should_mark_system_fonts_loaded_after_query_rejection() -> bool {
-    false
+    true
 }
 
 fn query_local_fonts_function() -> Option<(web_sys::Window, Function)> {
@@ -227,20 +223,41 @@ fn used_font_families<C: RepaintContext + 'static>(inner: &InnerRc<C>) -> Vec<St
     let Ok(b) = inner.try_borrow() else {
         return Vec::new();
     };
+    used_font_families_from_state(b.host().editor_state())
+}
+
+fn used_font_families_from_state(state: &op_editor_core::EditorState) -> Vec<String> {
     let mut families = Vec::new();
-    collect_text_font_families(b.host().editor_state().active_children(), &mut families);
-    if let Some(PenNode::Text(text)) = b.host().editor_state().selected_node() {
+    let authored = state.active_children();
+    let resolved;
+    let active_canvas = if nodes_have_refs(authored) {
+        resolved = op_editor_core::ref_resolve::resolve_refs_for_canvas_roots(authored, &state.doc);
+        resolved.as_slice()
+    } else {
+        authored
+    };
+    collect_text_font_families(active_canvas, &mut families);
+    if let Some(PenNode::Text(text)) = state.selected_node() {
         if let Some(family) = text.font_family.as_ref() {
             families.push(family.clone());
         }
     }
     families
         .into_iter()
-        .filter_map(|family| first_family_name(&family))
-        .filter(|family| !is_bundled_family(family))
+        .flat_map(|family| op_editor_core::font_catalog::split_font_family_stack(&family))
+        .filter(|family| !op_editor_core::font_catalog::is_generic_or_system_font_alias(family))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn nodes_have_refs(nodes: &[PenNode]) -> bool {
+    nodes.iter().any(|node| {
+        matches!(node, PenNode::Ref(_))
+            || node
+                .children()
+                .is_some_and(|children| nodes_have_refs(children))
+    })
 }
 
 fn collect_text_font_families(nodes: &[PenNode], out: &mut Vec<String>) {
@@ -356,7 +373,8 @@ fn parse_font_data_list(value: &JsValue) -> (Vec<String>, HashMap<String, JsValu
     let mut families = Vec::new();
     let mut handles = HashMap::<String, JsValue>::new();
     for entry in array.iter() {
-        let Some(family) = string_prop(&entry, "family").and_then(|s| first_family_name(&s)) else {
+        let Some(family) = string_prop(&entry, "family").and_then(|s| normalized_family_name(&s))
+        else {
             continue;
         };
         let Some(key) = family_key(&family) else {
@@ -389,24 +407,26 @@ fn is_regular_face(value: &JsValue) -> bool {
         })
 }
 
-fn first_family_name(family: &str) -> Option<String> {
-    let first = family
-        .split(',')
+fn normalized_family_name(family: &str) -> Option<String> {
+    // `queryLocalFonts().family` and the values supplied by
+    // `used_font_families` are already one decoded family, not a CSS stack.
+    // Splitting here would corrupt a legal raw name such as `ACME, Display`.
+    let family = family.trim();
+    let family = family
+        .chars()
         .next()
-        .unwrap_or(family)
-        .trim()
-        .trim_matches(['"', '\'']);
-    (!first.is_empty()).then(|| first.to_string())
+        .filter(|quote| *quote == '"' || *quote == '\'')
+        .and_then(|quote| {
+            family
+                .strip_prefix(quote)
+                .and_then(|without_start| without_start.strip_suffix(quote))
+        })
+        .unwrap_or(family);
+    (!family.is_empty()).then(|| family.to_string())
 }
 
 fn family_key(family: &str) -> Option<String> {
-    first_family_name(family).map(|family| family.to_lowercase())
-}
-
-fn is_bundled_family(family: &str) -> bool {
-    BUNDLED_FONT_FAMILIES
-        .iter()
-        .any(|bundled| bundled.eq_ignore_ascii_case(family))
+    normalized_family_name(family).map(|family| family.to_lowercase())
 }
 
 // ---------------------------------------------------------------------
@@ -622,127 +642,5 @@ fn console_warn_font(msg: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn supplied_font_with_another_family_records_a_mismatch_note() {
-        let bytes =
-            include_bytes!("../../op-host-desktop/assets/fonts/InstrumentSerif-Regular.ttf");
-        let actual = crate::font_meta::parse_family(bytes).expect("fixture family");
-        let mut host = crate::widget_host::WidgetHost::new();
-        host.editor_state_mut().editor_ui.missing_fonts_prompt =
-            Some(op_editor_core::missing_fonts::MissingFontsPrompt {
-                entries: vec![op_editor_core::missing_fonts::MissingFontEntry {
-                    family: "Katibeh".to_string(),
-                    run_count: 1,
-                    mismatch_note: None,
-                    resolved: false,
-                }],
-            });
-
-        host.note_missing_font_supplied(0, Some(&actual));
-
-        let note = host
-            .editor_state()
-            .editor_ui
-            .missing_fonts_prompt
-            .as_ref()
-            .unwrap()
-            .entries[0]
-            .mismatch_note
-            .as_deref()
-            .expect("mismatch note");
-        assert!(note.contains("Instrument Serif"));
-        assert!(note.contains("Katibeh"));
-    }
-
-    #[test]
-    fn detects_platform_emoji_font_families() {
-        assert!(is_emoji_font_family("Apple Color Emoji"));
-        assert!(is_emoji_font_family("Noto Color Emoji"));
-        assert!(is_emoji_font_family("Segoe UI Emoji"));
-        assert!(!is_emoji_font_family("PingFang SC"));
-    }
-
-    #[test]
-    fn detects_platform_cjk_fallback_font_families() {
-        for family in [
-            "PingFang SC",
-            "PingFang TC",
-            "Hiragino Sans",
-            "Hiragino Sans GB",
-            "Hiragino Kaku Gothic ProN",
-            "Apple SD Gothic Neo",
-            "Heiti SC",
-            "STHeiti",
-            "Yu Gothic",
-            "Meiryo",
-            "Noto Sans CJK SC",
-            "Noto Sans JP",
-            "Noto Sans KR",
-            "Noto Sans TC",
-            "Source Han Sans SC",
-            "Microsoft YaHei",
-            "Microsoft JhengHei",
-            "Malgun Gothic",
-            "AppleGothic",
-            "Nanum Gothic",
-            "SimHei",
-        ] {
-            assert!(
-                is_cjk_fallback_font_family(family),
-                "{family} should be treated as a browser system CJK fallback"
-            );
-        }
-        assert!(!is_cjk_fallback_font_family("Roboto"));
-    }
-
-    #[test]
-    fn detects_platform_multilingual_text_fallback_font_families() {
-        for family in [
-            "Kohinoor Devanagari",
-            "Devanagari Sangam MN",
-            "ITFDevanagari",
-            "MuktaMahee",
-            "Noto Sans Devanagari",
-            "Nirmala UI",
-            "Apple SD Gothic Neo",
-            "Nanum Gothic",
-            "Noto Sans KR",
-            "Noto Sans Cyrillic",
-            "Arial Cyr",
-            "SFGeorgian",
-            "SFHebrew",
-            "Arial Hebrew",
-            "Geeza Pro",
-            "Al Nile",
-            "Thonburi",
-            "Sukhumvit Set",
-            "Noto Sans Thai",
-            "Noto Sans Thai UI",
-            "Arial Unicode MS",
-            "Apple Color Emoji",
-            "Segoe UI Emoji",
-            "Noto Sans",
-        ] {
-            assert!(
-                is_text_fallback_font_family(family),
-                "{family} should be treated as a browser system text fallback"
-            );
-        }
-        assert!(!is_text_fallback_font_family("Roboto"));
-    }
-
-    #[test]
-    fn system_font_query_runs_without_opening_font_picker() {
-        assert!(should_query_system_fonts_state(false, false));
-        assert!(!should_query_system_fonts_state(false, true));
-        assert!(should_query_system_fonts_state(true, false));
-    }
-
-    #[test]
-    fn system_font_query_rejection_stays_retryable() {
-        assert!(!should_mark_system_fonts_loaded_after_query_rejection());
-    }
-}
+#[path = "web_fonts_tests.rs"]
+mod tests;

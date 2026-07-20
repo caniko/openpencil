@@ -59,6 +59,13 @@ pub fn resolve_refs_for_canvas(doc: &PenDocument) -> PenDocument {
     resolved
 }
 
+/// Expand refs in one canvas root list while resolving component targets
+/// against the whole document. Hosts that only need the active page can use
+/// this focused form without cloning and walking every inactive page.
+pub fn resolve_refs_for_canvas_roots(nodes: &[PenNode], lookup: &PenDocument) -> Vec<PenNode> {
+    resolve_nodes(nodes, lookup, &mut BTreeSet::new())
+}
+
 /// True when any `Ref` node exists anywhere in the document — the
 /// scene builder's early-out so ref-free documents (the common case)
 /// skip the expansion pass's full-tree clone.

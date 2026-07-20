@@ -28,6 +28,9 @@ pub enum FigmaImportHit {
 pub struct FigmaImportModal {
     pub id: WidgetId,
     pub theme: Theme,
+    /// Which source is being imported — selects the copy only; every
+    /// rect and interaction is identical for both.
+    source: op_editor_core::figma_import_state::ImportSource,
     /// Active UI locale — drives the modal's `t` copy lookup.
     locale: Locale,
     /// Which target the cursor is over — drives the hover wash.
@@ -41,6 +44,7 @@ impl FigmaImportModal {
         Self {
             id: WidgetId::new(5400),
             theme: theme_for(&state.editor_ui),
+            source: state.editor_ui.import_source,
             locale: state.editor_ui.locale,
             hover: state.editor_ui.figma_import_hover,
             pressed: match state.editor_ui.pressed_button {
@@ -93,13 +97,44 @@ fn drop_zone_rect(panel: Rect) -> Rect {
     }
 }
 
-fn t(locale: Locale, key: &str) -> &'static str {
-    match key {
-        "title" => op_i18n::translate(locale, "figma.title"),
-        "drop" => op_i18n::translate(locale, "figma.dropFile"),
-        "browse" => op_i18n::translate(locale, "figma.orBrowse"),
-        "footer" => op_i18n::translate(locale, "figma.exportTip"),
-        _ => "",
+fn t(
+    locale: Locale,
+    source: op_editor_core::figma_import_state::ImportSource,
+    key: &str,
+) -> &'static str {
+    use op_editor_core::figma_import_state::ImportSource;
+    let (title, drop, browse, footer) = match source {
+        ImportSource::Figma => (
+            "figma.title",
+            "figma.dropFile",
+            "figma.orBrowse",
+            "figma.exportTip",
+        ),
+        ImportSource::Html => (
+            "html.title",
+            "html.dropFile",
+            "html.orBrowse",
+            "html.saveTip",
+        ),
+    };
+    let lookup = match key {
+        "title" => title,
+        "drop" => drop,
+        "browse" => browse,
+        "footer" => footer,
+        _ => return "",
+    };
+    let translated = op_i18n::translate(locale, lookup);
+    if translated != lookup {
+        return translated;
+    }
+    // A locale table without the HTML keys must never paint a raw key.
+    match (source, key) {
+        (ImportSource::Html, "title") => "Import from HTML",
+        (ImportSource::Html, "drop") => "Drop an .html file here",
+        (ImportSource::Html, "browse") => "or click to browse",
+        (ImportSource::Html, "footer") => "Save the page from your browser (⌘S) as a complete page",
+        _ => translated,
     }
 }
 
@@ -123,7 +158,7 @@ impl Widget for FigmaImportModal {
             .stroke_round_rect(rect, 12.0, self.theme.border, 1.0);
 
         let title = TextLayout::single_run(
-            t(self.locale, "title"),
+            t(self.locale, self.source, "title"),
             "system-ui",
             14.0,
             (self.theme.foreground).to_jian(),
@@ -186,7 +221,7 @@ impl Widget for FigmaImportModal {
             self.theme.muted_foreground,
         );
 
-        let headline = t(self.locale, "drop");
+        let headline = t(self.locale, self.source, "drop");
         let head_w = cx.backend.measure_text(headline, 13.0);
         let head_layout = TextLayout::single_run(
             headline,
@@ -203,7 +238,7 @@ impl Widget for FigmaImportModal {
             ),
         );
 
-        let sub = t(self.locale, "browse");
+        let sub = t(self.locale, self.source, "browse");
         let sub_w = cx.backend.measure_text(sub, 11.0);
         let sub_layout = TextLayout::single_run(
             sub,
@@ -221,7 +256,7 @@ impl Widget for FigmaImportModal {
         );
 
         let footer = TextLayout::single_run(
-            t(self.locale, "footer"),
+            t(self.locale, self.source, "footer"),
             "system-ui",
             11.0,
             (self.theme.muted_foreground).to_jian(),

@@ -10,13 +10,52 @@
 use crate::ai::types::{ChunkContract, CodegenInput, PendingRequest, RequestId, RequestKind};
 use op_editor_core::codegen::Framework;
 
-// Per-phase output token budgets. These mirror the TS skill `budget`
-// frontmatter in `packages/pen-ai-skills/skills/` (planning ~2000,
-// chunk ~3000, assembly default). The pipeline carries them on the
-// `PendingRequest` so the transport can cap each model call per phase.
-const PLANNING_MAX_OUTPUT_TOKENS: u32 = 2000;
-const CHUNK_MAX_OUTPUT_TOKENS: u32 = 3000;
-const ASSEMBLY_MAX_OUTPUT_TOKENS: u32 = 4000;
+// Large documents need phase-specific budgets, always bounded by the caller's
+// hard per-request cap and provider-safe ceilings.
+const PLANNING_MIN_OUTPUT_TOKENS: u32 = 3_000;
+const PLANNING_MAX_OUTPUT_TOKENS: u32 = 6_000;
+const CHUNK_MIN_OUTPUT_TOKENS: u32 = 6_000;
+const CHUNK_MAX_OUTPUT_TOKENS: u32 = 12_000;
+const ASSEMBLY_MIN_OUTPUT_TOKENS: u32 = 8_000;
+const ASSEMBLY_MAX_OUTPUT_TOKENS: u32 = 16_000;
+const SUMMARY_MAX_INDENT_DEPTH: usize = 16;
+
+pub struct ChunkPromptInput<'a> {
+    chunk_id: &'a str,
+    nodes_json: &'a str,
+    suggested_name: &'a str,
+    ancestor_context_json: Option<&'a str>,
+    dep_contracts: &'a [ChunkContract],
+    asset_hints: &'a [String],
+}
+
+impl<'a> ChunkPromptInput<'a> {
+    pub fn new(
+        chunk_id: &'a str,
+        nodes_json: &'a str,
+        suggested_name: &'a str,
+        ancestor_context_json: Option<&'a str>,
+        dep_contracts: &'a [ChunkContract],
+        asset_hints: &'a [String],
+    ) -> Self {
+        Self {
+            chunk_id,
+            nodes_json,
+            suggested_name,
+            ancestor_context_json,
+            dep_contracts,
+            asset_hints,
+        }
+    }
+}
+
+fn phase_budget(input: &CodegenInput, minimum: u32, maximum: u32, scale: u32) -> u32 {
+    input
+        .max_output_tokens
+        .saturating_mul(scale)
+        .clamp(minimum, maximum)
+        .min(input.max_output_tokens)
+}
 
 fn planning_skills() -> Vec<&'static str> {
     vec!["codegen-planning"]
@@ -39,15 +78,25 @@ fn assembly_skills(fw: Framework) -> Vec<&'static str> {
 /// `rotation` (0) / `opacity` (1) / `visible` (true). Recurses into nested
 /// objects + arrays.
 fn strip_noise(value: &mut serde_json::Value) {
+    strip_noise_impl(value, true);
+}
+
+pub(super) fn strip_ancestor_noise(value: &mut serde_json::Value) {
+    strip_noise_impl(value, false);
+}
+
+fn strip_noise_impl(value: &mut serde_json::Value, remove_ids: bool) {
     match value {
         serde_json::Value::Array(items) => {
             for item in items.iter_mut() {
-                strip_noise(item);
+                strip_noise_impl(item, remove_ids);
             }
         }
         serde_json::Value::Object(map) => {
             map.retain(|k, v| {
-                if matches!(k.as_str(), "id" | "parentId" | "pageId" | "_meta") {
+                if matches!(k.as_str(), "parentId" | "pageId" | "_meta")
+                    || (remove_ids && k == "id")
+                {
                     return false;
                 }
                 if k == "rotation" && v.as_f64() == Some(0.0) {
@@ -62,7 +111,7 @@ fn strip_noise(value: &mut serde_json::Value) {
                 true
             });
             for v in map.values_mut() {
-                strip_noise(v);
+                strip_noise_impl(v, remove_ids);
             }
         }
         _ => {}
@@ -108,8 +157,12 @@ fn summarize_nodes_with_ids(nodes_json: &str) -> String {
 }
 
 fn summarize_node_list(nodes: &[serde_json::Value], depth: usize, out: &mut String) {
-    let indent = "  ".repeat(depth);
-    for node in nodes {
+    // An explicit DFS stack keeps pathological imported trees from consuming
+    // the Rust call stack. Push siblings in reverse to preserve the recursive
+    // implementation's stable pre-order traversal.
+    let mut stack = Vec::with_capacity(nodes.len());
+    stack.extend(nodes.iter().rev().map(|node| (node, depth)));
+    while let Some((node, depth)) = stack.pop() {
         let serde_json::Value::Object(map) = node else {
             continue;
         };
@@ -134,9 +187,13 @@ fn summarize_node_list(nodes: &[serde_json::Value], depth: usize, out: &mut Stri
         if !out.is_empty() {
             out.push('\n');
         }
+        let indent = "  ".repeat(depth.min(SUMMARY_MAX_INDENT_DEPTH));
         out.push_str(&format!(
             "{indent}- [{id}] {ty} \"{name}\" ({width}x{height})"
         ));
+        if depth > SUMMARY_MAX_INDENT_DEPTH {
+            out.push_str(&format!(" [depth={depth}]"));
+        }
         if let Some(role) = role.filter(|r| !r.is_empty()) {
             out.push_str(&format!(" [{role}]"));
         }
@@ -144,7 +201,8 @@ fn summarize_node_list(nodes: &[serde_json::Value], depth: usize, out: &mut Stri
             out.push_str(&format!(" [{child_count} children]"));
         }
         if let Some(children) = children.filter(|c| !c.is_empty()) {
-            summarize_node_list(children, depth + 1, out);
+            let child_depth = depth.saturating_add(1);
+            stack.extend(children.iter().rev().map(|child| (child, child_depth)));
         }
     }
 }
@@ -187,7 +245,12 @@ pub fn plan_request(id: RequestId, input: &CodegenInput, strict: bool) -> Pendin
         kind: RequestKind::Planning,
         skills: planning_skills(),
         user_message,
-        max_output_tokens: PLANNING_MAX_OUTPUT_TOKENS,
+        max_output_tokens: phase_budget(
+            input,
+            PLANNING_MIN_OUTPUT_TOKENS,
+            PLANNING_MAX_OUTPUT_TOKENS,
+            1,
+        ),
         thinking: input.thinking,
         effort: input.effort,
     }
@@ -197,18 +260,33 @@ pub fn plan_request(id: RequestId, input: &CodegenInput, strict: bool) -> Pendin
 /// contracts + asset hints, as the user message.
 pub fn chunk_request(
     id: RequestId,
-    chunk_id: &str,
-    chunk_nodes_json: &str,
-    suggested_name: &str,
-    dep_contracts: &[ChunkContract],
-    asset_hints: &[String],
+    chunk: ChunkPromptInput<'_>,
     input: &CodegenInput,
 ) -> PendingRequest {
+    let ChunkPromptInput {
+        chunk_id,
+        nodes_json: chunk_nodes_json,
+        suggested_name,
+        ancestor_context_json,
+        dep_contracts,
+        asset_hints,
+    } = chunk;
     let framework = input.framework.as_wire();
     let mut user_message = String::new();
     user_message.push_str(&format!(
         "Generate a {framework} component named \"{suggested_name}\".\n"
     ));
+
+    if let Some(context) = ancestor_context_json {
+        user_message.push_str("\n## Ancestor Wrapper Context\n");
+        user_message.push_str(
+            "These ancestors are metadata-only context for the selected nodeIds. Preserve their \
+             geometry, layout, clipping, opacity, and visual relationships when sizing or \
+             positioning this component; do not duplicate omitted sibling content.\n",
+        );
+        user_message.push_str(context);
+        user_message.push('\n');
+    }
 
     if !dep_contracts.is_empty() {
         user_message.push_str("\n## Dependency Contracts\n");
@@ -273,7 +351,7 @@ pub fn chunk_request(
         },
         skills: chunk_skills(input.framework),
         user_message,
-        max_output_tokens: CHUNK_MAX_OUTPUT_TOKENS,
+        max_output_tokens: phase_budget(input, CHUNK_MIN_OUTPUT_TOKENS, CHUNK_MAX_OUTPUT_TOKENS, 2),
         thinking: input.thinking,
         effort: input.effort,
     }
@@ -319,7 +397,60 @@ pub fn assembly_request(
         kind: RequestKind::Assembly,
         skills: assembly_skills(input.framework),
         user_message,
-        max_output_tokens: ASSEMBLY_MAX_OUTPUT_TOKENS,
+        max_output_tokens: phase_budget(
+            input,
+            ASSEMBLY_MIN_OUTPUT_TOKENS,
+            ASSEMBLY_MAX_OUTPUT_TOKENS,
+            2,
+        ),
+        thinking: input.thinking,
+        effort: input.effort,
+    }
+}
+
+/// Last-resort request used only when every planned chunk failed. It sends
+/// the complete sanitized node forest so the model can bypass chunk contracts
+/// and produce one self-contained source file.
+pub fn rescue_request(
+    id: RequestId,
+    nodes_json: &str,
+    failure_summary: &str,
+    input: &CodegenInput,
+    asset_paths: &[String],
+) -> PendingRequest {
+    let framework = input.framework.as_wire();
+    let mut user_message = format!(
+        "The chunked code-generation pipeline could not produce usable code. \
+         Generate one complete, self-contained {framework} source file directly from the design.\n\
+         Do not import or reference missing chunk components. Preserve layout, typography, colors, \
+         and responsive behavior. Follow the {framework} framework rules from the active skill.\n\n\
+         Failure context:\n{failure_summary}\n\nDesign nodes (JSON):\n{}\n",
+        compact_nodes(nodes_json)
+    );
+    if let Some(variables_json) = &input.variables_json {
+        user_message.push_str(&format!("\nDesign variables: {variables_json}\n"));
+    }
+    if !asset_paths.is_empty() {
+        user_message
+            .push_str("\nExported assets are available under ./assets/. Keep these paths: ");
+        user_message.push_str(&asset_paths.join(", "));
+        user_message.push('\n');
+    }
+    user_message.push_str("\nOutput ONLY the final source code.");
+
+    PendingRequest {
+        id,
+        // Reuse Assembly on the public wire so existing hosts need no new
+        // dispatch branch; the prompt itself identifies this rescue phase.
+        kind: RequestKind::Assembly,
+        skills: assembly_skills(input.framework),
+        user_message,
+        max_output_tokens: phase_budget(
+            input,
+            ASSEMBLY_MIN_OUTPUT_TOKENS,
+            ASSEMBLY_MAX_OUTPUT_TOKENS,
+            2,
+        ),
         thinking: input.thinking,
         effort: input.effort,
     }
@@ -373,6 +504,28 @@ mod tests {
     }
 
     #[test]
+    fn planning_summary_handles_deep_trees_with_capped_visual_indent() {
+        let mut node = serde_json::json!({"type":"text","id":"leaf"});
+        for depth in (0..256).rev() {
+            node = serde_json::json!({
+                "type": "frame",
+                "id": format!("n{depth}"),
+                "children": [node],
+            });
+        }
+
+        let mut summary = String::new();
+        summarize_node_list(std::slice::from_ref(&node), 0, &mut summary);
+        let lines = summary.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 257);
+        assert!(lines[1].starts_with("  - [n1]"));
+        let deepest = lines.last().expect("leaf summary");
+        assert!(deepest.starts_with(&"  ".repeat(SUMMARY_MAX_INDENT_DEPTH)));
+        assert!(!deepest.starts_with(&"  ".repeat(SUMMARY_MAX_INDENT_DEPTH + 1)));
+        assert!(deepest.contains("[depth=256]"));
+    }
+
+    #[test]
     fn chunk_request_includes_dep_props_and_slots() {
         // FIX 2: dependency contract summaries carry exported props, slots,
         // and import sources.
@@ -394,7 +547,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let r = chunk_request(RequestId(2), "c1", "[]", "Hero", &[dep], &[], &input());
+        let r = chunk_request(
+            RequestId(2),
+            ChunkPromptInput::new("c1", "[]", "Hero", None, &[dep], &[]),
+            &input(),
+        );
         assert!(r.user_message.contains("props=[title: string]"));
         assert!(r.user_message.contains("slots=[footer]"));
         assert!(r.user_message.contains("imports=[Star from lucide-react]"));
@@ -408,7 +565,11 @@ mod tests {
 
     #[test]
     fn chunk_request_names_framework_skill() {
-        let r = chunk_request(RequestId(2), "c1", "[]", "Navbar", &[], &[], &input());
+        let r = chunk_request(
+            RequestId(2),
+            ChunkPromptInput::new("c1", "[]", "Navbar", None, &[], &[]),
+            &input(),
+        );
         assert_eq!(
             r.kind,
             RequestKind::Chunk {
@@ -424,5 +585,81 @@ mod tests {
         let r = assembly_request(RequestId(3), "blocks", "summary", &input(), &[]);
         assert_eq!(r.kind, RequestKind::Assembly);
         assert_eq!(r.skills, vec!["codegen-assembly", "codegen-react"]);
+    }
+
+    #[test]
+    fn rescue_request_carries_full_nodes_framework_and_failure_context() {
+        let mut input = input();
+        input.nodes_json = r#"[{"id":"root","type":"frame","name":"Checkout"}]"#.into();
+        let r = rescue_request(
+            RequestId(4),
+            &input.nodes_json,
+            "chunk hero attempt 2: empty output",
+            &input,
+            &["./assets/hero.png".into()],
+        );
+        assert_eq!(r.kind, RequestKind::Assembly);
+        assert_eq!(r.skills, vec!["codegen-assembly", "codegen-react"]);
+        assert!(r.user_message.contains("self-contained react source file"));
+        assert!(r.user_message.contains("Checkout"));
+        assert!(r
+            .user_message
+            .contains("chunk hero attempt 2: empty output"));
+        assert!(r.user_message.contains("./assets/hero.png"));
+    }
+
+    #[test]
+    fn phase_budgets_respect_caller_cap_and_keep_safe_ceilings() {
+        let mut input = input();
+        assert_eq!(
+            plan_request(RequestId(1), &input, false).max_output_tokens,
+            3_000
+        );
+        assert_eq!(
+            chunk_request(
+                RequestId(2),
+                ChunkPromptInput::new("c", "[]", "C", None, &[], &[]),
+                &input,
+            )
+            .max_output_tokens,
+            3_000
+        );
+        assert_eq!(
+            assembly_request(RequestId(3), "code", "plan", &input, &[]).max_output_tokens,
+            3_000
+        );
+
+        input.max_output_tokens = 16_000;
+        assert_eq!(
+            plan_request(RequestId(4), &input, false).max_output_tokens,
+            6_000
+        );
+        assert_eq!(
+            chunk_request(
+                RequestId(5),
+                ChunkPromptInput::new("c", "[]", "C", None, &[], &[]),
+                &input,
+            )
+            .max_output_tokens,
+            12_000
+        );
+        assert_eq!(
+            rescue_request(RequestId(6), "[]", "failed", &input, &[]).max_output_tokens,
+            16_000
+        );
+
+        input.max_output_tokens = 2_000;
+        for budget in [
+            plan_request(RequestId(7), &input, false).max_output_tokens,
+            chunk_request(
+                RequestId(8),
+                ChunkPromptInput::new("c", "[]", "C", None, &[], &[]),
+                &input,
+            )
+            .max_output_tokens,
+            assembly_request(RequestId(9), "code", "plan", &input, &[]).max_output_tokens,
+        ] {
+            assert_eq!(budget, 2_000);
+        }
     }
 }

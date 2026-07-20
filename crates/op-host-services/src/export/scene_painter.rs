@@ -104,13 +104,17 @@ fn ensure_images_decoded(backend: &mut NativeBackend, nodes: &[SceneNode]) {
         if pending.is_empty() {
             return;
         }
-        for id in pending {
-            if let Some(bytes) = cached_bytes_for(id) {
+        for entry in pending {
+            if let Some(bytes) = cached_bytes_for(entry.id) {
+                // Always full size here. The export scale lives in the
+                // caller's canvas matrix, not in this backend's DPI, so
+                // the size paint asks for understates what a 2x/4x
+                // export needs — rastering full keeps exports sharp.
                 if let Some(image) = op_host_native::decode_raster(&bytes) {
-                    backend.install_raster_image(id, image);
+                    backend.install_raster_image(entry.id, image, u32::MAX);
                 }
             }
-            mark_decode_done(id);
+            mark_decode_done(entry.id);
         }
     }
 }

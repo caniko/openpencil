@@ -50,12 +50,24 @@ Respond with ONLY valid JSON matching this schema:
 
 ## Chunking Rules
 
-1. **Top-level frames with roles** → each becomes a chunk (navbar, hero, footer, sidebar, etc.)
-2. **Repeated sibling structures** (3+ similar frames at the same level) → single chunk with iteration hint in the name (e.g. "card-list")
-3. **Deep nested frames without roles** → fold into their nearest ancestor chunk
-4. **Root layout** → derive from the top-level container's layout properties (direction, gap)
-5. **Dependencies** → if chunk B is visually nested inside chunk A, B depends on A
-6. **Shared styles** → identify fill colors, effects, or typography patterns used by 2+ chunks
+1. **`nodeIds` are subtree roots, not an exhaustive node list.** A listed
+   frame implicitly includes its descendants. Never list both an ancestor and
+   one of its descendants, whether in the same chunk or different chunks.
+2. **Prefer disjoint semantic sections** → navbar, hero, content sections,
+   sidebar, and footer are good chunk roots. A page/body wrapper represented by
+   `rootLayout` does not need its own chunk.
+3. **Repeated sibling structures** (3+ similar frames at the same level) →
+   keep their nearest shared container as one chunk (for example `card-list`).
+4. **Large subtrees** → split only at child-container boundaries. Choose a
+   set of disjoint child roots; do not also list their parent root.
+5. **Deep nested frames without roles** → fold into their nearest selected
+   semantic root.
+6. **Root layout** → derive from the outer container's layout properties
+   (direction, gap) even when that wrapper is omitted from `nodeIds`.
+7. **Dependencies** → use them only when one generated component imports
+   another generated component. Sibling sections normally have no dependency.
+8. **Shared styles** → identify fill colors, effects, or typography patterns
+   used by 2+ chunks.
 
 ## Naming Conventions
 
@@ -66,6 +78,11 @@ Respond with ONLY valid JSON matching this schema:
 ## Constraints
 
 - Each nodeId must reference an actual node from the input tree
-- Every node in the input should appear in exactly one chunk's nodeIds
-- A chunk should contain between 1 and 20 nodes (split large subtrees)
-- Keep the total number of chunks under 15 for any design
+- Every visible node should be covered transitively by exactly one listed
+  subtree root; descendants must not be repeated as separate nodeIds
+- Keep each chunk to a coherent subtree of roughly 100 nodes or less; split
+  oversized sections at their immediate child-container boundaries
+- Produce between 1 and 15 chunks. Group small related siblings instead of
+  exceeding 15 chunks
+- For very large documents, preserve the major semantic sections rather than
+  attempting to enumerate every leaf node

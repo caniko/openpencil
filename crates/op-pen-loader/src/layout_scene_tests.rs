@@ -229,15 +229,22 @@ fn max_descendant_bottom(node: &SceneNode) -> f32 {
 }
 
 #[test]
-fn variable_ref_fill_resolves_to_concrete_color() {
+fn variable_ref_replaces_only_primary_fill_layer() {
     use jian_ops_schema::variable::{VariableKind, VariableScalar};
     use op_editor_core::NodeId;
 
-    // A rectangle whose fill should follow a `$ref` Color variable.
+    // A rectangle with three authored paints. The `$ref` colour replaces only
+    // the front-most one; its opacity/blend and both layers behind it survive.
     let src = r##"{
       "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
-        {"type":"rectangle","id":"r1","width":100,"height":50,
-         "fill":[{"type":"solid","color":"#000000"}]}
+        {"type":"rectangle","id":"r1","width":100,"height":50,"opacity":0.5,
+         "fill":[
+           {"type":"solid","color":"#000000","opacity":0.4,"blendMode":"multiply"},
+           {"type":"linear_gradient","angle":90,"opacity":0.6,"blendMode":"screen",
+            "stops":[{"offset":0,"color":"#001122"},{"offset":1,"color":"#334455"}]},
+           {"type":"image","url":"data:image/png;base64,AA==","mode":"fit",
+            "opacity":0.8,"blendMode":"overlay"}
+         ]}
       ]}],"children":[]
     }"##;
     let mut state = state_from(src);
@@ -261,6 +268,49 @@ fn variable_ref_fill_resolves_to_concrete_color() {
     assert!((fill.r - 1.0).abs() < 0.01, "red channel: {}", fill.r);
     assert!((fill.g - 0.533).abs() < 0.02, "green channel: {}", fill.g);
     assert!(fill.b.abs() < 0.01, "blue channel: {}", fill.b);
+    assert!(
+        (fill.a - 0.5).abs() < 0.001,
+        "legacy fill alpha: {}",
+        fill.a
+    );
+    assert_eq!(r1.fill_layers.len(), 3);
+    assert!(matches!(
+        &r1.fill_layers[0],
+        SceneFillLayer::Solid {
+            color,
+            blend_mode: ImageBlendMode::Multiply,
+        } if (color.r - 1.0).abs() < 0.01
+          && (color.g - 0.533).abs() < 0.02
+          && color.b.abs() < 0.01
+          && (color.a - 0.4).abs() < 0.001
+    ));
+    assert!(matches!(
+        &r1.fill_layers[1],
+        SceneFillLayer::Gradient {
+            gradient: SceneGradient::Linear { opacity, stops, .. },
+            blend_mode: ImageBlendMode::Screen,
+        } if (*opacity - 0.6).abs() < 0.001
+          && (stops[0].color.g - 0x11 as f32 / 255.0).abs() < 0.001
+    ));
+    assert!(matches!(
+        &r1.fill_layers[2],
+        SceneFillLayer::Image {
+            opacity,
+            blend_mode: ImageBlendMode::Overlay,
+            fit: SceneImageFit::Fit,
+            ..
+        } if (*opacity - 0.8).abs() < 0.001
+    ));
+    assert!((r1.opacity - 0.5).abs() < 0.001);
+
+    let fallback = fill_layers_to_scene(&[], Some(Color::rgba_u8(1, 2, 3, 0.75)));
+    assert!(matches!(
+        fallback.as_slice(),
+        [SceneFillLayer::Solid {
+            color,
+            blend_mode: ImageBlendMode::Normal,
+        }] if (color.a - 0.75).abs() < 0.001
+    ));
 }
 
 #[test]

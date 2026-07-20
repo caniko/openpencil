@@ -9,6 +9,38 @@ use op_editor_ui::{Point2D, Rect};
 use super::WidgetHost;
 
 impl WidgetHost {
+    pub(in crate::widget_host) fn try_scroll_settings_font_picker(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool {
+        if !self.editor_state.editor_ui.agent_settings_open {
+            return false;
+        }
+        let panel = op_editor_ui::widgets::agent_settings_panel::AgentSettingsPanel::for_web_editor(
+            &self.editor_state,
+        );
+        let panel_rect = panel.rect(viewport_width, viewport_height);
+        let Some(layout) = panel.font_picker_layout(panel_rect) else {
+            return false;
+        };
+        if !layout.popup.contains(Point2D::new(x, y)) {
+            return false;
+        }
+        let ui = &mut self.editor_state.editor_ui;
+        let next = (ui.font_picker.scroll.offset - delta_y).clamp(0.0, layout.max_scroll);
+        if next != ui.font_picker.scroll.offset {
+            ui.font_picker.scroll.offset = next;
+            ui.font_picker.hover = None;
+            ui.font_picker_import_hover = false;
+            self.mark_dirty();
+        }
+        true
+    }
+
     /// Scroll the floating VariablesPanel row list when the wheel
     /// fires over the open panel (TS `overflow-y-auto` rows region).
     /// The whole panel rect swallows the event so a wheel over its

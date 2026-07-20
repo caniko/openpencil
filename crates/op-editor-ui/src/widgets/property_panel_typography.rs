@@ -62,25 +62,33 @@ pub struct FontPickerEntry {
 /// refcount bump, not a deep clone of every entry's owned `family`.
 pub fn font_picker_entries(
     imported_families: &[String],
+    bundled_families: &[String],
     system_families: &[String],
     search: &str,
 ) -> Rc<Vec<FontPickerEntry>> {
     let q = search.trim().to_lowercase();
-    super::font_picker_cache::resolve(imported_families, system_families, &q, || {
-        build_font_picker_entries(imported_families, system_families, &q)
-    })
+    super::font_picker_cache::resolve(
+        imported_families,
+        bundled_families,
+        system_families,
+        &q,
+        || build_font_picker_entries(imported_families, bundled_families, system_families, &q),
+    )
 }
 
 /// The actual filter pass — `q` is already trimmed + lowercased.
 fn build_font_picker_entries(
     imported_families: &[String],
+    bundled_families: &[String],
     system_families: &[String],
     q: &str,
 ) -> Vec<FontPickerEntry> {
     let matches = |family: &str| q.is_empty() || family.to_lowercase().contains(q);
     let mut out: Vec<FontPickerEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     for family in imported_families {
-        if matches(family) {
+        let key = family.trim().to_ascii_lowercase();
+        if !key.is_empty() && matches(family) && seen.insert(key) {
             out.push(FontPickerEntry {
                 family: family.clone(),
                 bundled: false,
@@ -88,10 +96,11 @@ fn build_font_picker_entries(
             });
         }
     }
-    for family in BUNDLED_FONT_FAMILIES {
-        if matches(family) {
+    for family in bundled_families {
+        let key = family.trim().to_ascii_lowercase();
+        if !key.is_empty() && matches(family) && seen.insert(key) {
             out.push(FontPickerEntry {
-                family: family.to_string(),
+                family: family.clone(),
                 bundled: true,
                 imported: false,
             });
@@ -99,7 +108,8 @@ fn build_font_picker_entries(
     }
     if system_families.is_empty() {
         for family in FALLBACK_SYSTEM_FONTS {
-            if matches(family) {
+            let key = family.trim().to_ascii_lowercase();
+            if matches(family) && seen.insert(key) {
                 out.push(FontPickerEntry {
                     family: family.to_string(),
                     bundled: false,
@@ -109,7 +119,8 @@ fn build_font_picker_entries(
         }
     } else {
         for family in system_families {
-            if matches(family) {
+            let key = family.trim().to_ascii_lowercase();
+            if !key.is_empty() && matches(family) && seen.insert(key) {
                 out.push(FontPickerEntry {
                     family: family.clone(),
                     bundled: false,
@@ -121,14 +132,40 @@ fn build_font_picker_entries(
     out
 }
 
-/// First family before a comma, quotes stripped (TS `displayName`).
+/// First family in a CSS stack, quotes stripped (TS `displayName`).
+///
+/// A quoted family may itself contain a comma, so a plain `split(',')`
+/// would turn `"ACME, Display", sans-serif` into the misleading label
+/// `ACME`. Follow the same quote and escape boundaries as the canonical
+/// stack parser while keeping the borrowed return value used by paint code.
 pub fn display_font_family(value: &str) -> &str {
-    value
-        .split(',')
-        .next()
-        .unwrap_or(value)
-        .trim()
-        .trim_matches(['"', '\''])
+    let mut quote = None;
+    let mut escaped = false;
+    let mut end = value.len();
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+        } else if ch == ',' {
+            end = index;
+            break;
+        }
+    }
+    let family = value[..end].trim();
+    let Some(quote) = family.chars().next().filter(|ch| *ch == '"' || *ch == '\'') else {
+        return family;
+    };
+    family
+        .strip_prefix(quote)
+        .and_then(|without_start| without_start.strip_suffix(quote))
+        .unwrap_or(family)
 }
 
 pub const FONT_PICKER_ROW_H: f32 = 24.0;
@@ -172,6 +209,13 @@ pub struct FontPickerLayout {
     pub rows: Vec<(FontPickerRow, Rect)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontPickerAction {
+    Select(usize),
+    Import,
+    Remove(usize),
+}
+
 /// Anchor y of the family trigger row inside the Typography section
 /// (mirrors the trigger rect in `text_action_rects`).
 fn family_trigger_rect(panel_rect: Rect, visible: VisibleSections) -> Option<Rect> {
@@ -195,10 +239,30 @@ pub fn font_picker_layout(
     scroll: f32,
 ) -> Option<FontPickerLayout> {
     let trigger = family_trigger_rect(panel_rect, visible)?;
-    let popup_x = trigger.origin.x;
-    let popup_w = trigger.size.x;
-    let popup_y = trigger.origin.y + trigger.size.y + 4.0; // TS mt-1
+    Some(font_picker_layout_at(
+        trigger,
+        trigger.size.x,
+        panel_rect,
+        entries,
+        allow_import,
+        true,
+        scroll,
+    ))
+}
 
+/// Compute the shared searchable picker against an arbitrary trigger. Missing
+/// font rows use this entry point so they share the exact same grouping,
+/// scrolling, hit geometry, and search behavior as the Typography picker.
+#[allow(clippy::too_many_arguments)]
+pub fn font_picker_layout_at(
+    trigger: Rect,
+    popup_width: f32,
+    bounds: Rect,
+    entries: &[FontPickerEntry],
+    allow_import: bool,
+    allow_remove: bool,
+    scroll: f32,
+) -> FontPickerLayout {
     // Walk the list content (unscrolled, y from 0). Groups render in
     // Imported → Bundled → System order, matching `font_picker_entries`.
     let imported_count = entries.iter().filter(|e| e.imported).count();
@@ -217,8 +281,10 @@ pub fn font_picker_layout(
                 // REMOVE_X_SIZE square inset by PAD_X from the right
                 // edge). Registered AFTER the entry so hit-tests that
                 // check RemoveEntry first win the overlap.
-                let x_top = cy + (FONT_PICKER_ROW_H - REMOVE_X_SIZE) / 2.0;
-                content.push((FontPickerRow::RemoveEntry(i), x_top, REMOVE_X_SIZE));
+                if allow_remove {
+                    let x_top = cy + (FONT_PICKER_ROW_H - REMOVE_X_SIZE) / 2.0;
+                    content.push((FontPickerRow::RemoveEntry(i), x_top, REMOVE_X_SIZE));
+                }
                 cy += FONT_PICKER_ROW_H;
             }
         }
@@ -260,9 +326,25 @@ pub fn font_picker_layout(
     let max_scroll = (content_h - viewport_h).max(0.0);
     let scroll = scroll.clamp(0.0, max_scroll);
 
+    let popup_w = popup_width.min(bounds.size.x).max(1.0);
+    let popup_h = FONT_PICKER_SEARCH_H + viewport_h;
+    let min_x = bounds.origin.x;
+    let max_x = (bounds.origin.x + bounds.size.x - popup_w).max(min_x);
+    let popup_x = (trigger.origin.x + trigger.size.x - popup_w).clamp(min_x, max_x);
+    let bounds_bottom = bounds.origin.y + bounds.size.y;
+    let below = trigger.origin.y + trigger.size.y + 4.0;
+    let above = trigger.origin.y - popup_h - 4.0;
+    let preferred_y = if below + popup_h <= bounds_bottom || above < bounds.origin.y {
+        below
+    } else {
+        above
+    };
+    let max_y = (bounds_bottom - popup_h).max(bounds.origin.y);
+    let popup_y = preferred_y.clamp(bounds.origin.y, max_y);
+
     let popup = Rect {
         origin: Point2D::new(popup_x, popup_y),
-        size: Point2D::new(popup_w, FONT_PICKER_SEARCH_H + viewport_h),
+        size: Point2D::new(popup_w, popup_h),
     };
     let search = Rect {
         origin: popup.origin,
@@ -292,13 +374,61 @@ pub fn font_picker_layout(
             )
         })
         .collect();
-    Some(FontPickerLayout {
+    FontPickerLayout {
         popup,
         search,
         viewport,
         max_scroll,
         rows,
-    })
+    }
+}
+
+pub fn font_picker_hit_in_layout(layout: &FontPickerLayout, point: Point2D) -> SelectHit {
+    if !layout.popup.contains(point) {
+        return SelectHit::Outside;
+    }
+    if !layout.viewport.contains(point) {
+        return SelectHit::Inside;
+    }
+    layout
+        .rows
+        .iter()
+        .find_map(|(row, rect)| match row {
+            FontPickerRow::Entry(index) if rect.contains(point) => Some(SelectHit::Row(*index)),
+            _ if rect.contains(point) => Some(SelectHit::Inside),
+            _ => None,
+        })
+        .unwrap_or(SelectHit::Inside)
+}
+
+pub fn font_picker_action_in_layout(
+    layout: &FontPickerLayout,
+    point: Point2D,
+) -> Option<FontPickerAction> {
+    if !layout.viewport.contains(point) {
+        return None;
+    }
+    let mut entry_hit = None;
+    for (row, rect) in &layout.rows {
+        if !rect.contains(point) {
+            continue;
+        }
+        match row {
+            FontPickerRow::RemoveEntry(index) => return Some(FontPickerAction::Remove(*index)),
+            FontPickerRow::ImportAction => return Some(FontPickerAction::Import),
+            FontPickerRow::Entry(index) => entry_hit = Some(*index),
+            _ => {}
+        }
+    }
+    entry_hit.map(FontPickerAction::Select)
+}
+
+pub fn font_picker_import_hover_in_layout(layout: &FontPickerLayout, point: Point2D) -> bool {
+    layout.viewport.contains(point)
+        && layout
+            .rows
+            .iter()
+            .any(|(row, rect)| matches!(row, FontPickerRow::ImportAction) && rect.contains(point))
 }
 
 /// Whether `point` falls inside the open dropdown (search row or
@@ -487,7 +617,7 @@ pub fn font_picker_max_scroll(
 // unchanged for the panel + hosts.
 #[path = "property_panel_typography_paint.rs"]
 mod paint;
-pub use paint::paint_font_picker;
+pub use paint::{paint_font_picker, paint_font_picker_at};
 
 #[cfg(test)]
 #[path = "property_panel_typography_tests.rs"]

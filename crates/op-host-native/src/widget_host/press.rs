@@ -14,11 +14,12 @@ use super::{
     PanelResizeKind, RotateDragState, WidgetHostNative,
 };
 use op_editor_core::codegen::CodeSelection;
+use op_editor_core::figma_import_state::ImportSource;
 use op_editor_core::pen_node_ext::PenNodeExt;
 use op_editor_ui::widgets::{
     rotation_corner_at_point, selection_handle_at_point, AIChatHit, AIChatPlaceholder,
-    CanvasViewport, LayoutCx, LocalePicker, PropertyPanel, Toolbar, TopBar, TopBarHit, Widget,
-    TOOLBAR_WIDTH, TOP_BAR_HEIGHT,
+    CanvasViewport, ImportMenu, ImportMenuChoice, LayoutCx, LocalePicker, PropertyPanel, Toolbar,
+    TopBar, TopBarHit, Widget, TOOLBAR_WIDTH, TOP_BAR_HEIGHT,
 };
 use op_editor_ui::{Point2D, Rect};
 
@@ -234,7 +235,14 @@ impl WidgetHostNative {
             op_editor_ui::widgets::MissingFontsPanel::for_editor(&self.editor_state)
                 .map(|panel| panel.rect(viewport_width, viewport_height));
         if let Some(panel_rect) = missing_fonts_rect {
-            if self.dispatch_missing_fonts_press(panel_rect, Point2D::new(x, y)) {
+            if self.dispatch_missing_fonts_press(
+                panel_rect,
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                Point2D::new(x, y),
+            ) {
                 self.close_image_popovers_for_higher_overlay();
                 return true;
             }
@@ -428,6 +436,35 @@ impl WidgetHostNative {
             return true;
         }
 
+        // 0a0. Import dropdown — same overlay tier as the locale picker.
+        if self.editor_state.editor_ui.import_menu_open {
+            self.refresh_layout_scene();
+            let (anchor, viewport) = self.import_menu_anchor(viewport_width, viewport_height);
+            let menu = ImportMenu::for_editor_ui(&self.editor_state.editor_ui);
+            let choice = menu.choice_at(anchor, viewport, Point2D::new(x, y));
+            let hit = menu.hit(anchor, viewport, Point2D::new(x, y));
+            if matches!(hit, op_editor_ui::widgets::import_menu::SelectHit::Inside) {
+                return true;
+            }
+            self.close_import_menu();
+            match choice {
+                Some(ImportMenuChoice::Figma) => {
+                    self.editor_state.editor_ui.import_source = ImportSource::Figma;
+                    self.editor_state.editor_ui.figma_import_open = true;
+                }
+                Some(ImportMenuChoice::Html) => {
+                    self.editor_state.editor_ui.import_source = ImportSource::Html;
+                    self.editor_state.editor_ui.figma_import_open = true;
+                }
+                None => {
+                    // Silent outside-close is a blank press — blur inputs too.
+                    self.blur_text_inputs_on_blank_press();
+                }
+            }
+            self.mark_dirty();
+            return true;
+        }
+
         // 0a. Locale picker overlay — top-most when open.
         if self.editor_state.editor_ui.locale_picker.open {
             self.refresh_layout_scene();
@@ -520,8 +557,13 @@ impl WidgetHostNative {
                     self.toggle_preview((cw, ch));
                     return true;
                 }
-                TopBarHit::OpenFigmaImport => {
-                    self.editor_state.editor_ui.figma_import_open = true;
+                TopBarHit::OpenImportMenu => {
+                    // Toggle: a second click on the button closes the
+                    // menu rather than re-opening it under the cursor.
+                    let open = !self.editor_state.editor_ui.import_menu_open;
+                    self.editor_state.editor_ui.import_menu_open = open;
+                    self.editor_state.editor_ui.import_menu.open = open;
+                    self.editor_state.editor_ui.import_menu.hover = None;
                     self.mark_dirty();
                     return true;
                 }

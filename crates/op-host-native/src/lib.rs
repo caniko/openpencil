@@ -98,9 +98,9 @@ pub mod preview;
     target_os = "android"
 ))]
 pub use backend::{
-    begin_image_paint_diagnostics, decode_raster, end_image_paint_diagnostics,
-    image_paint_diagnostics_snapshot, to_jian_rect, ImagePaintDiagnostics, NativeBackend,
-    NativeFrameBackend,
+    begin_image_paint_diagnostics, decode_raster, decode_raster_capped,
+    end_image_paint_diagnostics, image_paint_diagnostics_snapshot, to_jian_rect,
+    ImagePaintDiagnostics, NativeBackend, NativeFrameBackend,
 };
 #[cfg(feature = "gl-host")]
 #[cfg(any(

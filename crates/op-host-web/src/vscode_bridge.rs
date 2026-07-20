@@ -305,6 +305,7 @@ fn handle_open_document<C: RepaintContext + 'static>(
         b.host_mut().editor_state_mut().replace_document(doc);
         b.host_mut().force_rotate_layer_panel_owner();
         b.host_mut().mark_editor_state_dirty();
+        b.host_mut().arm_missing_fonts_detection();
         let (w, h) = b.viewport_size();
         b.host_mut().fit_content_to_viewport(w, h);
         let _ = b.repaint();

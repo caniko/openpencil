@@ -1,14 +1,14 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use jian_ops_schema::node::base::{BoolOrExpression, NumberOrExpression, PenNodeBase};
-use jian_ops_schema::node::container::{ContainerProps, CornerRadius};
+use jian_ops_schema::node::container::CornerRadius;
 use jian_ops_schema::node::{
     CheckboxNode, FrameNode, ImageFitMode, ImageNode, ImageSrc, PenNode, ProgressNode,
     RadioGroupNode, RectangleNode, SelectNode, SelectOption, SliderNode, TextAreaNode,
     TextInputNode,
 };
-use jian_ops_schema::sizing::{SizingBehavior, SizingKeyword};
-use jian_ops_schema::style::{PenEffect, PenFill, PenStroke, SolidFillBody};
+use jian_ops_schema::sizing::{SizeLimits, SizingBehavior, SizingKeyword};
+use jian_ops_schema::style::{BlendMode, PenEffect, PenFill, PenStroke, SolidFillBody};
 
 use crate::css::cascade::ComputedStyle;
 use crate::dom::{DomElement, DomNode};
@@ -26,7 +26,7 @@ pub fn map_special(
         "textarea" => map_text_area(context, element, style),
         "select" => map_select(context, element, style),
         "progress" => map_progress(context, element, style),
-        "hr" => map_horizontal_rule(context),
+        "hr" => map_horizontal_rule(context, style),
         "iframe" | "video" | "canvas" => map_placeholder(context, element, style),
         _ => return None,
     };
@@ -85,9 +85,10 @@ pub(crate) fn map_radio_group(
         .map(str::to_string);
     let visual = visual_props(context, style);
     let node = PenNode::RadioGroup(RadioGroupNode {
-        base: base(context, "radio_group"),
+        base: base(context, "radio_group", style),
         width: visual.width,
         height: visual.height,
+        limits: visual.limits,
         value,
         options: Some(options),
         fill: visual.fill,
@@ -102,6 +103,7 @@ pub(crate) fn map_radio_group(
 struct VisualProps {
     width: Option<SizingBehavior>,
     height: Option<SizingBehavior>,
+    limits: SizeLimits,
     fill: Option<Vec<PenFill>>,
     stroke: Option<PenStroke>,
     effects: Option<Vec<PenEffect>>,
@@ -113,6 +115,7 @@ fn visual_props(context: &mut MapCtx<'_>, style: &ComputedStyle) -> VisualProps 
     VisualProps {
         width: container.width,
         height: container.height,
+        limits: container.limits,
         fill: container.fill,
         stroke: container.stroke,
         effects: container.effects,
@@ -120,12 +123,14 @@ fn visual_props(context: &mut MapCtx<'_>, style: &ComputedStyle) -> VisualProps 
     }
 }
 
-fn base(context: &mut MapCtx<'_>, name: &str) -> PenNodeBase {
-    PenNodeBase {
+fn base(context: &mut MapCtx<'_>, name: &str, style: &ComputedStyle) -> PenNodeBase {
+    let mut base = PenNodeBase {
         id: context.generate_id(),
         name: Some(name.to_string()),
         ..Default::default()
-    }
+    };
+    crate::mapper::apply_base_style(&mut base, style, context);
+    base
 }
 
 fn finish(context: &mut MapCtx<'_>, node: PenNode) -> PenNode {
@@ -139,12 +144,29 @@ fn map_image(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
         Some("cover") => Some(ImageFitMode::Crop),
         Some("contain") => Some(ImageFitMode::Fit),
         Some("fill") => Some(ImageFitMode::Fill),
+        Some("scale-down") => {
+            context.warn_once("CSS object-fit:scale-down approximated as contain");
+            Some(ImageFitMode::Fit)
+        }
+        Some("none") => {
+            context.warn_once("CSS object-fit:none has no image-node equivalent and was ignored");
+            None
+        }
         _ => None,
     };
+    if style
+        .get("object-position")
+        .is_some_and(|value| !is_default_object_position(value))
+    {
+        context.warn_once(
+            "CSS object-position has no image-node equivalent; the image remains centered",
+        );
+    }
     let node = PenNode::Image(ImageNode {
-        base: base(context, "img"),
+        base: base(context, "img", style),
         src: ImageSrc::from(element.attr("src").unwrap_or("")),
         object_fit,
+        blend_mode: image_blend_mode(context, style),
         width: visual.width.or_else(|| numeric_attr(element, "width")),
         height: visual.height.or_else(|| numeric_attr(element, "height")),
         corner_radius: visual.corner_radius,
@@ -165,9 +187,36 @@ fn map_image(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
         semantics: None,
         gestures: None,
         route: None,
-        limits: Default::default(),
+        limits: visual.limits,
     });
     finish(context, node)
+}
+
+fn is_default_object_position(value: &str) -> bool {
+    let parts: Vec<_> = value
+        .split_ascii_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect();
+    match parts.as_slice() {
+        [value] => matches!(value.as_str(), "center" | "50%"),
+        [first, second] => {
+            matches!(first.as_str(), "center" | "50%")
+                && matches!(second.as_str(), "center" | "50%")
+        }
+        _ => false,
+    }
+}
+
+fn image_blend_mode(context: &mut MapCtx<'_>, style: &ComputedStyle) -> Option<BlendMode> {
+    let value = style.get("mix-blend-mode")?;
+    match crate::mapper::map_blend_mode(value) {
+        Some(BlendMode::Normal) => None,
+        Some(mode) => Some(mode),
+        None => {
+            context.warn_once("unsupported CSS mix-blend-mode was ignored on an image");
+            None
+        }
+    }
 }
 
 fn map_svg(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle) -> PenNode {
@@ -176,9 +225,10 @@ fn map_svg(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle
     let src = format!("data:image/svg+xml;base64,{}", STANDARD.encode(source));
     let visual = visual_props(context, style);
     let node = PenNode::Image(ImageNode {
-        base: base(context, "svg"),
+        base: base(context, "svg", style),
         src: ImageSrc::from(src),
         object_fit: None,
+        blend_mode: image_blend_mode(context, style),
         width: visual.width.or_else(|| numeric_attr(element, "width")),
         height: visual.height.or_else(|| numeric_attr(element, "height")),
         corner_radius: visual.corner_radius,
@@ -199,7 +249,7 @@ fn map_svg(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle
         semantics: None,
         gestures: None,
         route: None,
-        limits: Default::default(),
+        limits: visual.limits,
     });
     finish(context, node)
 }
@@ -210,9 +260,10 @@ fn map_input(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
     let node = match input_type.as_str() {
         "text" | "email" | "password" | "search" | "url" | "tel" => {
             PenNode::TextInput(TextInputNode {
-                base: base(context, "input"),
+                base: base(context, "input", style),
                 width: visual.width,
                 height: visual.height,
+                limits: visual.limits,
                 placeholder: element.attr("placeholder").map(str::to_string),
                 value: element.attr("value").map(str::to_string),
                 fill: visual.fill,
@@ -223,9 +274,10 @@ fn map_input(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
             })
         }
         "checkbox" => PenNode::Checkbox(CheckboxNode {
-            base: base(context, "checkbox"),
+            base: base(context, "checkbox", style),
             width: visual.width,
             height: visual.height,
+            limits: visual.limits,
             checked: Some(BoolOrExpression::Bool(has_attr(element, "checked"))),
             label: None,
             fill: visual.fill,
@@ -235,9 +287,10 @@ fn map_input(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
             ..Default::default()
         }),
         "range" => PenNode::Slider(SliderNode {
-            base: base(context, "slider"),
+            base: base(context, "slider", style),
             width: visual.width,
             height: visual.height,
+            limits: visual.limits,
             min: float_attr(element, "min"),
             max: float_attr(element, "max"),
             step: float_attr(element, "step"),
@@ -249,23 +302,35 @@ fn map_input(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
             ..Default::default()
         }),
         "radio" => PenNode::RadioGroup(RadioGroupNode {
-            base: base(context, "radio_group"),
+            base: base(context, "radio_group", style),
+            width: visual.width,
+            height: visual.height,
+            limits: visual.limits,
             value: has_attr(element, "checked")
                 .then(|| element.attr("value").unwrap_or("on").to_string()),
             options: Some(vec![SelectOption {
                 value: element.attr("value").unwrap_or("on").to_string(),
                 label: element.attr("aria-label").unwrap_or("on").to_string(),
             }]),
+            fill: visual.fill,
+            stroke: visual.stroke,
+            effects: visual.effects,
+            corner_radius: visual.corner_radius,
             ..Default::default()
         }),
         _ => {
             context.warn_once("unsupported input type imported as a text input");
             PenNode::TextInput(TextInputNode {
-                base: base(context, "input"),
+                base: base(context, "input", style),
                 width: visual.width,
                 height: visual.height,
+                limits: visual.limits,
                 placeholder: element.attr("placeholder").map(str::to_string),
                 value: element.attr("value").map(str::to_string),
+                fill: visual.fill,
+                stroke: visual.stroke,
+                effects: visual.effects,
+                corner_radius: visual.corner_radius,
                 ..Default::default()
             })
         }
@@ -276,9 +341,10 @@ fn map_input(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSty
 fn map_text_area(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle) -> PenNode {
     let visual = visual_props(context, style);
     let node = PenNode::TextArea(TextAreaNode {
-        base: base(context, "textarea"),
+        base: base(context, "textarea", style),
         width: visual.width,
         height: visual.height,
+        limits: visual.limits,
         placeholder: element.attr("placeholder").map(str::to_string),
         value: Some(element_text(element)),
         fill: visual.fill,
@@ -320,9 +386,10 @@ fn map_select(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSt
         })
         .collect();
     let node = PenNode::Select(SelectNode {
-        base: base(context, "select"),
+        base: base(context, "select", style),
         width: visual.width,
         height: visual.height,
+        limits: visual.limits,
         placeholder: element.attr("placeholder").map(str::to_string),
         value,
         options: Some(options),
@@ -338,9 +405,10 @@ fn map_select(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedSt
 fn map_progress(context: &mut MapCtx<'_>, element: &DomElement, style: &ComputedStyle) -> PenNode {
     let visual = visual_props(context, style);
     let node = PenNode::Progress(ProgressNode {
-        base: base(context, "progress"),
+        base: base(context, "progress", style),
         width: visual.width,
         height: visual.height,
+        limits: visual.limits,
         value: float_attr(element, "value").map(NumberOrExpression::Number),
         max: float_attr(element, "max"),
         fill: visual.fill,
@@ -352,15 +420,16 @@ fn map_progress(context: &mut MapCtx<'_>, element: &DomElement, style: &Computed
     finish(context, node)
 }
 
-fn map_horizontal_rule(context: &mut MapCtx<'_>) -> PenNode {
+fn map_horizontal_rule(context: &mut MapCtx<'_>, style: &ComputedStyle) -> PenNode {
+    let mut container = container_props_from(style, context);
+    container.width = container
+        .width
+        .or(Some(SizingBehavior::Keyword(SizingKeyword::FillContainer)));
+    container.height = container.height.or(Some(SizingBehavior::Number(1.0)));
+    container.fill = container.fill.or_else(|| Some(vec![solid_fill("#e0e0e0")]));
     let node = PenNode::Rectangle(RectangleNode {
-        base: base(context, "hr"),
-        container: ContainerProps {
-            width: Some(SizingBehavior::Keyword(SizingKeyword::FillContainer)),
-            height: Some(SizingBehavior::Number(1.0)),
-            fill: Some(vec![solid_fill("#e0e0e0")]),
-            ..Default::default()
-        },
+        base: base(context, "hr", style),
+        container,
         children: None,
         state: None,
         bindings: None,
@@ -386,7 +455,7 @@ fn map_placeholder(
         container.fill = Some(vec![solid_fill("#f0f0f0")]);
     }
     let node = PenNode::Frame(FrameNode {
-        base: base(context, &element.tag),
+        base: base(context, &element.tag, style),
         container,
         children: Some(Vec::new()),
         image_search_query: None,
@@ -469,7 +538,11 @@ fn solid_fill(color: &str) -> PenFill {
 
 #[cfg(test)]
 mod tests {
+    use jian_ops_schema::node::base::NumberOrExpression;
+    use jian_ops_schema::node::container::CornerRadius;
     use jian_ops_schema::node::PenNode;
+    use jian_ops_schema::sizing::SizingBehavior;
+    use jian_ops_schema::style::{BlendMode, PenFill};
 
     fn element_with(tag: &str, attrs: Vec<(&str, &str)>) -> crate::dom::DomElement {
         crate::dom::DomElement {
@@ -491,6 +564,11 @@ mod tests {
             warnings: Vec::new(),
             next_id: 0,
             node_count: 0,
+            containing_width: options.viewport_width,
+            containing_height: options.viewport_width * 0.625,
+            containing_width_is_definite: true,
+            positioned_width: options.viewport_width,
+            positioned_height: options.viewport_width * 0.625,
         };
         crate::mapper::map_element(&mut context, &[&element], None)
     }
@@ -509,10 +587,101 @@ mod tests {
             panic!("expected image")
         };
         assert_eq!(image.src.as_str(), "https://x.dev/a.png");
-        use jian_ops_schema::sizing::SizingBehavior;
         assert!(matches!(
             image.width,
             Some(SizingBehavior::Number(value)) if value == 120.0
+        ));
+    }
+
+    #[test]
+    fn special_nodes_receive_computed_base_and_visual_styles() {
+        let node = map_it(element_with(
+            "img",
+            vec![
+                ("src", "hero.png"),
+                (
+                    "style",
+                    "position:absolute;left:12px;top:8px;opacity:.4;\
+                     transform:rotate(15deg);width:50px;height:40px;\
+                     border-radius:6px;filter:blur(2px)",
+                ),
+            ],
+        ));
+        let Some(PenNode::Image(image)) = node else {
+            panic!("expected image")
+        };
+        assert_eq!(image.base.x, Some(12.0));
+        assert_eq!(image.base.y, Some(8.0));
+        assert_eq!(image.base.rotation, Some(15.0));
+        assert!(matches!(
+            image.base.opacity,
+            Some(NumberOrExpression::Number(value)) if value == 0.4
+        ));
+        assert!(matches!(
+            image.width,
+            Some(SizingBehavior::Number(value)) if value == 50.0
+        ));
+        assert!(matches!(
+            image.height,
+            Some(SizingBehavior::Number(value)) if value == 40.0
+        ));
+        assert!(matches!(
+            image.corner_radius,
+            Some(CornerRadius::Uniform(value)) if value == 6.0
+        ));
+        assert!(image
+            .effects
+            .as_ref()
+            .is_some_and(|effects| !effects.is_empty()));
+    }
+
+    #[test]
+    fn horizontal_rule_and_radio_keep_css_visuals() {
+        let Some(PenNode::Rectangle(rule)) = map_it(element_with(
+            "hr",
+            vec![(
+                "style",
+                "width:80px;height:3px;background:#123456;border-radius:2px;opacity:.5",
+            )],
+        )) else {
+            panic!("expected rectangle")
+        };
+        assert!(matches!(
+            rule.container.width,
+            Some(SizingBehavior::Number(value)) if value == 80.0
+        ));
+        assert!(matches!(
+            rule.container.height,
+            Some(SizingBehavior::Number(value)) if value == 3.0
+        ));
+        assert!(matches!(
+            rule.container.fill.as_deref(),
+            Some([PenFill::Solid(fill)]) if fill.color == "#123456"
+        ));
+        assert!(matches!(
+            rule.base.opacity,
+            Some(NumberOrExpression::Number(value)) if value == 0.5
+        ));
+
+        let Some(PenNode::RadioGroup(radio)) = map_it(element_with(
+            "input",
+            vec![
+                ("type", "radio"),
+                (
+                    "style",
+                    "width:24px;height:24px;background:#abcdef;border-radius:12px",
+                ),
+            ],
+        )) else {
+            panic!("expected radio group")
+        };
+        assert!(matches!(
+            radio.fill.as_deref(),
+            Some([PenFill::Solid(fill)]) if fill.color == "#abcdef"
+        ));
+        assert!(matches!(
+            radio.corner_radius,
+            Some(CornerRadius::Uniform(value)) if value == 12.0
         ));
     }
 
@@ -585,5 +754,30 @@ mod tests {
             panic!()
         };
         assert_eq!(frame.base.role.as_deref(), Some("button"));
+    }
+
+    #[test]
+    fn image_blending_is_preserved_while_unrepresentable_position_is_reported() {
+        let result = crate::import_html(
+            "<img src='hero.png' style='object-fit:cover;object-position:65% bottom;\
+                                        mix-blend-mode:multiply'>",
+            &crate::HtmlImportOptions::default(),
+        );
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("object-position")));
+        assert!(result
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("mix-blend-mode")));
+        let node = map_it(element_with(
+            "img",
+            vec![("src", "hero.png"), ("style", "mix-blend-mode:multiply")],
+        ));
+        let Some(PenNode::Image(image)) = node else {
+            panic!("expected image node")
+        };
+        assert_eq!(image.blend_mode, Some(BlendMode::Multiply));
     }
 }

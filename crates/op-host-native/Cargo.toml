@@ -35,6 +35,7 @@ gl-host = [
   "dep:scopeguard",
   "dep:jian-host-desktop",
   "dep:accesskit",
+  "dep:op-orchestrator",
 ]
 
 # The basic_window demo needs the GL host stack (SharedSkiaContext + winit);
@@ -114,15 +115,13 @@ op-pen-loader = { path = "../op-pen-loader" }
 jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
 
 # Track C-1 of the interactive-preview plan: `preview::auto_wire` runs the
-# orchestrator's Track A deterministic screen/nav wiring pass
-# (`wire_screen_navigation`) over a preview-only `EditorState` clone on
-# `enter_preview`, so a document with no authored `screen` marker still
-# enters App Mode. Safe to add here — verified no cycle (`op-orchestrator`'s
-# own deps never reach back to `op-host-native`) and `op-orchestrator` is a
-# pure-logic crate with no skia/winit/wasm surface, gated outside wasm32
-# alongside the rest of the non-wasm native stack (this crate is never
-# built for wasm32 — `op-host-web` does not depend on it).
-op-orchestrator = { path = "../op-orchestrator" }
+# orchestrator's Track A deterministic screen/nav wiring pass over a
+# preview-only `EditorState` clone. Preview itself is behind `gl-host`, so keep
+# this dependency behind the same feature. In particular, op-orchestrator
+# enables op-mcp's QuickJS-backed `script` feature; pulling it into the default
+# raster host would make iOS and Android builds compile rquickjs-sys even though
+# mobile does not compile Preview or use script generation.
+op-orchestrator = { path = "../op-orchestrator", optional = true }
 
 # Cross-platform widget render stack (desktop + mobile, NOT wasm).
 #

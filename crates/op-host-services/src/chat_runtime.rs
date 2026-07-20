@@ -20,7 +20,9 @@
 //! that pumps `Event`s into a `std::sync::mpsc::channel`; the returned
 //! iterator drains the receiver until it goes idle.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use agent::abort::AbortController;
 use agent::provider::Provider;
@@ -240,18 +242,69 @@ impl ChatProvider for BuiltInProvider {
 /// sync bridge in one place.
 pub struct BlockingRecvIter<T> {
     rx: mpsc::Receiver<T>,
+    cancel: Option<Arc<AtomicBool>>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<T> BlockingRecvIter<T> {
     pub fn new(rx: mpsc::Receiver<T>) -> Self {
-        Self { rx }
+        Self {
+            rx,
+            cancel: None,
+            task: None,
+        }
+    }
+
+    /// A polling bridge for transports whose async task can be aborted. The
+    /// short poll interval lets synchronous consumers observe cancellation
+    /// even when the provider is silent and would otherwise block forever in
+    /// `blocking_recv`.
+    pub fn cancellable(
+        rx: mpsc::Receiver<T>,
+        cancel: Arc<AtomicBool>,
+        task: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            rx,
+            cancel: Some(cancel),
+            task: Some(task),
+        }
     }
 }
 
 impl<T> Iterator for BlockingRecvIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
-        self.rx.blocking_recv()
+        if self.cancel.is_none() {
+            return self.rx.blocking_recv();
+        }
+        loop {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+            {
+                if let Some(task) = self.task.take() {
+                    task.abort();
+                }
+                return None;
+            }
+            match self.rx.try_recv() {
+                Ok(value) => return Some(value),
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+}
+
+impl<T> Drop for BlockingRecvIter<T> {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -394,6 +447,29 @@ mod tests {
                 .any(|d| matches!(d, ChatDelta::Error(s) if s.contains("rate_limited") && s.contains("slow down"))),
             "expected Error delta carrying code + message, got {:?}",
             deltas
+        );
+    }
+
+    #[test]
+    fn cancellable_bridge_unblocks_when_a_silent_provider_is_canceled() {
+        let (tx, rx) = mpsc::channel(1);
+        let task = shared_runtime().spawn(async move {
+            let _keep_sender_alive = tx;
+            std::future::pending::<()>().await;
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            signal.store(true, Ordering::Relaxed);
+        });
+
+        let started = std::time::Instant::now();
+        let mut iter = BlockingRecvIter::<ChatDelta>::cancellable(rx, cancel, task);
+        assert!(iter.next().is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "cancellation must not wait for another provider event"
         );
     }
 

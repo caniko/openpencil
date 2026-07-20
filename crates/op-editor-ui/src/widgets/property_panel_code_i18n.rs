@@ -42,6 +42,26 @@ impl CodePanelStrings {
         self.t("code.generationFailed")
     }
 
+    /// Friendly replacement for the pipeline's internal
+    /// "All chunks failed — no code to assemble" sentinel. The main locale
+    /// catalogue does not have a dedicated key yet, so keep the two Chinese
+    /// product locales native and use English as the normal fallback.
+    pub(super) fn no_usable_code(self) -> &'static str {
+        match self.locale {
+            Locale::ZhCn => "AI 未返回可用代码。请重试，或切换 AI 模型后再试。",
+            Locale::ZhTw => "AI 未回傳可用程式碼。請重試，或切換 AI 模型後再試。",
+            _ => "The AI returned no usable code. Retry or switch AI models.",
+        }
+    }
+
+    pub(super) fn previous_result_available(self) -> &'static str {
+        match self.locale {
+            Locale::ZhCn => "上次生成的代码仍已保留",
+            Locale::ZhTw => "上次產生的程式碼仍已保留",
+            _ => "The previous generated result is still available",
+        }
+    }
+
     pub(super) fn regenerate(self) -> &'static str {
         self.t("code.regenerate")
     }

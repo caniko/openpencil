@@ -11,6 +11,7 @@ use op_editor_core::codegen::{CodeSelection, CodegenHover, CodegenState};
 const CODE_AREA_MIN_H: f32 = 220.0;
 const CODE_LINE_H: f32 = 16.0;
 const CODE_FONT_SIZE: f32 = 11.0;
+const CODE_FONT_FAMILY: &str = "monospace";
 const CODE_PAD_X: f32 = 12.0;
 const CODE_PAD_Y: f32 = 10.0;
 const CODE_GUTTER_W: f32 = 28.0;
@@ -221,10 +222,10 @@ fn paint_code_area(
     }
     for line in lines.iter() {
         let n = (line.index + 1).to_string();
-        let line_no_w = cx.backend.measure_text(&n, CODE_FONT_SIZE);
+        let line_no_w = measure_code_text(cx, &n);
         let layout = TextLayout::single_run(
             &n,
-            "monospace",
+            CODE_FONT_FAMILY,
             CODE_FONT_SIZE,
             (code_line_number_color(theme)).to_jian(),
             origin(),
@@ -276,8 +277,8 @@ fn paint_code_selection(
         }
         let before = &span.text[..sel_start - span.start];
         let selected = &span.text[sel_start - span.start..sel_end - span.start];
-        let x0 = text_x + cx.backend.measure_text(before, CODE_FONT_SIZE);
-        let mut width = cx.backend.measure_text(selected, CODE_FONT_SIZE);
+        let x0 = text_x + measure_code_text(cx, before);
+        let mut width = measure_code_text(cx, selected);
         if includes_line_break {
             width += CODE_CHAR_W;
         }
@@ -414,15 +415,24 @@ fn paint_highlighted_code_line(
         if !token.text.is_empty() {
             let layout = TextLayout::single_run(
                 token.text,
-                "monospace",
+                CODE_FONT_FAMILY,
                 CODE_FONT_SIZE,
                 (syntax_color(theme, token.kind)).to_jian(),
                 origin(),
             );
             cx.backend.draw_text(&layout, Point2D::new(x, baseline_y));
-            x += cx.backend.measure_text(token.text, CODE_FONT_SIZE);
+            x += measure_code_text(cx, token.text);
         }
     }
+}
+
+/// Measure with exactly the same family, weight, and slant used by the
+/// `TextLayout` above. Measuring syntax runs with the backend's default UI
+/// face makes every token start a little too early (or late); the error then
+/// accumulates across long generated JSX lines until adjacent runs overlap.
+fn measure_code_text(cx: &mut PaintCx<'_>, text: &str) -> f32 {
+    cx.backend
+        .measure_text_family_styled(text, CODE_FONT_SIZE, CODE_FONT_FAMILY, 400, false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,3 +702,7 @@ fn action_chip_width(label: &str) -> f32 {
     let label_w = label.chars().count() as f32 * ACTION_LABEL_FONT_SIZE * 0.55;
     ACTION_CHIP_PAD_X * 2.0 + ACTION_CHIP_ICON_SIZE + ACTION_CHIP_TEXT_GAP + label_w
 }
+
+#[cfg(test)]
+#[path = "property_panel_code_complete_tests.rs"]
+mod tests;

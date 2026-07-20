@@ -1,5 +1,5 @@
-use super::{contain_rect, to_sk_rect, NativeBackend};
-use op_editor_ui::{ImageAdjustments, ImageDrawMode, Point2D, Rect};
+use super::{contain_rect, layer::to_skia_blend_mode, to_sk_rect, NativeBackend};
+use op_editor_ui::{ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect};
 
 const THUMB_CACHE_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const THUMB_CACHE_MAX_ENTRIES: usize = 4096;
@@ -209,12 +209,41 @@ impl NativeBackend {
         canvas: &skia_safe::Canvas,
         rect: Rect,
         id: u64,
+        encoded: &[u8],
+        mode: ImageDrawMode,
+        adjustments: ImageAdjustments,
+        opacity: f32,
+        corner_radius: f32,
+        transform: Option<[f32; 6]>,
+    ) {
+        self.draw_image_with_options_transform_and_blend(
+            canvas,
+            rect,
+            id,
+            encoded,
+            mode,
+            adjustments,
+            opacity,
+            corner_radius,
+            transform,
+            ImageBlendMode::Normal,
+        );
+    }
+
+    /// Draw an image with affine sampling and explicit backdrop compositing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_image_with_options_transform_and_blend(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        id: u64,
         _encoded: &[u8],
         mode: ImageDrawMode,
         adjustments: ImageAdjustments,
         opacity: f32,
         corner_radius: f32,
         transform: Option<[f32; 6]>,
+        blend_mode: ImageBlendMode,
     ) {
         let Some(image) = self.raster_image(id) else {
             return;
@@ -235,6 +264,7 @@ impl NativeBackend {
         }
         let mut paint = skia_safe::Paint::default();
         paint.set_anti_alias(true);
+        paint.set_blend_mode(to_skia_blend_mode(blend_mode));
         // Node-level opacity dims the raster (rasters carry no fill
         // colour to bake the opacity into at scene-build).
         paint.set_alpha_f(opacity.clamp(0.0, 1.0));
@@ -445,7 +475,7 @@ mod crop_transform_tests {
             .draw_rect(skia_safe::Rect::from_xywh(2.0, 0.0, 2.0, 2.0), &blue);
 
         let mut backend = NativeBackend::with_dpi(1.0);
-        backend.install_raster_image(1, source.image_snapshot());
+        backend.install_raster_image(1, source.image_snapshot(), u32::MAX);
         let mut target = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
         target.canvas().clear(skia_safe::Color::TRANSPARENT);
         backend.draw_image_with_options_and_transform(

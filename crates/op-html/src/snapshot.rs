@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use jian_ops_schema::constraints::{Constraints, HConstraint, VConstraint};
 use jian_ops_schema::node::base::{NumberOrExpression, PenNodeBase};
 use jian_ops_schema::node::container::{ContainerProps, LayoutMode};
 use jian_ops_schema::node::image::{ImageFitMode, ImageNode};
 use jian_ops_schema::node::text::{FontStyleKind, FontWeight, TextAlign, TextContent, TextNode};
 use jian_ops_schema::node::{FrameNode, ImageSrc, PenNode};
 use jian_ops_schema::sizing::SizingBehavior;
-use jian_ops_schema::style::{PenFill, SolidFillBody};
+use jian_ops_schema::style::{BlendMode, PenFill, SolidFillBody};
 use serde_json::{Map, Value};
 
 use crate::color::parse_css_color;
@@ -313,6 +314,19 @@ impl<'a> SnapshotCtx<'a> {
             Some("fill") => Some(ImageFitMode::Fill),
             _ => None,
         };
+        let blend_mode = match styles
+            .get("mix-blend-mode")
+            .and_then(|value| crate::mapper::map_blend_mode(value))
+        {
+            Some(BlendMode::Normal) | None => None,
+            Some(mode) => Some(mode),
+        };
+        if styles
+            .get("mix-blend-mode")
+            .is_some_and(|value| crate::mapper::map_blend_mode(value).is_none())
+        {
+            self.warn_once("unsupported CSS mix-blend-mode was ignored on an image");
+        }
         if object
             .get("tainted")
             .and_then(Value::as_bool)
@@ -339,6 +353,7 @@ impl<'a> SnapshotCtx<'a> {
                     .unwrap_or_default(),
             ),
             object_fit,
+            blend_mode,
             width: Some(SizingBehavior::Number(rect.w)),
             height: Some(SizingBehavior::Number(rect.h)),
             corner_radius: visual.corner_radius,
@@ -369,14 +384,28 @@ impl<'a> SnapshotCtx<'a> {
         rect: Rect,
         parent_rect: Option<Rect>,
     ) -> PenNodeBase {
-        let (x, y) = parent_rect
-            .map(|parent| (Some(rect.x - parent.x), Some(rect.y - parent.y)))
-            .unwrap_or((None, None));
+        let (x, y, constraints) = parent_rect
+            .map(|parent| {
+                (
+                    Some(rect.x - parent.x),
+                    Some(rect.y - parent.y),
+                    Some(Constraints {
+                        h: HConstraint::Left,
+                        v: VConstraint::Top,
+                    }),
+                )
+            })
+            .unwrap_or((None, None, None));
         PenNodeBase {
             id,
             name,
             x,
             y,
+            // Computed snapshots carry browser-resolved rectangles. Mark
+            // every non-root node as explicitly positioned so the downstream
+            // fit-content repair cannot pull it back into flex flow or expand
+            // its fixed parent around visible overflow.
+            constraints,
             ..PenNodeBase::default()
         }
     }
@@ -390,6 +419,11 @@ impl<'a> SnapshotCtx<'a> {
             warnings: Vec::new(),
             next_id: 0,
             node_count: 0,
+            containing_width: self.opts.viewport_width,
+            containing_height: self.opts.viewport_width * 0.625,
+            containing_width_is_definite: true,
+            positioned_width: self.opts.viewport_width,
+            positioned_height: self.opts.viewport_width * 0.625,
         };
         let container = container_props_from(&computed, &mut map_context);
         for warning in map_context.warnings {
@@ -442,6 +476,23 @@ fn computed_style(styles: &BTreeMap<String, String>, default_font_size: f64) -> 
             .find(|part| parse_px(part).is_some())
         {
             props.insert("border-width".into(), width.to_string());
+        }
+        if let Some(style) = border.split_whitespace().find(|part| {
+            matches!(
+                part.to_ascii_lowercase().as_str(),
+                "none"
+                    | "hidden"
+                    | "dotted"
+                    | "dashed"
+                    | "solid"
+                    | "double"
+                    | "groove"
+                    | "ridge"
+                    | "inset"
+                    | "outset"
+            )
+        }) {
+            props.insert("border-style".into(), style.to_string());
         }
         if let Some(color) = color_from_border(border) {
             props.insert("border-color".into(), color);
@@ -552,7 +603,12 @@ mod tests {
         assert_eq!(card.base.x, Some(24.0));
         assert_eq!(card.base.y, Some(24.0));
         use jian_ops_schema::sizing::SizingBehavior;
+        use jian_ops_schema::style::StrokeThickness;
         assert!(matches!(card.container.width, Some(SizingBehavior::Number(w)) if w == 300.0));
+        assert!(matches!(
+            card.container.stroke.as_ref().map(|stroke| &stroke.thickness),
+            Some(StrokeThickness::Uniform(width)) if *width == 1.0
+        ));
         let PenNode::Text(text) = &card.children.as_ref().unwrap()[0] else {
             panic!("text run")
         };

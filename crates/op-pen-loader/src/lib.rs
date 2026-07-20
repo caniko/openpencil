@@ -29,12 +29,16 @@ mod library;
 // Only the real-shaper (`skia-measure`) build benefits from caching; the
 // estimate backend is already cheap, so the module is gated to avoid dead code
 // under the CanvasKit (no-skia-measure) web build.
+#[cfg(test)]
+mod html_import_scene_tests;
 #[cfg(feature = "skia-measure")]
 mod measure_cache;
 mod path_bounds;
 #[cfg(test)]
 mod property_edit_scene_tests;
 mod scene_cache;
+#[cfg(test)]
+mod snapshot_scene_tests;
 
 /// Process-global font-registry generation. Advances on every runtime font
 /// import/removal so measure/scene caches know to drop stale layout. Only

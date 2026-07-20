@@ -131,6 +131,7 @@ fn batchable(cmd: &EditorCommand) -> bool {
         | C::SetNodeName { .. }
         | C::ImportSvg { .. }
         | C::SetNodeLayoutProp { .. }
+        | C::ReplaceFontFamily { .. }
         | C::ReplaceAllMatchingProperties { .. }
         | C::MergeAppState { .. }
         | C::PromoteLegacyWidgets => true,

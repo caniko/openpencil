@@ -144,9 +144,12 @@ impl WidgetHost {
                         return true;
                     }
                     AIChatHit::SelectModel(idx) => {
-                        self.editor_state.editor_ui.chat_model_picker.pressed = Some(idx);
-                        self.editor_state.editor_ui.chat_model_picker.hover = Some(idx);
-                        self.mark_dirty();
+                        // Mirror native: selection, provider sync, and menu
+                        // close are one immediate state transition.
+                        self.editor_state.select_chat_model(idx);
+                        // The consumed press requests a repaint; keeping the
+                        // layout/doc-sync dirty flags clear avoids unrelated
+                        // work on a pure model-choice change.
                         return true;
                     }
                     AIChatHit::CycleThinking => {

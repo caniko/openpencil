@@ -83,6 +83,7 @@ pub(crate) fn drain_pending_file_action<C: RepaintContext + 'static>(inner: &Inn
         }
         FileAction::ExportImageConfirm => export_image(inner),
         FileAction::ImportFigma => import_figma(inner),
+        FileAction::ImportHtml => import_html_file(inner),
         FileAction::ImportImageOrSvg => import_image_or_svg(inner),
         FileAction::PickFillImage => pick_fill_image(inner),
         FileAction::RelinkImage => relink_image(inner),
@@ -495,12 +496,10 @@ fn apply_opened_document<C: RepaintContext + 'static>(
             }
             let mut state = ingested.state;
             state.editor_ui.file_name_display = Some(file_name.to_string());
-            *b.host_mut().editor_state_mut() = state;
-            // The loaded document restarts at revision 0 / page 0, aliasing the
-            // replaced document's LayerPanel row-model-cache key — rotate the
-            // owner so the next paint rebuilds instead of serving stale rows.
-            b.host_mut().force_rotate_layer_panel_owner();
-            b.host_mut().mark_editor_state_dirty();
+            // Use the shared ingestion path so an opened `.op` / `.pen` gets
+            // the same cache invalidation and missing-font detection as Figma
+            // and HTML document imports.
+            b.host_mut().install_ingested_state(state);
             let (w, h) = b.viewport_size();
             b.host_mut().fit_content_to_viewport(w, h);
             let _ = b.repaint();
@@ -522,6 +521,43 @@ fn import_figma<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
     );
 }
 
+/// Pick one HTML file, optionally together with sibling CSS and images. The
+/// ordinary multi-file picker keeps the common single-file flow working while
+/// still allowing a saved complete page to be selected as a bounded bundle.
+fn import_html_file<C: RepaintContext + 'static>(inner: &InnerRc<C>) {
+    let inner = inner.clone();
+    open_html_bundle_picker(Box::new(move |files| {
+        {
+            let mut b = inner.borrow_mut();
+            let ui = &mut b.host_mut().editor_state_mut().editor_ui;
+            ui.import_source = op_editor_core::figma_import_state::ImportSource::Html;
+            ui.figma_import_in_progress = true;
+            b.host_mut().mark_editor_state_dirty();
+            let _ = b.repaint();
+        }
+        let inner2 = inner.clone();
+        read_html_bundle(
+            files,
+            Box::new(move |files| match file_actions::ingest_html_bundle(files) {
+                Ok(ingested) => {
+                    for warning in &ingested.warnings {
+                        console_warn(&format!("[import-html] warning: {warning}"));
+                    }
+                    let mut b = inner2.borrow_mut();
+                    b.host_mut().install_ingested_state(ingested.state);
+                    let (w, h) = b.viewport_size();
+                    b.host_mut().fit_content_to_viewport(w, h);
+                    let _ = b.repaint();
+                }
+                Err(error) => {
+                    clear_figma_in_progress(&inner2);
+                    console_error(&format!("[import-html] {error}"));
+                }
+            }),
+        );
+    }));
+}
+
 /// Shared `.fig` ingestion for the import picker and drag-drop.
 fn ingest_figma_file<C: RepaintContext + 'static>(inner: &InnerRc<C>, file: web_sys::File) {
     let name = file.name();
@@ -529,10 +565,9 @@ fn ingest_figma_file<C: RepaintContext + 'static>(inner: &InnerRc<C>, file: web_
         // Raise the parsing overlay before the async read so the next
         // frame shows feedback (mirrors `figma_import_session::spawn`).
         let mut b = inner.borrow_mut();
-        b.host_mut()
-            .editor_state_mut()
-            .editor_ui
-            .figma_import_in_progress = true;
+        let ui = &mut b.host_mut().editor_state_mut().editor_ui;
+        ui.import_source = op_editor_core::figma_import_state::ImportSource::Figma;
+        ui.figma_import_in_progress = true;
         b.host_mut().mark_editor_state_dirty();
         let _ = b.repaint();
     }
@@ -986,6 +1021,151 @@ fn route_dropped_file<C: RepaintContext + 'static>(inner: &InnerRc<C>, file: web
 // ---------------------------------------------------------------------
 // Hidden file input + FileReader plumbing
 // ---------------------------------------------------------------------
+
+const MAX_HTML_BUNDLE_FILES: usize = 512;
+const MAX_HTML_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Open a normal multi-file picker. Selecting one `.html` file preserves the
+/// basic import path; selecting its saved-page siblings supplies a resource
+/// bundle without forcing browsers into directory-only mode.
+fn open_html_bundle_picker(on_files: Box<dyn FnOnce(Vec<web_sys::File>)>) {
+    let result = (|| -> Result<(), JsValue> {
+        let window = web_sys::window()
+            .ok_or_else(|| JsValue::from_str("HTML picker: window unavailable"))?;
+        let document = window
+            .document()
+            .ok_or_else(|| JsValue::from_str("HTML picker: document unavailable"))?;
+        let input = document
+            .create_element("input")?
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .map_err(|_| JsValue::from_str("HTML picker: <input> cast failed"))?;
+        input.set_type("file");
+        input.set_multiple(true);
+        input.set_accept(
+            ".html,.htm,.css,.png,.jpg,.jpeg,.gif,.webp,.svg,.woff,.woff2,.ttf,.otf,.eot",
+        );
+        input.set_attribute("style", "display:none")?;
+        input.set_attribute("aria-hidden", "true")?;
+        let body = document
+            .body()
+            .ok_or_else(|| JsValue::from_str("HTML picker: document.body unavailable"))?;
+        body.append_child(&input)?;
+
+        let slot: OnceSlot = Rc::new(RefCell::new(None));
+        let slot2 = slot.clone();
+        let input_cb = input.clone();
+        let mut once = Some(on_files);
+        *slot.borrow_mut() = Some(Closure::new(move || {
+            let mut files = Vec::new();
+            if let Some(list) = input_cb.files() {
+                for index in 0..list.length() {
+                    if let Some(file) = list.get(index) {
+                        files.push(file);
+                    }
+                }
+            }
+            input_cb.remove();
+            if let Some(cb) = once.take() {
+                cb(files);
+            }
+            let _ = slot2.borrow_mut().take();
+        }));
+        {
+            let slot_ref = slot.borrow();
+            let closure = slot_ref.as_ref().expect("closure just installed");
+            input.add_event_listener_with_callback("change", closure.as_ref().unchecked_ref())?;
+        }
+        input.click();
+        Ok(())
+    })();
+    if let Err(error) = result {
+        web_sys::console::error_1(&error);
+    }
+}
+
+struct HtmlBundleReadState {
+    remaining: usize,
+    files: Vec<file_actions::HtmlBundleFile>,
+    on_done: Option<Box<dyn FnOnce(Vec<file_actions::HtmlBundleFile>)>>,
+}
+
+fn read_html_bundle(
+    files: Vec<web_sys::File>,
+    on_done: Box<dyn FnOnce(Vec<file_actions::HtmlBundleFile>)>,
+) {
+    let mut entries: Vec<_> = files
+        .into_iter()
+        .map(|file| (html_bundle_file_path(&file), file))
+        .collect();
+    entries.sort_by(|a, b| {
+        let a_html = matches!(file_actions::drop_kind(&a.0), DropKind::Html);
+        let b_html = matches!(file_actions::drop_kind(&b.0), DropKind::Html);
+        b_html.cmp(&a_html).then_with(|| a.0.cmp(&b.0))
+    });
+
+    let mut selected = Vec::new();
+    let mut total_bytes = 0u64;
+    let mut truncated = false;
+    for (path, file) in entries {
+        let bytes = file.size().max(0.0) as u64;
+        if selected.len() >= MAX_HTML_BUNDLE_FILES
+            || total_bytes.saturating_add(bytes) > MAX_HTML_BUNDLE_BYTES
+        {
+            truncated = true;
+            continue;
+        }
+        total_bytes += bytes;
+        selected.push((path, file));
+    }
+    if truncated {
+        console_warn("[import-html] saved-page bundle was truncated at 512 files / 64 MiB");
+    }
+    if selected.is_empty() {
+        on_done(Vec::new());
+        return;
+    }
+
+    let state = Rc::new(RefCell::new(HtmlBundleReadState {
+        remaining: selected.len(),
+        files: Vec::with_capacity(selected.len()),
+        on_done: Some(on_done),
+    }));
+    for (path, file) in selected {
+        let state2 = state.clone();
+        read_file(
+            file,
+            ReadMode::Bytes,
+            Box::new(move |value| {
+                let completion = {
+                    let mut state = state2.borrow_mut();
+                    if let Some(bytes) = js_bytes(&value) {
+                        state.files.push(file_actions::HtmlBundleFile {
+                            relative_path: path,
+                            bytes,
+                        });
+                    }
+                    state.remaining -= 1;
+                    (state.remaining == 0)
+                        .then(|| (std::mem::take(&mut state.files), state.on_done.take()))
+                };
+                if let Some((files, Some(on_done))) = completion {
+                    on_done(files);
+                }
+            }),
+        );
+    }
+}
+
+fn html_bundle_file_path(file: &web_sys::File) -> String {
+    let relative = js_sys::Reflect::get(file.as_ref(), &JsValue::from_str("webkitRelativePath"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .filter(|path| !path.is_empty());
+    match relative.as_deref().and_then(|path| path.split_once('/')) {
+        Some((_, path)) if !path.is_empty() => path.to_string(),
+        _ => file.name(),
+    }
+}
 
 /// Pop a hidden `<input type=file accept=…>` and invoke `on_file`
 /// with the chosen file. One-shot; see the module docs for the

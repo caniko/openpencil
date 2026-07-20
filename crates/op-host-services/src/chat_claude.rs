@@ -33,6 +33,7 @@
 //! eventually wires through. Keeping each provider in its own file
 //! gives that surface room to grow without busting the 800-line cap.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anthropic_agent_sdk::{
@@ -128,12 +129,12 @@ impl Default for ClaudeCodeProvider {
     }
 }
 
-impl ChatProvider for ClaudeCodeProvider {
-    fn provider_label(&self) -> &str {
-        &self.label
-    }
-
-    fn send(&self, request: ChatRequest) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
+impl ClaudeCodeProvider {
+    fn send_inner(
+        &self,
+        request: ChatRequest,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
         let resume = if self.track_chat_session {
             chat_resume_slot().lock().ok().and_then(|s| s.clone())
         } else {
@@ -164,7 +165,7 @@ impl ChatProvider for ClaudeCodeProvider {
             Err(e) => return crate::chat_attachment::attachment_error_turn(e),
         };
         let (tx, rx) = mpsc::channel::<ChatDelta>(64);
-        shared_runtime().spawn(async move {
+        let task = shared_runtime().spawn(async move {
             let _guard = guard;
             let stream = match anthropic_agent_sdk::query(prompt, options).await {
                 Ok(s) => s,
@@ -233,16 +234,22 @@ impl ChatProvider for ClaudeCodeProvider {
                 }
             }
             if !emitted_done {
-                let _ = tx
-                    .send(ChatDelta::Done {
-                        stop_reason: StopReason::EndTurn,
-                    })
-                    .await;
+                for delta in provider_impl::unexpected_stream_end_deltas() {
+                    if tx.send(delta).await.is_err() {
+                        break;
+                    }
+                }
             }
         });
-        Box::new(BlockingRecvIter::new(rx))
+        match cancel {
+            Some(cancel) => Box::new(BlockingRecvIter::cancellable(rx, cancel, task)),
+            None => Box::new(BlockingRecvIter::new(rx)),
+        }
     }
 }
+
+#[path = "chat_claude_provider.rs"]
+mod provider_impl;
 
 /// Build the per-turn SDK options bundle from the configured base:
 ///
@@ -779,34 +786,5 @@ mod tests {
         };
         let options = effective_options(None, &req, None);
         assert_eq!(options.max_thinking_tokens, Some(0));
-    }
-}
-
-#[cfg(test)]
-mod effective_options_env_tests {
-    use super::*;
-    use op_ai::chat_provider::{ChatRequest, EffortLevel, ThinkingMode};
-
-    #[test]
-    fn options_env_never_carries_path() {
-        // The agent SDK's DANGEROUS_ENV_VARS blocklist rejects any request
-        // whose env map carries PATH — injecting it kills EVERY claude query
-        // with "Invalid configuration" (regression measured 2026-07-11).
-        let request = ChatRequest {
-            system_prompt: "design something".into(),
-            user_message: "hi".into(),
-            history: vec![],
-            max_output_tokens: 1024,
-            thinking: ThinkingMode::Adaptive,
-            effort: EffortLevel::Low,
-            attachments: vec![],
-            model: None,
-        };
-        let options = effective_options(None, &request, None);
-        assert!(
-            !options.env.contains_key("PATH"),
-            "PATH must never ride options.env: {:?}",
-            options.env.keys().collect::<Vec<_>>()
-        );
     }
 }

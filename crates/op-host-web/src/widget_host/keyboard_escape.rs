@@ -151,6 +151,17 @@ impl WidgetHost {
             self.mark_dirty();
             return true;
         }
+        if self.editor_state.editor_ui.agent_settings_open {
+            self.editor_state.editor_ui.agent_settings_open = false;
+            self.editor_state.editor_ui.agent_settings_drag = None;
+            self.mark_dirty();
+            return true;
+        }
+        if self.editor_state.editor_ui.import_menu_open {
+            self.close_import_menu();
+            self.mark_dirty();
+            return true;
+        }
         if self.editor_state.editor_ui.locale_picker.open {
             self.editor_state.editor_ui.locale_picker.open = false;
             self.editor_state.editor_ui.locale_picker.hover = None;

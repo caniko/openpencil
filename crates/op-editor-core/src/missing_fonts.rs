@@ -4,8 +4,13 @@
 //! both hosts maintain on [`EditorUiState`] (system fonts plus imported fonts),
 //! so native and web share the same detection logic.
 
+use crate::font_catalog::{
+    is_generic_or_system_font_alias, primary_concrete_font_family, split_font_family_stack,
+};
 use crate::{EditorState, EditorUiState};
 use jian_ops_schema::font_plan::FontPlan;
+use jian_ops_schema::node::PenNode;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MissingFontEntry {
@@ -31,8 +36,98 @@ pub struct MissingFontsPrompt {
 }
 
 fn family_available(family: &str, ui: &EditorUiState) -> bool {
-    let matches = |candidate: &String| candidate.eq_ignore_ascii_case(family);
-    ui.imported_font_families.iter().any(matches) || ui.system_font_families.iter().any(matches)
+    let family = family.trim();
+    if is_generic_or_system_font_alias(family) {
+        return true;
+    }
+    let matches = |candidate: &String| candidate.trim().eq_ignore_ascii_case(family);
+    ui.imported_font_families.iter().any(matches)
+        || ui.bundled_font_families.iter().any(matches)
+        || ui.system_font_families.iter().any(matches)
+}
+
+fn family_stack_available(stack: &str, ui: &EditorUiState) -> bool {
+    split_font_family_stack(stack)
+        .iter()
+        .any(|family| family_available(family, ui))
+}
+
+fn add_missing_stack(
+    missing: &mut BTreeMap<String, MissingFontEntry>,
+    stack: &str,
+    run_count: u32,
+    ui: &EditorUiState,
+) {
+    if stack.trim().is_empty() || family_stack_available(stack, ui) {
+        return;
+    }
+    let Some(family) = primary_concrete_font_family(stack) else {
+        return;
+    };
+    let key = family.to_ascii_lowercase();
+    missing
+        .entry(key)
+        .and_modify(|entry| entry.run_count += run_count)
+        .or_insert(MissingFontEntry {
+            family,
+            run_count,
+            mismatch_note: None,
+            resolved: false,
+        });
+}
+
+/// Font-family stacks authored inside component-instance descendant overrides.
+///
+/// These values are not concrete `Text` nodes in the document tree, so hosts
+/// that register font bytes must include this list in addition to walking
+/// normal text nodes. Keeping the scanner shared with missing-font detection
+/// prevents an override from being declared available without being loaded.
+pub fn component_override_font_family_stacks(state: &EditorState) -> Vec<String> {
+    fn scan_json(value: &serde_json::Value, stacks: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for (key, value) in object {
+                    if key == "fontFamily" {
+                        if let Some(family) = value.as_str() {
+                            stacks.push(family.to_string());
+                        }
+                    } else {
+                        scan_json(value, stacks);
+                    }
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    scan_json(value, stacks);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_nodes(nodes: &[PenNode], stacks: &mut Vec<String>) {
+        for node in nodes {
+            if let PenNode::Ref(reference) = node {
+                if let Some(descendants) = &reference.descendants {
+                    for value in descendants.values() {
+                        scan_json(value, stacks);
+                    }
+                }
+            }
+            if let Some(children) = crate::pen_node_ext::PenNodeExt::children(node) {
+                scan_nodes(children, stacks);
+            }
+        }
+    }
+
+    let mut stacks = Vec::new();
+    scan_nodes(&state.doc.children, &mut stacks);
+    if let Some(pages) = &state.doc.pages {
+        for page in pages {
+            scan_nodes(&page.children, &mut stacks);
+        }
+    }
+    stacks
 }
 
 /// Diff the document's families against the current available-family snapshots.
@@ -46,17 +141,14 @@ pub fn detect_missing_fonts(state: &EditorState) -> Option<MissingFontsPrompt> {
     }
 
     let plan = FontPlan::scan(&state.doc);
-    let entries = plan
-        .families()
-        .filter(|(family, _)| !family.is_empty())
-        .filter(|(family, _)| !family_available(family, &state.editor_ui))
-        .map(|(family, usage)| MissingFontEntry {
-            family: family.to_owned(),
-            run_count: usage.run_count,
-            mismatch_note: None,
-            resolved: false,
-        })
-        .collect::<Vec<_>>();
+    let mut missing = BTreeMap::<String, MissingFontEntry>::new();
+    for (stack, usage) in plan.families().filter(|(family, _)| !family.is_empty()) {
+        add_missing_stack(&mut missing, stack, usage.run_count, &state.editor_ui);
+    }
+    for stack in component_override_font_family_stacks(state) {
+        add_missing_stack(&mut missing, &stack, 1, &state.editor_ui);
+    }
+    let entries = missing.into_values().collect::<Vec<_>>();
 
     (!entries.is_empty()).then_some(MissingFontsPrompt { entries })
 }
@@ -79,11 +171,20 @@ mod tests {
     use super::*;
 
     fn state_with_text(family: &str) -> EditorState {
-        let doc: jian_ops_schema::PenDocument = serde_json::from_str(&format!(
-            r#"{{"version":"0.8.0","children":[
-                {{"type":"text","id":"t1","name":"t","x":0,"y":0,"width":10,"height":10,
-                  "content":"hi","fontFamily":"{family}"}}]}}"#
-        ))
+        let doc: jian_ops_schema::PenDocument = serde_json::from_value(serde_json::json!({
+            "version": "0.8.0",
+            "children": [{
+                "type": "text",
+                "id": "t1",
+                "name": "t",
+                "x": 0,
+                "y": 0,
+                "width": 10,
+                "height": 10,
+                "content": "hi",
+                "fontFamily": family
+            }]
+        }))
         .expect("document");
         EditorState::from_document(doc)
     }
@@ -120,11 +221,92 @@ mod tests {
 
     #[test]
     fn family_matching_is_ascii_case_insensitive() {
-        let mut state = state_with_text("Katibeh");
+        let mut state = state_with_text("kAtIbEh");
         state.editor_ui.system_fonts_loaded = true;
         state.editor_ui.system_font_families = std::sync::Arc::new(vec!["KATIBEH".into()]);
 
         assert!(detect_missing_fonts(&state).is_none());
+    }
+
+    #[test]
+    fn css_stack_matches_each_quoted_candidate_case_insensitively() {
+        let mut state = state_with_text(
+            r#"Missing, ui-sans-serif, system-ui, -apple-system, "pInGfAnG sC", sans-serif"#,
+        );
+        state.editor_ui.system_fonts_loaded = true;
+        state.editor_ui.system_font_families = std::sync::Arc::new(vec!["PingFang SC".into()]);
+
+        assert!(detect_missing_fonts(&state).is_none());
+    }
+
+    #[test]
+    fn generic_and_platform_aliases_never_prompt_for_font_files() {
+        for family in [
+            "SANS-SERIF",
+            "system-UI",
+            "UI-SANS-SERIF",
+            "-APPLE-SYSTEM",
+            "BlinkMacSystemFont",
+        ] {
+            let mut state = state_with_text(family);
+            state.editor_ui.system_fonts_loaded = true;
+            assert!(detect_missing_fonts(&state).is_none(), "{family}");
+        }
+    }
+
+    #[test]
+    fn bundled_families_are_available_without_system_enumeration_entries() {
+        let mut state = state_with_text("iNtEr");
+        state.editor_ui.system_fonts_loaded = true;
+        state.editor_ui.bundled_font_families =
+            std::sync::Arc::new(vec!["INTER".to_string(), "Space Grotesk".to_string()]);
+        assert!(state.editor_ui.system_font_families.is_empty());
+        assert!(detect_missing_fonts(&state).is_none());
+    }
+
+    #[test]
+    fn catalog_name_is_not_available_until_the_renderer_registers_it() {
+        let mut state = state_with_text("Poppins");
+        state.editor_ui.system_fonts_loaded = true;
+
+        let prompt = detect_missing_fonts(&state).expect("not registered");
+        assert_eq!(prompt.entries[0].family, "Poppins");
+    }
+
+    #[test]
+    fn unavailable_stack_reports_only_its_primary_family() {
+        let mut state = state_with_text(r#""Missing Display", "Missing Text""#);
+        state.editor_ui.system_fonts_loaded = true;
+
+        let prompt = detect_missing_fonts(&state).expect("prompt");
+        assert_eq!(prompt.entries.len(), 1);
+        assert_eq!(prompt.entries[0].family, "Missing Display");
+    }
+
+    #[test]
+    fn ref_descendant_override_families_are_detected_case_insensitively() {
+        let doc: jian_ops_schema::PenDocument = serde_json::from_value(serde_json::json!({
+            "version": "1.0.0",
+            "children": [{
+                "type": "ref",
+                "id": "instance",
+                "ref": "component",
+                "descendants": {
+                    "label": {
+                        "fontFamily": "Missing Override",
+                        "content": [{"text": "Hi", "fontFamily": "AVAILABLE FONT"}]
+                    }
+                }
+            }]
+        }))
+        .expect("document");
+        let mut state = EditorState::from_document(doc);
+        state.editor_ui.system_fonts_loaded = true;
+        state.editor_ui.system_font_families = std::sync::Arc::new(vec!["available font".into()]);
+
+        let prompt = detect_missing_fonts(&state).expect("missing override prompt");
+        assert_eq!(prompt.entries.len(), 1);
+        assert_eq!(prompt.entries[0].family, "Missing Override");
     }
 
     #[test]

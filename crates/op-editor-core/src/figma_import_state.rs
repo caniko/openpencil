@@ -6,6 +6,16 @@
 //! state on `EditorUiState.figma_import_hover`. Same wasm32-clean
 //! discipline as the other `*_state` mirrors.
 
+/// What the import modal is currently importing. Both sources share
+/// one modal — same geometry, same interactions, different copy — so
+/// the two entry points can never drift into different dialogs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportSource {
+    #[default]
+    Figma,
+    Html,
+}
+
 /// Which Figma-import-modal target the cursor is over. `None` =
 /// no hover wash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

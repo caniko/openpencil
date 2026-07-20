@@ -67,11 +67,13 @@ impl WidgetHostNative {
         match hit {
             AgentSettingsHit::Close | AgentSettingsHit::Outside => {
                 self.commit_settings_focus_if_any();
+                self.editor_state.editor_ui.close_font_picker();
                 self.editor_state.editor_ui.agent_settings_open = false;
                 self.editor_state.editor_ui.agent_settings_drag = None;
             }
             AgentSettingsHit::SelectTab(t) => {
                 self.commit_settings_focus_if_any();
+                self.editor_state.editor_ui.close_font_picker();
                 self.editor_state.editor_ui.agent_settings.tab = t;
                 self.editor_state.editor_ui.agent_settings.scroll_y.offset = 0.0;
                 if matches!(t, op_editor_core::AgentSettingsTab::Fonts) {
@@ -661,23 +663,55 @@ impl WidgetHostNative {
             AgentSettingsHit::CancelAcpAgentDraft => {
                 self.cancel_acp_agent_draft();
             }
-            AgentSettingsHit::MissingFontChooseFile(row) => {
-                // Fonts tab: raise the per-row supply request; the
-                // desktop drain opens the picker with this row's
-                // expected family attached.
-                self.editor_state.editor_ui.missing_fonts_import_row = Some(row);
-            }
-            AgentSettingsHit::RemoveImportedFont(index) => {
-                // Fonts tab imported-list removal — same flow as the
-                // property-panel font picker's remove action.
-                let family = self
-                    .editor_state
-                    .editor_ui
-                    .imported_font_families
-                    .get(index)
-                    .cloned();
-                if let Some(family) = family {
-                    self.editor_state.editor_ui.pending_font_remove = Some(family);
+            AgentSettingsHit::Fonts(hit) => {
+                use op_editor_ui::widgets::agent_settings_fonts::FontsHit;
+                match hit {
+                    FontsHit::ChooseFont(row) => {
+                        self.editor_state.editor_ui.open_missing_font_picker(
+                            row,
+                            op_editor_core::MissingFontSurface::Settings,
+                        )
+                    }
+                    FontsHit::SelectFont(index) => {
+                        let replacement = self.font_picker_family_at(index);
+                        let expected = match self.editor_state.editor_ui.font_picker_purpose {
+                            Some(op_editor_core::FontPickerPurpose::MissingFont {
+                                row, ..
+                            }) => self
+                                .editor_state
+                                .editor_ui
+                                .missing_fonts_prompt
+                                .as_ref()
+                                .and_then(|prompt| prompt.entries.get(row))
+                                .map(|entry| entry.family.clone()),
+                            _ => None,
+                        };
+                        if let (Some(from), Some(to)) = (expected, replacement) {
+                            let _ = self.editor_state.apply(
+                                op_editor_core::EditorCommand::ReplaceFontFamily { from, to },
+                            );
+                        }
+                        self.editor_state.editor_ui.close_font_picker();
+                        self.refresh_missing_fonts_for_settings();
+                    }
+                    FontsHit::ImportFont(row) => {
+                        self.editor_state.editor_ui.missing_fonts_import_row = Some(row)
+                    }
+                    FontsHit::ClosePicker => {
+                        self.editor_state.editor_ui.close_font_picker();
+                    }
+                    FontsHit::RemoveImportedFont(index) => {
+                        if let Some(family) = self
+                            .editor_state
+                            .editor_ui
+                            .imported_font_families
+                            .get(index)
+                            .cloned()
+                        {
+                            self.editor_state.editor_ui.pending_font_remove = Some(family);
+                        }
+                    }
+                    FontsHit::PickerInside | FontsHit::None => {}
                 }
             }
             AgentSettingsHit::Inside => {

@@ -452,3 +452,35 @@ fn bottom_stroked_chart_keeps_day_labels_above_bottom_border() {
         chart_bottom - label_bottom
     );
 }
+
+#[test]
+fn constrained_absolute_children_stay_out_of_fit_content_reflow() {
+    let src = r##"{
+      "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"frame","id":"root","width":300,"height":200,
+         "layout":"vertical","children":[
+          {"type":"frame","id":"overlay","x":0,"y":0,
+           "constraints":{"h":"left_right","v":"top_bottom"},
+           "width":300,"height":200,"children":[]},
+          {"type":"image","id":"hero-image","x":0,"y":0,
+           "constraints":{"h":"left_right","v":"top_bottom"},
+           "width":300,"height":200,"src":""},
+          {"type":"rectangle","id":"flow","width":100,"height":20}
+         ]}
+      ]}],"children":[]
+    }"##;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    let overlay = scene.pages[0].find("overlay").expect("absolute overlay");
+    let image = scene.pages[0].find("hero-image").expect("absolute image");
+    let flow = scene.pages[0].find("flow").expect("flow child");
+
+    assert_eq!(overlay.bounds.origin.x, 0.0);
+    assert_eq!(overlay.bounds.origin.y, 0.0);
+    assert_eq!(overlay.bounds.size.x, 300.0);
+    assert_eq!(overlay.bounds.size.y, 200.0);
+    assert_eq!(image.bounds.origin.x, 0.0);
+    assert_eq!(image.bounds.origin.y, 0.0);
+    assert_eq!(image.bounds.size.x, 300.0);
+    assert_eq!(image.bounds.size.y, 200.0);
+    assert_eq!(flow.bounds.origin.y, 0.0);
+}

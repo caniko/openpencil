@@ -206,8 +206,6 @@ impl WidgetHost {
     fn release_pressed_feedback(&mut self) -> bool {
         let pressed_button = self.editor_state.editor_ui.pressed_button.take();
         let button_released = pressed_button.is_some();
-        let chat_model_pressed = self.editor_state.editor_ui.chat_model_picker.pressed.take();
-        let chat_model_released = chat_model_pressed.is_some();
         let icon_picker_released = self
             .editor_state
             .editor_ui
@@ -217,9 +215,8 @@ impl WidgetHost {
             .is_some();
 
         self.commit_deferred_pressed_button(pressed_button);
-        self.commit_deferred_chat_model(chat_model_pressed);
 
-        let released = button_released || chat_model_released || icon_picker_released;
+        let released = button_released || icon_picker_released;
         if released {
             self.mark_dirty();
         }
@@ -250,12 +247,6 @@ impl WidgetHost {
                 self.focus_image_gen_profile(index, ImageGenField::Name);
             }
             _ => {}
-        }
-    }
-
-    fn commit_deferred_chat_model(&mut self, pressed: Option<usize>) {
-        if let Some(index) = pressed {
-            self.editor_state.select_chat_model(index);
         }
     }
 

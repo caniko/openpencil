@@ -111,6 +111,15 @@ fn parse_clipboard_html_styles_extracts_color_font() {
 }
 
 #[test]
+fn parse_clipboard_html_styles_preserves_quoted_font_family_commas() {
+    let html = "<p style=\"font-family: 'ACME, Display', sans-serif;\">Quoted family</p>";
+    let hints = parse_clipboard_html_styles(html);
+    let hint = hints.get("Quoted family").expect("hint present");
+
+    assert_eq!(hint.font_family.as_deref(), Some("'ACME, Display'"));
+}
+
+#[test]
 fn parse_clipboard_html_styles_handles_background_color() {
     let html = "<div style=\"background-color: rgba(255,0,0,0.5)\">Card</div>";
     let hints = parse_clipboard_html_styles(html);
@@ -124,6 +133,7 @@ fn fix_unresolved_images_swaps_blob_image_for_placeholder_rect() {
         base: base(),
         src: "__blob:5".into(),
         object_fit: None,
+        blend_mode: None,
         width: Some(SizingBehavior::Number(100.0)),
         height: Some(SizingBehavior::Number(80.0)),
         corner_radius: None,
@@ -172,6 +182,7 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
                 transform: None,
                 explain: None,
                 opacity: None,
+                blend_mode: None,
                 exposure: None,
                 contrast: None,
                 saturation: None,
@@ -211,6 +222,7 @@ fn fix_unresolved_images_preserves_corner_radius_on_placeholder() {
         base: base(),
         src: "__blob:1".into(),
         object_fit: None,
+        blend_mode: None,
         width: Some(SizingBehavior::Number(100.0)),
         height: Some(SizingBehavior::Number(100.0)),
         corner_radius: Some(CornerRadius::Uniform(12.0)),
@@ -252,6 +264,7 @@ fn fix_unresolved_images_recurses_into_frame_children() {
         base: base(),
         src: "__blob:1".into(),
         object_fit: None,
+        blend_mode: None,
         width: None,
         height: None,
         corner_radius: None,
@@ -460,6 +473,7 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
             transform: None,
             explain: None,
             opacity: None,
+            blend_mode: None,
             exposure: None,
             contrast: None,
             saturation: None,

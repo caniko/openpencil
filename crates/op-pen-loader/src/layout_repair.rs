@@ -657,7 +657,18 @@ fn padding_sides(padding: Option<&Padding>) -> Sides {
 }
 
 fn layout_child(node: &PenNode) -> bool {
-    !matches!(base(node).and_then(|b| b.role.as_deref()), Some("overlay"))
+    let Some(base) = base(node) else {
+        return true;
+    };
+    if base.role.as_deref() == Some("overlay") {
+        return false;
+    }
+    // Responsive constraints plus an authored coordinate are an explicit
+    // absolute-positioning contract. Taffy has already placed this node; the
+    // fit-content repair must not put it back into flex flow. Requiring
+    // constraints preserves compatibility with legacy documents whose flow
+    // children contain stale x/y=0 coordinates but no constraint metadata.
+    !(base.constraints.is_some() && (base.x.is_some() || base.y.is_some()))
 }
 
 fn is_frame(node: &PenNode) -> bool {

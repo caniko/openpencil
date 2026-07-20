@@ -11,7 +11,7 @@ mod decode_registry;
 pub(crate) use decode_registry::lock_decode_registry_for_tests;
 pub use decode_registry::{
     has_pending_decodes, mark_decode_done, mark_decode_failed, note_pending_decode,
-    pending_decode_count, take_pending_decodes,
+    pending_decode_count, take_pending_decodes, PendingDecode,
 };
 
 /// Byte budget for cached encoded-image payloads. The cache must hold
@@ -282,12 +282,35 @@ fn decode_data_url_bytes(src: &str) -> Option<Arc<[u8]>> {
 /// Paint a raster image inside `world_rect`. The source bytes and decoded
 /// backend image are both cached, so repeated canvas paints do not re-decode
 /// data URLs while importing or panning a Figma-heavy document.
+/// Longest raster edge (device px) a node drawn at `world_rect` needs,
+/// rounded up to a power of two so a slow zoom re-decodes in steps
+/// instead of on every frame, and clamped to a sane ceiling.
+pub(crate) fn required_raster_edge(world_rect: Rect, dpi_scale: f32) -> u32 {
+    const MIN_EDGE: u32 = 64;
+    const MAX_EDGE: u32 = 4096;
+    let dpi = if dpi_scale.is_finite() && dpi_scale > 0.0 {
+        dpi_scale
+    } else {
+        1.0
+    };
+    let longest = world_rect.size.x.abs().max(world_rect.size.y.abs()) * dpi;
+    if !longest.is_finite() || longest <= 0.0 {
+        return MIN_EDGE;
+    }
+    let needed = longest.ceil() as u32;
+    needed
+        .clamp(MIN_EDGE, MAX_EDGE)
+        .next_power_of_two()
+        .min(MAX_EDGE)
+}
+
 pub(super) fn paint_image_node(
     cx: &mut PaintCx<'_>,
     node: &SceneNode,
     world_rect: Rect,
     zoom: f32,
     src: &str,
+    show_placeholder: bool,
 ) {
     let bytes = image_source_bytes(src, node.image_src_id);
     let id = if node.image_src_id == 0 {
@@ -295,15 +318,27 @@ pub(super) fn paint_image_node(
     } else {
         node.image_src_id
     };
-    let decode_ready = bytes
+    // Raster only what the view can show. A node drawn 40 px wide needs
+    // a 40 px raster, not the source's 2048 px: decoding every visible
+    // image at full size is what made a zoomed-out image-dense page
+    // thrash its cache (hundreds of 16 MB rasters against a 384 MB
+    // budget) while the same page zoomed in stayed smooth.
+    let max_edge_px = required_raster_edge(world_rect, cx.backend.dpi_scale());
+    let sharp_enough = bytes
         .as_deref()
-        .is_some_and(|encoded| cx.backend.image_decoded(id, encoded));
-    if bytes.is_some() && !decode_ready {
-        note_pending_decode(id);
+        .is_some_and(|encoded| cx.backend.image_decoded(id, encoded, max_edge_px));
+    if bytes.is_some() && !sharp_enough {
+        note_pending_decode(id, max_edge_px);
     }
+    // A raster that is merely too coarse still draws: sharpening must
+    // refine the picture in place, never flash back to placeholder art.
+    let decode_ready = sharp_enough || (bytes.is_some() && cx.backend.image_resident(id));
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);
+    if !decode_ready && !show_placeholder {
+        return;
+    }
     if !decode_ready {
         // Keep every placeholder layer inside the image node's authored
         // corners. The thumb is deliberately first: a translucent node fill
@@ -365,7 +400,7 @@ pub(super) fn paint_image_node(
             cx.backend.save();
             cx.backend.clip_round_rect_per_corner(world_rect, radii);
         }
-        cx.backend.draw_image_with_options_and_transform(
+        cx.backend.draw_image_with_options_transform_and_blend(
             world_rect,
             id,
             bytes.as_ref(),
@@ -378,6 +413,7 @@ pub(super) fn paint_image_node(
                 0.0
             },
             node.image_transform,
+            node.image_blend_mode,
         );
         if per_corner.is_some() {
             cx.backend.restore();
@@ -477,7 +513,7 @@ mod blur_up_tests;
 mod tests {
     use super::*;
     use crate::layout_scene::NodeKind;
-    use crate::{ImageAdjustments, ImageDrawMode, RenderBackend, TextLayout};
+    use crate::{ImageAdjustments, ImageBlendMode, ImageDrawMode, RenderBackend, TextLayout};
 
     /// The caches + registry are process-wide statics; serialize the
     /// tests that mutate them so parallel test threads don't race.
@@ -493,6 +529,7 @@ mod tests {
         clips: Vec<[f32; 4]>,
         image_corner_radii: Vec<f32>,
         image_transforms: Vec<Option<[f32; 6]>>,
+        image_blend_modes: Vec<ImageBlendMode>,
         decode_ready: Option<bool>,
     }
 
@@ -513,10 +550,15 @@ mod tests {
         fn fill_round_rect(&mut self, _: Rect, _: f32, _: Color) {}
         fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
         fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
-        fn image_decoded(&mut self, _: u64, _: &[u8]) -> bool {
+        fn image_decoded(&mut self, _: u64, _: &[u8], _: u32) -> bool {
             self.decode_ready.unwrap_or(true)
         }
-        fn draw_image_with_options_and_transform(
+        fn image_resident(&mut self, _: u64) -> bool {
+            // These fakes model "nothing rasterized yet", so an image
+            // that is not decode-ready has nothing to draw either.
+            self.decode_ready.unwrap_or(true)
+        }
+        fn draw_image_with_options_transform_and_blend(
             &mut self,
             _: Rect,
             _: u64,
@@ -526,9 +568,11 @@ mod tests {
             _: f32,
             corner_radius: f32,
             transform: Option<[f32; 6]>,
+            blend_mode: ImageBlendMode,
         ) {
             self.image_corner_radii.push(corner_radius);
             self.image_transforms.push(transform);
+            self.image_blend_modes.push(blend_mode);
         }
         fn resize(&mut self, _: u32, _: u32) {}
         fn dpi_scale(&self) -> f32 {
@@ -552,6 +596,7 @@ mod tests {
             Rect::xywh(0.0, 0.0, 100.0, 50.0),
             1.0,
             "data:image/png;base64,QUJD",
+            true,
         );
 
         assert_eq!(backend.clips, vec![[8.0, 0.0, 8.0, 0.0]]);
@@ -575,9 +620,31 @@ mod tests {
             Rect::xywh(0.0, 0.0, 375.0, 490.0),
             1.0,
             "data:image/png;base64,QUJD",
+            true,
         );
 
         assert_eq!(backend.image_transforms, vec![Some(transform)]);
+    }
+
+    #[test]
+    fn image_node_forwards_blend_mode_to_backend() {
+        let _guard = lock_statics();
+        let mut node = SceneNode::leaf("image", NodeKind::Rect);
+        node.image_blend_mode = ImageBlendMode::Multiply;
+        let mut backend = ImageRadiusCaptureBackend::default();
+
+        paint_image_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            Rect::xywh(0.0, 0.0, 100.0, 50.0),
+            1.0,
+            "data:image/png;base64,QUJD",
+            true,
+        );
+
+        assert_eq!(backend.image_blend_modes, vec![ImageBlendMode::Multiply]);
     }
 
     #[test]
@@ -612,10 +679,17 @@ mod tests {
             Rect::xywh(0.0, 0.0, 100.0, 50.0),
             1.0,
             "data:image/png;base64,QUJD",
+            true,
         );
 
         assert!(backend.image_transforms.is_empty());
-        assert_eq!(take_pending_decodes(8), vec![777]);
+        assert_eq!(
+            take_pending_decodes(8)
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![777]
+        );
         assert_eq!(cached_bytes_for(777).as_deref(), Some(b"ABC".as_slice()));
     }
 

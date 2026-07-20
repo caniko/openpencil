@@ -333,26 +333,41 @@ impl WidgetHost {
                 .hover_image_gen_provider_option = image_provider_option_hover;
             changed = true;
         }
-        let new_missing_hover = if matches!(
+        let (new_missing_hover, font_picker_hover, font_import_hover) = if matches!(
             self.editor_state.editor_ui.agent_settings.tab,
             AgentSettingsTab::Fonts
         ) {
+            use op_editor_ui::widgets::agent_settings_fonts::FontsHit;
             let panel = AgentSettingsPanel::for_editor(&self.editor_state);
             let panel_rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
             match panel.hit_test(panel_rect, point) {
-                AgentSettingsHit::MissingFontChooseFile(row) => {
-                    Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row))
-                }
-                AgentSettingsHit::RemoveImportedFont(row) => {
-                    Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row))
-                }
-                _ => None,
+                AgentSettingsHit::Fonts(FontsHit::ChooseFont(row)) => (
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row)),
+                    None,
+                    false,
+                ),
+                AgentSettingsHit::Fonts(FontsHit::RemoveImportedFont(row)) => (
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row)),
+                    None,
+                    false,
+                ),
+                AgentSettingsHit::Fonts(FontsHit::SelectFont(index)) => (None, Some(index), false),
+                AgentSettingsHit::Fonts(FontsHit::ImportFont(_)) => (None, None, true),
+                _ => (None, None, false),
             }
         } else {
-            None
+            (None, None, false)
         };
         if new_missing_hover != self.editor_state.editor_ui.missing_fonts_hover {
             self.editor_state.editor_ui.missing_fonts_hover = new_missing_hover;
+            changed = true;
+        }
+        if font_picker_hover != self.editor_state.editor_ui.font_picker.hover {
+            self.editor_state.editor_ui.font_picker.hover = font_picker_hover;
+            changed = true;
+        }
+        if font_import_hover != self.editor_state.editor_ui.font_picker_import_hover {
+            self.editor_state.editor_ui.font_picker_import_hover = font_import_hover;
             changed = true;
         }
         if changed {
@@ -386,15 +401,37 @@ impl WidgetHost {
         // per-row choose-file buttons + the dismiss action.
         if self.editor_state.editor_ui.missing_fonts_modal_open {
             use op_editor_ui::widgets::missing_fonts_panel::MissingFontsPanel;
-            let new_hover = MissingFontsPanel::for_editor(&self.editor_state)
-                .map(|panel| {
-                    let rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
-                    panel.hit_test(rect, Point2D::new(x, y))
-                })
-                .and_then(op_editor_ui::widgets::editor_state_ext::missing_fonts_button);
-            let changed = new_hover != self.editor_state.editor_ui.missing_fonts_hover;
+            let viewport = Rect {
+                origin: Point2D::new(0.0, 0.0),
+                size: Point2D::new(self.last_viewport_w, self.last_viewport_h),
+            };
+            let (new_hover, picker_hover, import_hover) =
+                MissingFontsPanel::for_editor(&self.editor_state)
+                    .map(|panel| {
+                        let rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
+                        if panel.picker_layout(rect, viewport).is_some() {
+                            let (entry, import) =
+                                panel.picker_hover(rect, viewport, Point2D::new(x, y));
+                            (None, entry, import)
+                        } else {
+                            (
+                                op_editor_ui::widgets::editor_state_ext::missing_fonts_button(
+                                    panel.hit_test(rect, viewport, Point2D::new(x, y)),
+                                ),
+                                None,
+                                false,
+                            )
+                        }
+                    })
+                    .unwrap_or((None, None, false));
+            let changed = new_hover != self.editor_state.editor_ui.missing_fonts_hover
+                || picker_hover != self.editor_state.editor_ui.font_picker.hover
+                || import_hover != self.editor_state.editor_ui.font_picker_import_hover;
             if changed {
-                self.editor_state.editor_ui.missing_fonts_hover = new_hover;
+                let ui = &mut self.editor_state.editor_ui;
+                ui.missing_fonts_hover = new_hover;
+                ui.font_picker.hover = picker_hover;
+                ui.font_picker_import_hover = import_hover;
                 self.mark_dirty();
             }
             return changed;

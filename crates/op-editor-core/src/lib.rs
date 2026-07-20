@@ -35,6 +35,7 @@ pub mod command;
 pub mod command_apply;
 pub mod command_authored_subtree;
 pub mod command_batch;
+pub mod command_font_replace;
 pub mod command_layout_prop;
 pub mod command_node;
 pub mod command_node_attrs;
@@ -53,6 +54,7 @@ pub mod export_dialog_state;
 pub mod figma_import_state;
 pub mod fill_order;
 pub mod fills;
+pub mod font_catalog;
 pub mod geometry;
 pub mod git_button_state;
 pub mod grouping;
@@ -222,11 +224,12 @@ pub use design_md_button_state::DesignMdButton;
 pub use editor_ui_state::{
     BooleanOp, CloneField, CloneFormState, CommitDiffPatch, CommitDiffSummary, CommitDiffView,
     DesignMdRequest, EditorUiState, EmbedHost, ExportFormat, FileAction, FillType, FlexLayout,
-    GitBranchPickerMode, GitCandidateFile, GitCommitSummary, GitDiffTarget, GitDiffView,
-    GitFileEntry, GitOverflowView, GitPanelAction, GitPanelState, ImageAdjustmentField,
-    ImageFillMode, LayerContextMenuState, Locale, MergeConflictRow, MergeResolveFile,
-    MergeResolveState, PaddingEditMode, PageRenameState, PencilCursorStyle, PreviewDeviceKind,
-    PropertyTab, RecentFile, ThemeMode, UpdateStatus, VariableRowFocus,
+    FontPickerPurpose, GitBranchPickerMode, GitCandidateFile, GitCommitSummary, GitDiffTarget,
+    GitDiffView, GitFileEntry, GitOverflowView, GitPanelAction, GitPanelState,
+    ImageAdjustmentField, ImageFillMode, LayerContextMenuState, Locale, MergeConflictRow,
+    MergeResolveFile, MergeResolveState, MissingFontSurface, PaddingEditMode, PageRenameState,
+    PencilCursorStyle, PreviewDeviceKind, PropertyTab, RecentFile, ThemeMode, UpdateStatus,
+    VariableRowFocus,
 };
 pub use export_dialog_state::ExportDialogButton;
 pub use figma_import_state::FigmaImportButton;

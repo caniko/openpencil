@@ -41,12 +41,12 @@ impl WidgetHostNative {
 
         let dpi = frame.dpi_scale();
 
-        // During Figma import, keep the frame path independent from
+        // During document import, keep the frame path independent from
         // document layout/canvas paint. The parser can be CPU-heavy;
         // rebuilding or painting the old scene here makes the loading
         // overlay appear frozen.
         if self.editor_state.editor_ui.figma_import_in_progress {
-            use op_editor_ui::widgets::figma_import_progress::FigmaImportProgressOverlay;
+            use op_editor_ui::widgets::figma_import_progress::ImportProgressOverlay;
             frame.fill_rect(
                 Rect {
                     origin: Point2D::new(0.0, 0.0),
@@ -59,7 +59,7 @@ impl WidgetHostNative {
                     a: 0.55,
                 },
             );
-            let overlay = FigmaImportProgressOverlay::for_editor(&self.editor_state, self.now_ms);
+            let overlay = ImportProgressOverlay::for_editor(&self.editor_state, self.now_ms);
             let rect = overlay.rect(viewport_width, viewport_height);
             let mut cx = PaintCx {
                 backend: &mut *frame,
@@ -445,6 +445,17 @@ impl WidgetHostNative {
             picker.paint(&mut cx, picker_rect);
         }
 
+        // 9z. Import dropdown — same overlay tier as the locale picker.
+        if ui.import_menu_open {
+            use op_editor_ui::widgets::ImportMenu;
+            let (anchor, menu_viewport) = self.import_menu_anchor(viewport_width, viewport_height);
+            let menu = ImportMenu::for_editor_ui(&self.editor_state.editor_ui);
+            let mut cx = PaintCx {
+                backend: &mut *frame,
+            };
+            menu.paint_select(&mut cx, anchor, menu_viewport);
+        }
+
         // 10. LocalePicker — top-most overlay so it covers chat /
         //     toolbar / status when open.
         if ui.locale_picker.open {
@@ -705,6 +716,15 @@ impl WidgetHostNative {
                 backend: &mut *frame,
             };
             panel.paint(&mut cx, panel_rect);
+            panel.paint_picker(
+                &mut cx,
+                panel_rect,
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                self.now_ms,
+            );
         }
     }
 }

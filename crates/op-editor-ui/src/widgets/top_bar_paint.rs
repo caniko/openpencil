@@ -152,15 +152,15 @@ impl TopBar {
             // Divider before the Figma import affordance.
             let divider2_x = file_menu_x + FILE_MENU_BUTTON_WIDTH + DIVIDER_GAP;
             paint_divider(cx, &self.theme, divider2_x, center_y);
-            // Figma import button.
+            // Import button (Figma / HTML menu).
             let figma_x = divider2_x + DIVIDER_W + DIVIDER_GAP;
-            paint_figma_button(
+            paint_import_button(
                 cx,
                 &self.theme,
                 figma_x,
                 center_y,
-                self.is_hovered(TopBarButton::OpenFigmaImport),
-                self.is_pressed(TopBarButton::OpenFigmaImport),
+                self.is_hovered(TopBarButton::OpenImportMenu),
+                self.is_pressed(TopBarButton::OpenImportMenu),
             );
 
             // ── Centered file name ─────────────────────────────

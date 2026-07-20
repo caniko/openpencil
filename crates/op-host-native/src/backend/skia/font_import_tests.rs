@@ -82,6 +82,14 @@ fn measure_changes_after_registering_imported_font() {
         "imported family must resolve after register (before was {before_face:?}) — \
          the resolver cache did not invalidate on the generation bump"
     );
+    let case_folded_face = be
+        .typeface_for_family_char('A', "dm serif display", 400)
+        .map(|tf| tf.family_name());
+    assert_eq!(
+        case_folded_face.as_deref(),
+        Some(FAMILY),
+        "imported family lookup must ignore ASCII case"
+    );
 
     let after_width = be.measure_text_family_styled("Imported", 40.0, FAMILY, 400, false);
     assert!(

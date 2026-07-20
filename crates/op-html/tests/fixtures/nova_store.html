@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NOVA｜发现新好物</title>
+    <style>
+      :root { --ink:#17223b; --muted:#6e7890; --blue:#2859f6; --ice:#f4f7ff; }
+      * { box-sizing:border-box; }
+      body { margin:0; color:var(--ink); background:#fff; font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"PingFang SC",sans-serif; }
+      a { color:inherit; text-decoration:none; }
+      .wrap { width:min(1180px,calc(100% - 40px)); margin:auto; }
+      header { height:76px; display:flex; align-items:center; justify-content:space-between; }
+      .brand { font-size:24px; font-weight:900; letter-spacing:-1.5px; color:var(--blue); }
+      nav { display:flex; gap:30px; font-weight:650; }
+      nav a:first-child { color:var(--blue); }
+      .actions { display:flex; gap:10px; align-items:center; }
+      .icon, .bag { display:grid; place-items:center; width:38px; height:38px; border:1px solid #e6eaf2; border-radius:50%; background:#fff; font-size:17px; }
+      .bag { background:var(--ink); color:#fff; border:0; position:relative; }
+      .bag small { position:absolute; top:-5px; right:-4px; display:grid; place-items:center; width:17px; height:17px; border-radius:9px; background:#ff6565; font:700 10px sans-serif; }
+      .hero { min-height:500px; position:relative; overflow:hidden; border-radius:28px; background:#f1f5ff; }
+      .hero-copy { position:relative; z-index:1; width:52%; padding:75px 0 72px 68px; }
+      .eyebrow { color:var(--blue); font-size:13px; font-weight:800; letter-spacing:1.4px; }
+      h1 { margin:12px 0 17px; max-width:470px; font-size:clamp(42px,5.4vw,72px); line-height:1.04; letter-spacing:-.075em; }
+      .hero-copy p { max-width:355px; margin:0 0 30px; color:var(--muted); font-size:17px; }
+      .cta { display:inline-flex; gap:12px; align-items:center; padding:14px 20px; border:0; border-radius:13px; background:var(--blue); color:#fff; font:700 15px inherit; box-shadow:0 10px 20px #2859f63a; cursor:pointer; }
+      .hero img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center; mix-blend-mode:multiply; }
+      .hero::after { content:""; position:absolute; z-index:0; inset:0; background:linear-gradient(90deg,#f1f5ff 0%,#f1f5ff 35%,transparent 62%); }
+      .section-head { display:flex; justify-content:space-between; align-items:end; margin:64px 0 22px; }
+      h2 { margin:0; font-size:28px; letter-spacing:-1px; }
+      .more { color:var(--blue); font-weight:700; }
+      .categories { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+      .category { display:flex; align-items:center; gap:13px; padding:18px; border:1px solid #ebedf3; border-radius:18px; transition:.2s; }
+      .category:hover { transform:translateY(-3px); border-color:#b9c8ff; box-shadow:0 10px 26px #24355d12; }
+      .emoji { display:grid; place-items:center; width:48px; height:48px; border-radius:14px; background:#f2f5ff; font-size:25px; }
+      .category b { display:block; } .category span { color:var(--muted); font-size:12px; }
+      .products { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; padding-bottom:60px; }
+      .product { overflow:hidden; border-radius:20px; background:#fafbfe; }
+      .product-art { height:195px; display:grid; place-items:center; font-size:90px; }
+      .product:nth-child(1) .product-art { background:#edf0ff; } .product:nth-child(2) .product-art { background:#fff4ed; } .product:nth-child(3) .product-art { background:#eef9f6; }
+      .product-info { padding:18px 19px 20px; background:#fff; } .product-info p { margin:3px 0 10px; color:var(--muted); font-size:13px; }
+      .price { display:flex; justify-content:space-between; align-items:center; font-weight:850; font-size:17px; } .price button { border:0; background:#edf1ff; color:var(--blue); border-radius:9px; width:31px; height:31px; font-size:20px; cursor:pointer; }
+      @media (max-width:720px) { .wrap { width:min(100% - 28px,600px); } nav { display:none; } header { height:64px; }.hero { min-height:580px; }.hero-copy { width:100%; padding:48px 30px; }.hero::after { background:linear-gradient(#f1f5ff 20%,#f1f5ffbf 56%,transparent); }.hero img { object-position:65% bottom; }.categories { grid-template-columns:repeat(2,1fr); gap:10px; }.category { padding:12px; }.emoji { width:40px; height:40px; font-size:21px; }.products { grid-template-columns:1fr; }.section-head { margin-top:43px; } }
+    </style>
+  </head>
+  <body>
+    <header class="wrap"><a class="brand" href="#">NOVA.</a><nav><a href="#">首页</a><a href="#categories">分类</a><a href="#products">新品</a><a href="#">品牌故事</a></nav><div class="actions"><button class="icon" aria-label="搜索">⌕</button><button class="bag" aria-label="购物袋">♧<small>2</small></button></div></header>
+    <main class="wrap">
+      <section class="hero"><img src="assets/phone-hero.png" alt="三款现代智能手机" /><div class="hero-copy"><div class="eyebrow">NOVA SELECTION 2026</div><h1>把未来，握在手里。</h1><p>精选让日常变得更聪明、更美好的科技与生活好物。</p><button class="cta">探索新品 <span>→</span></button></div></section>
+      <section id="categories"><div class="section-head"><h2>逛逛分类</h2><a class="more" href="#">全部分类 →</a></div><div class="categories"><a class="category" href="#"><i class="emoji">📱</i><div><b>手机数码</b><span>新机与配件</span></div></a><a class="category" href="#"><i class="emoji">🎧</i><div><b>智能穿戴</b><span>耳机与手表</span></div></a><a class="category" href="#"><i class="emoji">⌂</i><div><b>居家好物</b><span>让生活更轻松</span></div></a><a class="category" href="#"><i class="emoji">✦</i><div><b>精选礼物</b><span>给特别的人</span></div></a></div></section>
+      <section id="products"><div class="section-head"><h2>人气上新</h2><a class="more" href="#">查看全部 →</a></div><div class="products"><article class="product"><div class="product-art">📱</div><div class="product-info"><b>NOVA Phone Air</b><p>轻薄旗舰，影像再进化</p><div class="price">¥4,299 <button>+</button></div></div></article><article class="product"><div class="product-art">🎧</div><div class="product-info"><b>Cloud Pods Pro</b><p>沉浸降噪，自在聆听</p><div class="price">¥899 <button>+</button></div></div></article><article class="product"><div class="product-art">⌚</div><div class="product-info"><b>Loop Watch</b><p>你的全天候健康伙伴</p><div class="price">¥1,699 <button>+</button></div></div></article></div></section>
+    </main>
+  </body>
+</html>

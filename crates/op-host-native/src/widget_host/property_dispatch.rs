@@ -619,7 +619,9 @@ impl WidgetHostNative {
                 let cg = &mut self.editor_state.codegen;
                 match codegen_action {
                     CodegenAction::SelectFramework(fw) => {
-                        cg.framework = fw;
+                        if cg.select_framework(fw) {
+                            self.code_selection_drag = None;
+                        }
                     }
                     CodegenAction::Generate => {
                         cg.pending_generate = true;

@@ -256,9 +256,14 @@ impl WidgetHostNative {
                         return true;
                     }
                     AIChatHit::SelectModel(idx) => {
-                        self.editor_state.editor_ui.chat_model_picker.pressed = Some(idx);
-                        self.editor_state.editor_ui.chat_model_picker.hover = Some(idx);
-                        self.mark_dirty();
+                        // Commit on press so the selected model and closed
+                        // picker appear in the first repaint. A deferred bare
+                        // index could also target the wrong row if an async
+                        // catalog refresh landed before pointer release.
+                        self.editor_state.select_chat_model(idx);
+                        // Returning `true` schedules the repaint. Do not mark
+                        // the document layout scene stale for this UI-only
+                        // preference change.
                         return true;
                     }
                     AIChatHit::CycleThinking => {

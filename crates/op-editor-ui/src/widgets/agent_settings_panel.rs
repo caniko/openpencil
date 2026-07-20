@@ -1,5 +1,3 @@
-//! Multi-tab settings modal opened via `Cmd+,`.
-
 use crate::theme::Theme;
 use crate::widgets::agent_settings_account::{self, AccountTabHit};
 use crate::widgets::agent_settings_acp::{self, AcpHit};
@@ -143,16 +141,12 @@ pub enum AgentSettingsHit {
         index: usize,
         field: ImageGenField,
     },
-    MissingFontChooseFile(usize),
-    RemoveImportedFont(usize),
+    Fonts(FontsHit),
     ToggleAutoUpdate,
     ToggleExperimental,
-    /// Pick a pencil-cursor silhouette (Settings > System).
     SelectPencilCursor(op_editor_core::PencilCursorStyle),
     FocusMcpPort,
-    /// Account tab, signed out: opens the sign-in modal.
     OpenLoginModal,
-    /// Account tab, signed in: clears the account back to `Anonymous`.
     SignOutAccount,
     Outside,
     Inside,
@@ -219,8 +213,6 @@ impl<'a> AgentSettingsPanel<'a> {
                 return AgentSettingsHit::SelectTab(*tab);
             }
         }
-        // Translate the cursor into the scrolled content frame
-        // for hit-tests over scrollable rows.
         let scrolled = Point2D::new(point.x, point.y + self.settings.scroll_y.offset);
         match self.mode.active_tab(&self.settings) {
             AgentSettingsTab::Agents => {
@@ -295,8 +287,6 @@ impl<'a> AgentSettingsPanel<'a> {
                         continue;
                     }
                     if self.settings.provider_verified_connected_at(i) {
-                        // Connected card — only the disconnect button
-                        // (visible on hover) toggles disconnection.
                         let disc = disconnect_btn_rect_at(card);
                         if (disc).contains(scrolled) {
                             return AgentSettingsHit::Connect(*provider);
@@ -352,14 +342,15 @@ impl<'a> AgentSettingsPanel<'a> {
                 }
             }
             AgentSettingsTab::Fonts => {
-                match agent_settings_fonts::hit_test(content_rect(panel), self.ui, scrolled) {
-                    FontsHit::ChooseFile(row) => {
-                        return AgentSettingsHit::MissingFontChooseFile(row)
-                    }
-                    FontsHit::RemoveImportedFont(row) => {
-                        return AgentSettingsHit::RemoveImportedFont(row)
-                    }
-                    FontsHit::None => {}
+                let hit = agent_settings_fonts::hit_test(
+                    panel,
+                    content_rect(panel),
+                    self.ui,
+                    point,
+                    self.settings.scroll_y.offset,
+                );
+                if hit != FontsHit::None {
+                    return AgentSettingsHit::Fonts(hit);
                 }
             }
             AgentSettingsTab::System => {
@@ -383,10 +374,6 @@ impl<'a> AgentSettingsPanel<'a> {
         AgentSettingsHit::Inside
     }
 
-    /// Return the sidebar tab under `point`, or `None` if the cursor
-    /// is not on a nav row. Geometry mirrors `paint_sidebar`'s
-    /// `nav_item_rect` walk so the hover tint aligns with the click
-    /// target.
     pub fn nav_at(&self, panel: Rect, point: Point2D) -> Option<AgentSettingsTab> {
         for (i, tab) in self.mode.visible_tabs().iter().enumerate() {
             if (nav_item_rect(panel, i)).contains(point) {
@@ -396,9 +383,6 @@ impl<'a> AgentSettingsPanel<'a> {
         None
     }
 
-    /// Return the index of the provider card under `point` (in
-    /// screen-space, NOT scrolled), or `None` when the cursor sits
-    /// outside every card. Used for hover state.
     pub fn card_at(&self, panel: Rect, point: Point2D) -> Option<usize> {
         if !(panel).contains(point) {
             return None;
@@ -492,9 +476,6 @@ impl<'a> AgentSettingsPanel<'a> {
         )
     }
 
-    /// Total content height for the active tab. Host uses this to
-    /// clamp `scroll_y` so the bottom of the list never floats
-    /// above the panel bottom.
     pub fn content_total_height(&self) -> f32 {
         match self.mode.active_tab(&self.settings) {
             AgentSettingsTab::Agents => agents_content_height(&self.settings, self.mode),
@@ -504,6 +485,18 @@ impl<'a> AgentSettingsPanel<'a> {
             AgentSettingsTab::System => agent_settings_system::content_height(),
             AgentSettingsTab::Account => agent_settings_account::content_height(),
         }
+    }
+
+    pub fn font_picker_layout(
+        &self,
+        panel: Rect,
+    ) -> Option<crate::widgets::property_panel_typography::FontPickerLayout> {
+        agent_settings_fonts::picker_layout(
+            panel,
+            content_rect(panel),
+            self.ui,
+            self.settings.scroll_y.offset,
+        )
     }
 }
 
@@ -545,6 +538,17 @@ impl<'a> Widget for AgentSettingsPanel<'a> {
             self.now_ms,
             self.mode,
         );
+        if self.mode.active_tab(&self.settings) == AgentSettingsTab::Fonts {
+            agent_settings_fonts::paint_picker(
+                cx,
+                &self.theme,
+                rect,
+                content_rect(rect),
+                self.ui,
+                self.settings.scroll_y.offset,
+                self.now_ms,
+            );
+        }
     }
 
     fn access_node(&self) -> accesskit::Node {
@@ -754,10 +758,6 @@ fn paint_section_header(
     paint_section_header_inset(cx, theme, title, action, x, y, w, 0.0)
 }
 
-/// `right_inset` reserves space on the right edge for an
-/// overlapping chrome element — currently the panel's close X
-/// which sits over the top-of-content row.
-// Paint-context + geometry args threaded through; a struct adds no gain.
 #[allow(clippy::too_many_arguments)]
 fn paint_section_header_inset(
     cx: &mut PaintCx<'_>,

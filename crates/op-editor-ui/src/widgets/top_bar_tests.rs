@@ -168,6 +168,7 @@ fn icon_only_git_button_centers_glyph_in_hover_rect() {
 #[derive(Default)]
 struct SvgColorCapture {
     svgs: Vec<Color>,
+    fills: Vec<(String, Point2D, f32, f32, Color)>,
 }
 
 impl crate::RenderBackend for SvgColorCapture {
@@ -182,6 +183,10 @@ impl crate::RenderBackend for SvgColorCapture {
     fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
     fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, color: Color, _: f32) {
         self.svgs.push(color);
+    }
+    fn fill_svg_path(&mut self, d: &str, top_left: Point2D, size: f32, viewbox: f32, color: Color) {
+        self.fills
+            .push((d.to_owned(), top_left, size, viewbox, color));
     }
     fn save(&mut self) {}
     fn restore(&mut self) {}
@@ -242,6 +247,39 @@ fn compound_icon_button_grays_at_rest_and_darkens_on_hover() {
         hover.svgs.iter().all(|c| color_eq(*c, theme.foreground)),
         "folder + chevron should darken to foreground on hover"
     );
+}
+
+#[test]
+fn import_button_uses_supplied_filled_svg_and_keeps_dropdown_chevron() {
+    let theme = Theme::dark();
+    let mut capture = SvgColorCapture::default();
+    paint_import_button(
+        &mut PaintCx {
+            backend: &mut capture,
+        },
+        &theme,
+        0.0,
+        ICON_BUTTON / 2.0,
+        false,
+        false,
+    );
+
+    assert_eq!(capture.fills.len(), 2, "the supplied SVG has two paths");
+    assert_eq!(
+        capture.svgs.len(),
+        1,
+        "the dropdown chevron remains stroked"
+    );
+    let expected_y = (ICON_BUTTON - (ICON_SIZE + 1.0)) / 2.0
+        + ((ICON_SIZE + 1.0) - (ICON_SIZE + 1.0) * 1024.0 / 1201.0) / 2.0;
+    for (path, origin, size, viewbox, color) in &capture.fills {
+        assert!(path.starts_with('M'));
+        assert!(nearly_eq(origin.x, 8.0));
+        assert!(nearly_eq(origin.y, expected_y));
+        assert!(nearly_eq(*size, ICON_SIZE + 1.0));
+        assert!(nearly_eq(*viewbox, 1201.0));
+        assert!(color_eq(*color, theme.muted_foreground));
+    }
 }
 
 #[test]
@@ -334,7 +372,7 @@ fn vscode_embed_hides_file_figma_title_and_fullscreen() {
             !matches!(
                 hit,
                 Some(TopBarHit::ToggleFileMenu)
-                    | Some(TopBarHit::OpenFigmaImport)
+                    | Some(TopBarHit::OpenImportMenu)
                     | Some(TopBarHit::ToggleFullscreen)
             ),
             "hidden control hit at x={x}: {hit:?}"

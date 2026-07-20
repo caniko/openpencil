@@ -128,12 +128,12 @@ fn image_adjustment_matrix_matches_ts_formula() {
 fn image_decoded_is_false_before_install_and_true_after() {
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(4, 3);
-    assert!(!be.image_decoded(7, &png));
+    assert!(!be.image_decoded(7, &png, 64));
 
     let image = decode_raster(&png).expect("valid PNG rasterizes");
-    be.install_raster_image(7, image);
+    be.install_raster_image(7, image, u32::MAX);
 
-    assert!(be.image_decoded(7, &png));
+    assert!(be.image_decoded(7, &png, 64));
     assert_eq!(
         be.raster_image(7).expect("installed").dimensions(),
         (4, 3).into()
@@ -144,9 +144,9 @@ fn image_decoded_is_false_before_install_and_true_after() {
 fn image_cache_evicts_least_recently_used_over_byte_budget() {
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(4, 3);
-    be.install_raster_image(1, decode_raster(&png).unwrap());
-    be.install_raster_image(2, decode_raster(&png).unwrap());
-    be.install_raster_image(3, decode_raster(&png).unwrap());
+    be.install_raster_image(1, decode_raster(&png).unwrap(), u32::MAX);
+    be.install_raster_image(2, decode_raster(&png).unwrap(), u32::MAX);
+    be.install_raster_image(3, decode_raster(&png).unwrap(), u32::MAX);
     assert_eq!(be.image_cache_len(), 3);
     // Touch id 1 so id 2 becomes the least-recently-used entry.
     be.raster_image(1);
@@ -169,7 +169,7 @@ fn image_cache_entry_cap_bounds_small_rasters() {
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(1, 1);
     for id in 0..10u64 {
-        be.install_raster_image(id, decode_raster(&png).unwrap());
+        be.install_raster_image(id, decode_raster(&png).unwrap(), u32::MAX);
     }
     be.evict_images_over(usize::MAX, 4);
     assert_eq!(be.image_cache_len(), 4, "entry cap enforced");
@@ -776,7 +776,7 @@ fn image_draw_respects_node_opacity() {
     // toward white (≈ 50% each); full opacity would leave it pure blue.
     let mut be = NativeBackend::with_dpi(1.0);
     let png = encode_test_png(8, 8);
-    be.install_raster_image(4242, decode_raster(&png).unwrap());
+    be.install_raster_image(4242, decode_raster(&png).unwrap(), u32::MAX);
     let mut surface = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
     surface.canvas().clear(skia_safe::Color::WHITE);
     let rect = Rect {
@@ -806,5 +806,69 @@ fn image_draw_respects_node_opacity() {
         c.b() > 200,
         "blue channel should stay high, got b={}",
         c.b()
+    );
+}
+
+/// Rastering to the size the view needs is what keeps a zoomed-out,
+/// image-dense page cheap: the same source that costs megabytes at full
+/// size costs kilobytes when it is drawn as a thumbnail.
+#[test]
+fn decode_raster_capped_scales_down_and_reports_its_coverage() {
+    let png = encode_test_png(256, 128);
+
+    let (small, covers) = decode_raster_capped(&png, 64).expect("capped decode");
+    assert_eq!(small.width(), 64, "longest edge honours the cap");
+    assert_eq!(small.height(), 32, "aspect ratio preserved");
+    assert_eq!(covers, 64);
+
+    // A cap at or above the source keeps the full raster and reports
+    // itself as sharp at any size.
+    let (full, covers) = decode_raster_capped(&png, 512).expect("uncapped decode");
+    assert_eq!((full.width(), full.height()), (256, 128));
+    assert_eq!(covers, u32::MAX);
+}
+
+/// A cached raster that is too coarse must not count as ready: paint
+/// re-queues a sharper decode while still drawing what it has.
+#[test]
+fn image_decoded_requires_the_cached_raster_to_cover_the_requested_size() {
+    let png = encode_test_png(256, 256);
+    let mut be = NativeBackend::with_dpi(1.0);
+    let (small, covers) = decode_raster_capped(&png, 64).expect("capped decode");
+    be.install_raster_image(9, small, covers);
+
+    assert!(be.image_decoded(9, &png, 64), "exact level is ready");
+    assert!(be.image_decoded(9, &png, 32), "a coarser need is satisfied");
+    assert!(
+        !be.image_decoded(9, &png, 256),
+        "zooming in past the cached level asks for a sharper decode"
+    );
+    assert!(
+        be.raster_image(9).is_some(),
+        "the coarse raster still draws while the sharper one decodes"
+    );
+}
+
+/// Sharpening must refine in place. A raster that is merely too coarse
+/// is still resident, so paint keeps drawing it while the sharper
+/// decode runs instead of dropping back to placeholder art.
+#[test]
+fn a_coarse_raster_stays_resident_while_a_sharper_one_is_requested() {
+    let png = encode_test_png(256, 256);
+    let mut be = NativeBackend::with_dpi(1.0);
+    let (small, covers) = decode_raster_capped(&png, 64).expect("capped decode");
+    be.install_raster_image(11, small, covers);
+
+    assert!(
+        !be.image_decoded(11, &png, 256),
+        "a zoom-in asks for a sharper decode"
+    );
+    assert!(
+        be.image_resident(11),
+        "but the coarse raster is still there to draw"
+    );
+    assert!(
+        !be.image_resident(12),
+        "an unknown image has nothing to draw"
     );
 }

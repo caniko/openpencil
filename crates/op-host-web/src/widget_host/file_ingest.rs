@@ -104,6 +104,7 @@ impl WidgetHost {
         }
         self.editor_state.history_push_past(snap);
         self.mark_dirty();
+        self.refresh_missing_fonts_after_document_change();
         true
     }
 }

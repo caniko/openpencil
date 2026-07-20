@@ -112,7 +112,16 @@ export function createWebImageCaches(CK) {
     thumbnailFailures.add(key);
   };
 
-  const hasFullImage = (lo, hi) => fullImageCache.has(imageKey(lo, hi));
+  // A cached raster satisfies a draw only when it is at least as sharp
+  // as the view needs. Rastering every visible image at its authored
+  // size is what made a zoomed-out image-dense page evict and re-decode
+  // continuously; sizing to the view keeps hundreds of thumbnails cheap.
+  const hasFullImage = (lo, hi, maxEdgePx) => {
+    const hit = fullImageCache.get(imageKey(lo, hi));
+    if (!hit) return false;
+    if (!(maxEdgePx > 0)) return true;
+    return hit.coversEdgePx >= maxEdgePx;
+  };
 
   const fullImage = (lo, hi) => {
     const key = imageKey(lo, hi);
@@ -123,7 +132,13 @@ export function createWebImageCaches(CK) {
     return hit.image;
   };
 
-  const installFullImage = (lo, hi, encoded) => {
+  // NOTE: the browser decodes at the source's own size. Sizing the
+  // raster to the view (as the native host does) needs a surface
+  // round-trip whose snapshot aliases the surface's pixels, so freeing
+  // the surface would dangle the cached image — deferred rather than
+  // shipped unsafely. A full raster serves every requested size, so it
+  // records itself as covering any edge.
+  const installFullImage = (lo, hi, encoded, _maxEdgePx) => {
     const key = imageKey(lo, hi);
     if (fullImageCache.has(key)) return true;
 
@@ -136,7 +151,11 @@ export function createWebImageCaches(CK) {
         deleteImage(image);
         return false;
       }
-      fullImageCache.set(key, { image, bytes });
+      fullImageCache.set(key, {
+        image,
+        bytes,
+        coversEdgePx: Number.MAX_SAFE_INTEGER,
+      });
       fullImageCacheBytes += bytes;
       evictFullImages();
       return fullImageCache.has(key);

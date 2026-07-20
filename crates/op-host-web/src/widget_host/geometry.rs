@@ -51,6 +51,38 @@ impl WidgetHost {
         x >= cx0 && x <= cx0 + cw && y >= cy0 && y <= cy0 + ch
     }
 
+    /// `(anchor, viewport)` for the top-bar import dropdown — mirrors
+    /// the native host so both chromes clamp the popup identically.
+    pub(in crate::widget_host) fn import_menu_anchor(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> (Rect, Rect) {
+        use op_editor_ui::widgets::IMPORT_MENU_WIDTH;
+        let top_bar_rect = Rect {
+            origin: Point2D::new(0.0, 0.0),
+            size: Point2D::new(viewport_w, TOP_BAR_HEIGHT),
+        };
+        let button = op_editor_ui::widgets::TopBar::for_editor_ui(&self.editor_state.editor_ui)
+            .import_button_rect(top_bar_rect);
+        let anchor = Rect {
+            origin: button.origin,
+            size: Point2D::new(IMPORT_MENU_WIDTH, button.size.y),
+        };
+        let viewport = Rect {
+            origin: Point2D::new(0.0, 0.0),
+            size: Point2D::new(viewport_w, viewport_h),
+        };
+        (anchor, viewport)
+    }
+
+    /// Close the import dropdown and clear its hover row.
+    pub(in crate::widget_host) fn close_import_menu(&mut self) {
+        self.editor_state.editor_ui.import_menu_open = false;
+        self.editor_state.editor_ui.import_menu.open = false;
+        self.editor_state.editor_ui.import_menu.hover = None;
+    }
+
     pub(in crate::widget_host) fn locale_picker_rect(&self, viewport_w: f32) -> Rect {
         let top_bar_rect = Rect {
             origin: Point2D::new(0.0, 0.0),

@@ -12,7 +12,9 @@ use crate::{
     node_hidden, node_is_ellipse, node_is_text, node_origin, node_rotation_deg, node_size,
     node_stroke_css, node_text, parse_color, root_nodes, Codegen, CssVariables,
 };
-use jian_ops_schema::node::{BoolOrExpression, NumberOrExpression, PenNode};
+use jian_ops_schema::node::{
+    BoolOrExpression, CornerRadius, ImageFitMode, NumberOrExpression, PenNode,
+};
 use jian_ops_schema::PenDocument;
 
 // --- First-class widget element mapping ----------------------------
@@ -184,6 +186,29 @@ fn tabs_nav_markup(node: &PenNode) -> Option<String> {
     Some(s)
 }
 
+fn emitted_corner_radius(node: &PenNode) -> f64 {
+    let PenNode::Image(image) = node else {
+        return node_corner_radius(node);
+    };
+    match &image.corner_radius {
+        Some(CornerRadius::Uniform(radius)) => *radius,
+        Some(CornerRadius::PerCorner(radii)) => radii.first().copied().unwrap_or(0.0),
+        None => 0.0,
+    }
+}
+
+fn image_object_fit(node: &PenNode) -> Option<&'static str> {
+    let PenNode::Image(image) = node else {
+        return None;
+    };
+    Some(match image.object_fit.as_ref() {
+        Some(ImageFitMode::Fit) => "contain",
+        Some(ImageFitMode::Crop) => "cover",
+        Some(ImageFitMode::Tile) => "none",
+        Some(ImageFitMode::Fill) | None => "fill",
+    })
+}
+
 /// HTML + inline-CSS generator. Walks the document's node tree and
 /// emits `<div>` per Rect/Frame/Group with absolute positioning and
 /// inline style; ellipses get `border-radius: 50%`; text nodes emit
@@ -232,7 +257,7 @@ fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
             color_to_css(&color)
         ));
     }
-    let radius = node_corner_radius(node);
+    let radius = emitted_corner_radius(node);
     if radius > 0.0 {
         style.push_str(&format!(";border-radius:{}px", fmt_num(radius)));
     }
@@ -242,6 +267,18 @@ fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
     let rotation = node_rotation_deg(node);
     if rotation.abs() > f64::EPSILON {
         style.push_str(&format!(";transform:rotate({}deg)", fmt_num(rotation)));
+    }
+    if let PenNode::Image(image) = node {
+        style.push_str(&format!(
+            ";object-fit:{}",
+            image_object_fit(node).expect("image fit")
+        ));
+        out.push_str(&format!(
+            "{indent}<img src=\"{}\" alt=\"{}\" style=\"{style}\" />\n",
+            html_escape(image.src.as_ref()),
+            html_escape(image.base.name.as_deref().unwrap_or_default()),
+        ));
+        return;
     }
     // First-class widgets win over the generic div/span heuristic: nest
     // the real form element inside the positioned wrapper so absolute
@@ -367,9 +404,9 @@ fn emit_node_jsx(out: &mut String, node: &PenNode, depth: usize) {
     let tag = if node_is_text(node) { "span" } else { "div" };
     let (x, y) = node_origin(node);
     let (w, h) = node_size(node);
-    let radius = node_corner_radius(node);
+    let radius = emitted_corner_radius(node);
     // JSX style is an object literal — semicolons → commas, camelCase keys.
-    let style = format!(
+    let mut style = format!(
         "position: 'absolute', left: {}, top: {}, width: {}, height: {}{}{}{}{}",
         fmt_num(x),
         fmt_num(y),
@@ -392,6 +429,18 @@ fn emit_node_jsx(out: &mut String, node: &PenNode, depth: usize) {
             String::new()
         },
     );
+    if let PenNode::Image(image) = node {
+        style.push_str(&format!(
+            ", objectFit: '{}'",
+            image_object_fit(node).expect("image fit")
+        ));
+        out.push_str(&format!(
+            "{indent}<img src=\"{}\" alt=\"{}\" style={{{{{style}}}}} />\n",
+            html_escape(image.src.as_ref()),
+            html_escape(image.base.name.as_deref().unwrap_or_default()),
+        ));
+        return;
+    }
     // First-class widgets win over the generic div/span heuristic. The
     // shared form-element markup is JSX-valid (self-closed voids, bare
     // boolean attributes), so it nests directly inside the positioned
@@ -706,5 +755,36 @@ fn emit_node_rn(out: &mut String, node: &PenNode, depth: usize) {
             }
             out.push_str(&format!("{indent}</View>\n"));
         }
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    fn image_doc(object_fit: &str) -> PenDocument {
+        jian_ops_schema::load_str(&format!(
+            r#"{{"version":"1.0","children":[{{"type":"image","id":"hero","name":"Hero & Photo","src":"./assets/hero.png","x":12,"y":34,"width":320,"height":180,"cornerRadius":16,"objectFit":"{object_fit}"}}]}}"#,
+        ))
+        .expect("image document")
+        .value
+    }
+
+    #[test]
+    fn html_image_keeps_asset_geometry_radius_and_crop_fit() {
+        let output = Html.generate(&image_doc("crop"));
+        assert!(output.contains("<img src=\"./assets/hero.png\""));
+        assert!(output.contains("left:12px;top:34px;width:320px;height:180px"));
+        assert!(output.contains("border-radius:16px;object-fit:cover"));
+        assert!(output.contains("alt=\"Hero &amp; Photo\""));
+    }
+
+    #[test]
+    fn react_image_keeps_asset_geometry_radius_and_fit_mode() {
+        let output = React.generate(&image_doc("fit"));
+        assert!(output.contains("<img src=\"./assets/hero.png\""));
+        assert!(output.contains("left: 12, top: 34, width: 320, height: 180"));
+        assert!(output.contains("borderRadius: 16, objectFit: 'contain'"));
+        assert!(output.contains("alt=\"Hero &amp; Photo\""));
     }
 }

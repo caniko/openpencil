@@ -1,0 +1,35 @@
+pub(super) fn initial_value(name: &str) -> Option<&'static str> {
+    match name {
+        "color" => Some("#000000"),
+        "font-family" => Some("sans-serif"),
+        "font-size" => Some("medium"),
+        "font-style" | "font-stretch" | "font-variant" | "font-weight" => Some("normal"),
+        "line-height" => Some("normal"),
+        "letter-spacing" | "word-spacing" => Some("normal"),
+        "text-align" => Some("start"),
+        "text-transform" | "text-decoration-line" => Some("none"),
+        "white-space" => Some("normal"),
+        "visibility" => Some("visible"),
+        "cursor" => Some("auto"),
+        "display" => Some("inline"),
+        "position" => Some("static"),
+        "box-sizing" => Some("content-box"),
+        "width" | "height" | "top" | "right" | "bottom" | "left" => Some("auto"),
+        "min-width" | "min-height" | "margin-top" | "margin-right" | "margin-bottom"
+        | "margin-left" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left"
+        | "gap" | "row-gap" | "column-gap" => Some("0"),
+        "max-width" | "max-height" => Some("none"),
+        "background-color" => Some("transparent"),
+        "background-image" | "box-shadow" | "filter" | "transform" => Some("none"),
+        "opacity" => Some("1"),
+        "overflow" | "overflow-x" | "overflow-y" => Some("visible"),
+        "flex-direction" => Some("row"),
+        "flex-wrap" => Some("nowrap"),
+        "flex-grow" => Some("0"),
+        "flex-shrink" => Some("1"),
+        "flex-basis" => Some("auto"),
+        "align-items" | "align-self" | "justify-content" => Some("normal"),
+        "content" => Some("normal"),
+        _ => None,
+    }
+}

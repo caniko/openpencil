@@ -4,12 +4,42 @@
 //! (`op_editor_ui::widgets::property_panel_typography`).
 
 use super::WidgetHostNative;
-use op_editor_ui::font_catalog::BUNDLED_FONT_FAMILIES;
+use op_editor_ui::widgets::agent_settings_panel::AgentSettingsPanel;
 use op_editor_ui::widgets::property_panel_typography::font_picker_entries;
 use op_editor_ui::widgets::{PropertyPanel, TOP_BAR_HEIGHT};
 use op_editor_ui::{Point2D, Rect};
 
 impl WidgetHostNative {
+    pub(in crate::widget_host) fn try_scroll_settings_font_picker(
+        &mut self,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool {
+        if !self.editor_state.editor_ui.agent_settings_open {
+            return false;
+        }
+        let panel = AgentSettingsPanel::for_editor(&self.editor_state);
+        let panel_rect = panel.rect(viewport_width, viewport_height);
+        let Some(layout) = panel.font_picker_layout(panel_rect) else {
+            return false;
+        };
+        if !layout.popup.contains(Point2D::new(x, y)) {
+            return false;
+        }
+        let ui = &mut self.editor_state.editor_ui;
+        let next = (ui.font_picker.scroll.offset - delta_y).clamp(0.0, layout.max_scroll);
+        if next != ui.font_picker.scroll.offset {
+            ui.font_picker.scroll.offset = next;
+            ui.font_picker.hover = None;
+            ui.font_picker_import_hover = false;
+            self.mark_dirty();
+        }
+        true
+    }
+
     /// Enumerate installed font families once per process and cache
     /// them on the editor state (sorted, deduped against the bundled
     /// list — mirrors TS `use-system-fonts.ts` post-processing).
@@ -17,15 +47,17 @@ impl WidgetHostNative {
         if self.editor_state.editor_ui.system_fonts_loaded {
             return;
         }
-        let bundled: std::collections::HashSet<String> = BUNDLED_FONT_FAMILIES
+        let bundled_families = jian_skia::list_bundled_families();
+        let bundled: std::collections::HashSet<String> = bundled_families
             .iter()
-            .map(|f| f.to_lowercase())
+            .map(|family| family.to_lowercase())
             .collect();
         let mut families = crate::backend::enumerate_system_font_families();
         families.retain(|f| !bundled.contains(&f.to_lowercase()));
         families.sort_by_key(|a| a.to_lowercase());
-        families.dedup();
+        families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
         self.editor_state.editor_ui.system_font_families = std::sync::Arc::new(families);
+        self.editor_state.editor_ui.bundled_font_families = std::sync::Arc::new(bundled_families);
         self.editor_state.editor_ui.system_fonts_loaded = true;
     }
 
@@ -36,6 +68,7 @@ impl WidgetHostNative {
         let ui = &self.editor_state.editor_ui;
         font_picker_entries(
             &ui.imported_font_families,
+            &ui.bundled_font_families,
             &ui.system_font_families,
             &ui.font_picker_search,
         )
@@ -294,11 +327,19 @@ mod tests {
     #[test]
     fn set_font_family_index_writes_font_family_and_closes() {
         let mut host = host_with_text_selected();
+        // This unit test exercises dispatch against the runtime availability
+        // snapshot, so seed that boundary explicitly instead of relying on an
+        // unrelated Skia test having registered the desktop's bundled fonts in
+        // the process-global registry first. Windows intentionally skips those
+        // DirectWrite-backed registration tests.
+        host.editor_state_mut().editor_ui.system_fonts_loaded = true;
+        host.editor_state_mut().editor_ui.bundled_font_families =
+            std::sync::Arc::new(vec!["Inter".into()]);
         host.apply_property_action(
             op_editor_ui::widgets::PropertyPanelAction::ToggleFontFamilyPicker,
         );
-        // Search for a bundled family so index 0 is deterministic.
-        for c in "playfair".chars() {
+        // Search for a registered bundled family so index 0 is deterministic.
+        for c in "inter".chars() {
             assert!(host.apply_font_picker_text(c));
         }
         host.apply_property_action(
@@ -311,7 +352,7 @@ mod tests {
         let jian_ops_schema::node::PenNode::Text(text) = node else {
             panic!("n11 must be a text node");
         };
-        assert_eq!(text.font_family.as_deref(), Some("Playfair Display"));
+        assert_eq!(text.font_family.as_deref(), Some("Inter"));
     }
 
     #[test]

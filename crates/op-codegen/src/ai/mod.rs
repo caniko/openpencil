@@ -7,9 +7,11 @@
 
 pub mod assets;
 pub mod bundle;
+mod deterministic_fallback;
 pub(crate) mod fallback_plan;
 pub mod parse;
 pub mod pipeline;
+mod pipeline_preflight;
 pub mod prompts;
 pub mod stored_zip;
 pub mod types;

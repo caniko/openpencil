@@ -189,6 +189,12 @@ impl WidgetHost {
     /// Cmd/Ctrl+A — replace selection with every top-level node
     /// on the active page (TS `setSelection(topLevelIds, …)`).
     pub fn apply_select_all(&mut self) -> bool {
+        // The font picker owns the keyboard while its search field is open.
+        // It has no range-selection model, so consume Cmd/Ctrl+A instead of
+        // selecting canvas nodes behind the overlay.
+        if self.editor_state.editor_ui.font_picker.open {
+            return true;
+        }
         if self.apply_input_select_all() {
             return true;
         }
@@ -534,6 +540,7 @@ impl WidgetHost {
         }
         if self.editor_state.undo() {
             self.mark_dirty();
+            self.refresh_missing_fonts_after_document_change();
             return true;
         }
         false
@@ -545,6 +552,7 @@ impl WidgetHost {
         }
         if self.editor_state.redo() {
             self.mark_dirty();
+            self.refresh_missing_fonts_after_document_change();
             return true;
         }
         false

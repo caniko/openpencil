@@ -459,6 +459,7 @@ impl WidgetHost {
                     let ui = &self.editor_state.editor_ui;
                     op_editor_ui::widgets::property_panel_typography::font_picker_entries(
                         &ui.imported_font_families,
+                        &ui.bundled_font_families,
                         &ui.system_font_families,
                         &ui.font_picker_search,
                     )
@@ -496,6 +497,7 @@ impl WidgetHost {
                     let ui = &self.editor_state.editor_ui;
                     op_editor_ui::widgets::property_panel_typography::font_picker_entries(
                         &ui.imported_font_families,
+                        &ui.bundled_font_families,
                         &ui.system_font_families,
                         &ui.font_picker_search,
                     )
@@ -608,7 +610,9 @@ impl WidgetHost {
         let cg = &mut self.editor_state.codegen;
         match action {
             CodegenAction::SelectFramework(fw) => {
-                cg.framework = fw;
+                if cg.select_framework(fw) {
+                    self.code_selection_drag = None;
+                }
             }
             CodegenAction::Generate => {
                 cg.pending_generate = true;

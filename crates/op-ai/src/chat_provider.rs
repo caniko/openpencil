@@ -20,6 +20,9 @@
 //! shell-core's wasm32 target can't accept. The `EchoProvider` test
 //! double stays here so widget tests don't need a real backend.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 /// Which external CLI a Subprocess / HttpServer / Acp provider
 /// is bridging to. Subprocess + Acp paths spawn the binary and
 /// talk over stdio; HttpServer spawns with a `serve` subcommand
@@ -311,6 +314,17 @@ impl ChatRequest {
 pub trait ChatProvider: Send + Sync {
     fn provider_label(&self) -> &str;
     fn send(&self, request: ChatRequest) -> Box<dyn Iterator<Item = ChatDelta> + Send>;
+
+    /// Start a turn that may be interrupted through `cancel`. Providers with
+    /// an abortable transport should override this; the default preserves the
+    /// existing iterator contract for simple/test providers.
+    fn send_cancellable(
+        &self,
+        request: ChatRequest,
+        _cancel: Arc<AtomicBool>,
+    ) -> Box<dyn Iterator<Item = ChatDelta> + Send> {
+        self.send(request)
+    }
 }
 
 /// One canvas tool exposed to a tool-capable chat transport (the

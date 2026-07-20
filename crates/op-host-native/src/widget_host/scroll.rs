@@ -437,6 +437,12 @@ impl WidgetHostNative {
         viewport_height: f32,
         zoom_intent: bool,
     ) -> bool {
+        if self.try_scroll_missing_fonts_picker(x, y, delta_y, viewport_width, viewport_height) {
+            return true;
+        }
+        if self.try_scroll_settings_font_picker(x, y, delta_y, viewport_width, viewport_height) {
+            return true;
+        }
         // Floating VariablesPanel owns the wheel over its rect — run this
         // BEFORE `over_topmost_panel`, which also lists the variables panel
         // and would otherwise swallow the event WITHOUT scrolling (its rows
@@ -618,6 +624,12 @@ impl WidgetHostNative {
         viewport_width: f32,
         viewport_height: f32,
     ) -> bool {
+        if self.try_scroll_missing_fonts_picker(x, y, dy, viewport_width, viewport_height) {
+            return true;
+        }
+        if self.try_scroll_settings_font_picker(x, y, dy, viewport_width, viewport_height) {
+            return true;
+        }
         // Floating VariablesPanel owns trackpad pans over its rect.
         // See `apply_wheel` for why this must precede the topmost
         // overlay guard.

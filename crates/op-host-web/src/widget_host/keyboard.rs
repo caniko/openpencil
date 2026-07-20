@@ -16,6 +16,21 @@ impl WidgetHost {
         if self.apply_image_panel_text(c) {
             return true;
         }
+        // The font picker is the next-highest text input. Route to it before
+        // any stale settings, property, or canvas-text focus can consume the
+        // character behind the overlay.
+        if self.editor_state.editor_ui.font_picker.open {
+            if c.is_control() {
+                return false;
+            }
+            let ui = &mut self.editor_state.editor_ui;
+            ui.font_picker_search.push(c);
+            ui.font_picker.scroll.offset = 0.0;
+            ui.font_picker.hover = None;
+            ui.font_picker_import_hover = false;
+            self.mark_dirty();
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             return self.apply_settings_text(c);
         }
@@ -183,19 +198,6 @@ impl WidgetHost {
             self.mark_dirty();
             return true;
         }
-        // Font-family picker search box (mirrors the native
-        // font_picker_dispatch routing).
-        if self.editor_state.editor_ui.font_picker.open {
-            if c.is_control() {
-                return false;
-            }
-            let ui = &mut self.editor_state.editor_ui;
-            ui.font_picker_search.push(c);
-            ui.font_picker.scroll.offset = 0.0;
-            ui.font_picker.hover = None;
-            self.mark_dirty();
-            return true;
-        }
         // Icon-picker / component-browser search boxes own typing
         // while their panels are open (mirrors native routing order:
         // icon picker → chat model picker → component browser; see
@@ -225,6 +227,20 @@ impl WidgetHost {
 
     pub fn apply_backspace(&mut self) -> bool {
         if self.apply_image_panel_backspace() {
+            return true;
+        }
+        // Swallow Backspace in the font picker even when the query is empty,
+        // so it cannot mutate a background property or canvas selection.
+        if self.editor_state.editor_ui.font_picker.open {
+            let ui = &mut self.editor_state.editor_ui;
+            let query_changed = ui.font_picker_search.pop().is_some();
+            let hover_changed = ui.font_picker_import_hover;
+            if query_changed || hover_changed {
+                ui.font_picker.scroll.offset = 0.0;
+                ui.font_picker.hover = None;
+                ui.font_picker_import_hover = false;
+                self.mark_dirty();
+            }
             return true;
         }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
@@ -365,17 +381,6 @@ impl WidgetHost {
             }
             return false;
         }
-        // Font-family picker search box — swallow the key while the
-        // picker is open even on an empty draft (no node deletion).
-        if self.editor_state.editor_ui.font_picker.open {
-            let ui = &mut self.editor_state.editor_ui;
-            if ui.font_picker_search.pop().is_some() {
-                ui.font_picker.scroll.offset = 0.0;
-                ui.font_picker.hover = None;
-                self.mark_dirty();
-            }
-            return true;
-        }
         if let Some(changed) = self.icon_picker_backspace() {
             return changed;
         }
@@ -408,6 +413,11 @@ impl WidgetHost {
         // The image popover is painted above every editor input. Submit or
         // swallow Enter before consulting any independently stale focus below.
         if self.apply_image_panel_send() {
+            return true;
+        }
+        // Enter belongs to the open font-search overlay. Swallow it before
+        // any stale background focus or the chat composer can act on it.
+        if self.editor_state.editor_ui.font_picker.open {
             return true;
         }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
@@ -486,6 +496,12 @@ impl WidgetHost {
     /// the native shell's `apply_delete`.
     pub fn apply_delete(&mut self) -> bool {
         if self.apply_image_panel_delete() {
+            return true;
+        }
+        // The open font picker owns Delete. Its search draft handles
+        // Backspace separately; forward-delete must never reach the canvas
+        // selection behind the overlay.
+        if self.editor_state.editor_ui.font_picker.open {
             return true;
         }
         if self.editor_state.ui.layer_rename.is_some() {

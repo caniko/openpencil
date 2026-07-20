@@ -684,6 +684,7 @@ fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             transform: None,
             explain: None,
             opacity: None,
+            blend_mode: None,
             exposure: None,
             contrast: None,
             saturation: None,

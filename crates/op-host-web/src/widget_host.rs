@@ -72,6 +72,8 @@ mod chat_model_picker_caret_tests;
 mod chat_send_tests;
 mod chrome_menu_press;
 mod click;
+#[cfg(test)]
+mod codegen_framework_tests;
 mod color_picker_press;
 mod component_browser_press;
 mod cursor_input;
@@ -87,6 +89,8 @@ pub(crate) mod icon_ingest;
 mod file_ingest;
 #[cfg(test)]
 mod file_menu_paint_tests;
+#[cfg(test)]
+mod font_picker_keyboard_tests;
 mod geometry;
 mod group_ops;
 mod history_guard;
@@ -869,6 +873,12 @@ impl WidgetHost {
     ) -> bool {
         self.last_viewport_w = viewport_width;
         self.last_viewport_h = viewport_height;
+        if self.try_scroll_missing_fonts_picker(x, y, delta_y, viewport_width, viewport_height) {
+            return true;
+        }
+        if self.try_scroll_settings_font_picker(x, y, delta_y, viewport_width, viewport_height) {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings_open {
             use op_editor_ui::widgets::agent_settings_panel::AgentSettingsPanel;
             let panel_rect = AgentSettingsPanel::for_web_editor(&self.editor_state)
@@ -954,8 +964,14 @@ impl WidgetHost {
         viewport_width: f32,
         viewport_height: f32,
     ) -> bool {
+        if self.try_scroll_missing_fonts_picker(x, y, dy, viewport_width, viewport_height) {
+            return true;
+        }
         self.last_viewport_w = viewport_width;
         self.last_viewport_h = viewport_height;
+        if self.try_scroll_settings_font_picker(x, y, dy, viewport_width, viewport_height) {
+            return true;
+        }
         if self.try_scroll_variables_panel(x, y, dy, viewport_width, viewport_height) {
             return true;
         }

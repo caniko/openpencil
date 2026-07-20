@@ -6,9 +6,9 @@ use op_codegen::ai::types::CodegenInput;
 use op_editor_core::state::EditorState;
 use op_editor_core::walkers::find_node;
 
-/// Default per-request token cap for the pipeline input. The per-phase
-/// prompt builders override this, so it is only a fallback default.
-pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Default hard per-request token cap. Phase builders stay within it while
+/// selecting planning/chunk/assembly budgets of 6k/12k/16k respectively.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_000;
 
 /// Build pipeline input from the current selection, falling back to the
 /// active page's children when nothing is selected. Returns the input plus

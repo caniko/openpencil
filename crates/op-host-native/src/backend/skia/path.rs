@@ -316,6 +316,24 @@ impl NativeBackend {
         self.fill_svg_path_in_rect_impl(canvas, d, rect, color, Some(even_odd));
     }
 
+    pub fn clip_svg_path_in_rect(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        d: &str,
+        rect: Rect,
+        even_odd: bool,
+    ) {
+        let Some((_, path, _)) = self.cached_svg_path(d) else {
+            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            return;
+        };
+        let mut path = fit_path_to_rect(&path, rect);
+        if even_odd {
+            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
+        }
+        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+    }
+
     fn fill_svg_path_in_rect_impl(
         &mut self,
         canvas: &skia_safe::Canvas,

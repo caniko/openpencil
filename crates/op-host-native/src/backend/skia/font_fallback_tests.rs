@@ -1,7 +1,52 @@
 //! Native typeface fallback and direct-text paint regressions.
 
 use super::*;
-use op_editor_ui::TextLayout;
+use op_editor_ui::{TextBaselineRequest, TextLayout};
+
+#[test]
+fn css_font_stack_parser_preserves_quoted_families_and_expands_generics() {
+    let families = jian_skia::font_family_candidates(Some(
+        r#""ACME, Display", 'DM Sans', system-ui, ui-sans-serif"#,
+    ));
+    assert_eq!(&families[..2], &["ACME, Display", "DM Sans"]);
+    assert_eq!(families.len(), 3, "equivalent UI generics should dedupe");
+    assert_ne!(families[2], "system-ui");
+    assert_ne!(families[2], "ui-sans-serif");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn css_font_stack_preserves_bundled_inter_before_system_ui() {
+    let _guard = crate::font_registry_test_support::lock();
+    jian_skia::register_bundled_fonts(vec![
+        include_bytes!("../../../../op-host-desktop/assets/fonts/CormorantGaramond-VF.ttf")
+            .to_vec(),
+        include_bytes!("../../../../op-host-desktop/assets/fonts/Inter-VF.ttf").to_vec(),
+    ]);
+
+    let be = NativeBackend::with_dpi(1.0);
+    assert_eq!(
+        be.font_resolver
+            .font_families_for_shaping(Some("Inter, system-ui")),
+        vec!["Inter", ".AppleSystemUIFont"]
+    );
+    assert_eq!(
+        be.font_resolver
+            .typeface_for_char(Some("Inter, system-ui"), 'A', 400, false)
+            .expect("the first available authored family covers ASCII")
+            .typeface
+            .family_name(),
+        "Inter"
+    );
+    assert_eq!(
+        be.font_resolver
+            .typeface_for_char(Some("Inter"), 'A', 400, false)
+            .expect("bundled Inter is available")
+            .typeface
+            .family_name(),
+        "Inter"
+    );
+}
 
 #[test]
 fn korean_hangul_resolves_to_a_covering_typeface() {
@@ -123,6 +168,46 @@ fn emoji_resolves_to_a_covering_emoji_typeface() {
     assert!(
         family.contains("emoji"),
         "emoji should resolve to an emoji-capable font, got {family}"
+    );
+}
+
+#[test]
+fn paragraph_baseline_honors_authored_half_leading() {
+    let mut be = NativeBackend::with_dpi(1.0);
+    let mut request = TextBaselineRequest {
+        text: "Navigation",
+        font_family: "system-ui, sans-serif",
+        font_size: 16.0,
+        font_weight: 600,
+        italic: false,
+        line_height: 1.0,
+    };
+    let compact = be.text_first_baseline(&request);
+    request.line_height = 1.5;
+    let loose = be.text_first_baseline(&request);
+
+    assert!((loose - compact - 4.0).abs() < 0.05, "{compact} -> {loose}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn paragraph_baseline_uses_the_actual_emoji_fallback_face() {
+    let mut be = NativeBackend::with_dpi(1.0);
+    let mut request = TextBaselineRequest {
+        text: "M",
+        font_family: "system-ui, sans-serif",
+        font_size: 48.0,
+        font_weight: 400,
+        italic: false,
+        line_height: 1.5,
+    };
+    let latin = be.text_first_baseline(&request);
+    request.text = "🧥";
+    let emoji = be.text_first_baseline(&request);
+
+    assert!(
+        (emoji - latin).abs() > 0.5,
+        "emoji must not reuse Latin M metrics: latin={latin}, emoji={emoji}"
     );
 }
 

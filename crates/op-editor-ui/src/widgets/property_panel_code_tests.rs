@@ -612,7 +612,7 @@ fn complete_code_preview_uses_syntax_highlight_colors() {
 }
 
 #[test]
-fn code_action_rects_generating_has_cancel_and_chips() {
+fn code_action_rects_generating_locks_framework_and_keeps_cancel() {
     let s = CodegenState {
         phase: CodegenPhase::Generating,
         ..CodegenState::default()
@@ -627,8 +627,13 @@ fn code_action_rects_generating_has_cancel_and_chips() {
             .iter()
             .filter(|(a, _)| matches!(a, CodegenAction::SelectFramework(_)))
             .count(),
-        8
+        0,
+        "an in-flight run must keep the framework it captured at launch"
     );
+    assert!(!rects.iter().any(|(a, _)| matches!(
+        a,
+        CodegenAction::ScrollFrameworksLeft | CodegenAction::ScrollFrameworksRight
+    )));
 }
 
 #[test]
@@ -654,6 +659,80 @@ fn code_action_rects_error_has_regenerate_only_button() {
         .collect();
     assert_eq!(buttons.len(), 1);
     assert!(matches!(buttons[0].0, CodegenAction::Regenerate));
+}
+
+#[test]
+fn error_with_previous_result_keeps_copy_and_regenerate_actions() {
+    let s = CodegenState {
+        phase: CodegenPhase::Error,
+        code: "export default function Previous() {}".into(),
+        error: Some("provider unavailable".into()),
+        ..CodegenState::default()
+    };
+    let rects = code_action_rects(0.0, 0.0, 280.0, &s);
+
+    assert!(rects
+        .iter()
+        .any(|(action, _)| matches!(action, CodegenAction::Copy)));
+    assert!(rects
+        .iter()
+        .any(|(action, _)| matches!(action, CodegenAction::Download)));
+    assert!(rects
+        .iter()
+        .any(|(action, _)| matches!(action, CodegenAction::Regenerate)));
+}
+
+#[test]
+fn error_card_replaces_internal_sentinel_but_keeps_actionable_details() {
+    let state = CodegenState {
+        phase: CodegenPhase::Error,
+        error: Some(
+            "All chunks failed — no code to assemble\nDetails: chunk c1: authentication failed"
+                .into(),
+        ),
+        ..CodegenState::default()
+    };
+    let backend = paint_capture(&state, &Theme::light(), 300.0);
+    let painted: Vec<_> = backend
+        .texts
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect();
+
+    assert!(painted.contains(&"Generation failed"));
+    assert!(painted
+        .iter()
+        .any(|text| text.contains("AI returned no usable code")));
+    assert!(painted
+        .iter()
+        .any(|text| text.contains("Details: chunk c1:")));
+    assert!(!painted
+        .iter()
+        .any(|text| text.contains("no code to assemble")));
+}
+
+#[test]
+fn normal_error_summary_does_not_repeat_diagnostic_details() {
+    let strings = code_i18n::CodePanelStrings::new(Locale::EnUs);
+    let summary = error::display_error_detail(
+        strings,
+        "Code generation failed after retries\nDetails: chunk c1: authentication failed",
+    );
+    assert_eq!(summary, "Code generation failed after retries");
+}
+
+#[test]
+fn long_error_detail_is_bounded_to_two_measured_lines() {
+    let measure = |text: &str| text.chars().count() as f32 * 10.0;
+    let lines = error::detail_lines(
+        "provider returned an exceptionally long diagnostic response that cannot fit",
+        120.0,
+        measure,
+    );
+
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|line| measure(line) <= 120.0));
+    assert!(lines[1].ends_with('…'));
 }
 
 /// A click at the Generate button's centre hits Generate and no other

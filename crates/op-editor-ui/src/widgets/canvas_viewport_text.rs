@@ -25,7 +25,7 @@ use crate::layout_scene::{SceneNode, SceneTextAlign, SceneTextRun};
 use crate::widgets::canvas_text_edit::text_edit_layout;
 use crate::widgets::canvas_viewport::EditCaret;
 use crate::widgets::PaintCx;
-use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
+use crate::{Color, Point2D, Rect, RenderBackend, TextBaselineRequest, TextLayout};
 use jian_core::text_input::prev_char_boundary;
 
 /// Fully resolved paint style for one line slice.
@@ -177,7 +177,7 @@ fn measure_line_slices(
         );
         chars += slice.chars().count();
     });
-    w + chars.saturating_sub(1) as f32 * letter_spacing.max(0.0)
+    w + chars.saturating_sub(1) as f32 * letter_spacing
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -192,7 +192,7 @@ fn draw_slice(
     justify_extra: f32,
 ) -> (f32, f32) {
     let jc = (style.color).to_jian();
-    if letter_spacing <= 0.0 && justify_extra <= 0.0 {
+    if letter_spacing.abs() < f32::EPSILON && justify_extra <= 0.0 {
         backend.draw_text(
             &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
                 .with_font_weight(style.weight)
@@ -349,8 +349,20 @@ pub(crate) fn paint_text_node(
         // exports already bake vertical placement into `x/y`; applying
         // middle/bottom again shifts imported labels away from their
         // TS positions.
-        let first_baseline_y =
-            world_rect.origin.y + cx.backend.text_ascent_family(font_size, family, weight);
+        // Only authored line boxes opt into shaped fallback metrics.
+        let baseline_offset = if paint_node.line_height > 0.0 {
+            cx.backend.text_first_baseline(&TextBaselineRequest {
+                text: layout.lines.first().map_or("", String::as_str),
+                font_family: family,
+                font_size,
+                font_weight: weight,
+                italic: paint_node.italic,
+                line_height: paint_node.line_height,
+            })
+        } else {
+            cx.backend.text_ascent_family(font_size, family, weight)
+        };
+        let first_baseline_y = world_rect.origin.y + baseline_offset;
         let last_line = layout.lines.len().saturating_sub(1);
         for (idx, line) in layout.lines.iter().enumerate() {
             if line.is_empty() {
@@ -532,6 +544,7 @@ mod tests {
         lines: Vec<(Point2D, Point2D, Color, f32)>,
         fill_rects: Vec<Rect>,
         round_rects: Vec<Rect>,
+        requested_baseline: Option<f32>,
     }
 
     impl RenderBackend for CaptureBackend {
@@ -567,6 +580,18 @@ mod tests {
         }
         fn measure_text_weighted(&mut self, text: &str, _: f32, _: u16) -> f32 {
             text.chars().count() as f32 * 10.0
+        }
+        fn text_first_baseline(&mut self, request: &TextBaselineRequest<'_>) -> f32 {
+            if let Some(baseline) = self.requested_baseline {
+                assert_eq!(request.text, "🧥 new");
+                assert_eq!(request.font_family, "Inter, system-ui, sans-serif");
+                assert_eq!((request.font_size, request.font_weight), (24.0, 700));
+                assert!(request.italic);
+                assert_eq!(request.line_height, 1.5);
+                baseline
+            } else {
+                request.font_size * 0.8
+            }
         }
     }
 
@@ -650,6 +675,27 @@ mod tests {
     }
 
     #[test]
+    fn authored_line_height_requests_a_text_aware_first_baseline() {
+        let mut node = text_node("🧥 new");
+        node.font_family = "Inter, system-ui, sans-serif".into();
+        node.font_size = 24.0;
+        node.font_weight = 700;
+        node.italic = true;
+        node.line_height = 1.5;
+        let mut backend = CaptureBackend {
+            requested_baseline: Some(19.25),
+            ..CaptureBackend::default()
+        };
+        let mut cx = PaintCx {
+            backend: &mut backend,
+        };
+
+        paint_text_node(&mut cx, &node, node.bounds, 1.0, &None);
+
+        assert_eq!(backend.origins[0].y, 19.25);
+    }
+
+    #[test]
     fn underline_and_strikethrough_stroke_at_metrics_offsets() {
         let mut node = text_node("abc");
         node.text_runs = vec![SceneTextRun {
@@ -698,9 +744,11 @@ mod tests {
     }
 
     #[test]
-    fn negative_letter_spacing_keeps_text_as_one_shaped_run() {
-        let mut node = text_node("Overview");
-        node.letter_spacing = -1.0;
+    fn negative_letter_spacing_offsets_glyphs_and_line_alignment() {
+        let mut node = text_node("NOVA");
+        node.letter_spacing = -2.0;
+        node.text_align = SceneTextAlign::Center;
+        node.bounds.size.x = 100.0;
         let mut backend = CaptureBackend::default();
         let mut cx = PaintCx {
             backend: &mut backend,
@@ -708,7 +756,12 @@ mod tests {
 
         paint_text_node(&mut cx, &node, node.bounds, 1.0, &None);
 
-        assert_eq!(backend.contents, vec!["Overview".to_string()]);
+        assert_eq!(backend.contents, vec!["N", "O", "V", "A"]);
+        // Width = 4*10 + 3*(-2) = 34, centered in 100 => x=33.
+        assert_eq!(
+            backend.origins.iter().map(|p| p.x).collect::<Vec<_>>(),
+            vec![33.0, 41.0, 49.0, 57.0]
+        );
     }
 
     #[test]

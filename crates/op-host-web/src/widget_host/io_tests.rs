@@ -350,6 +350,26 @@ fn install_ingested_state_preserves_live_chrome_and_clears_progress() {
 }
 
 #[test]
+fn opened_op_state_arms_missing_font_detection_through_ingest_install() {
+    let mut host = WidgetHost::new();
+    let source = r#"{"version":"0.8.0","children":[
+        {"type":"text","id":"t1","name":"Title","x":0,"y":0,"width":100,"height":24,
+         "content":"Hello","fontFamily":"__WebOpenedOpMissingFont__"}
+    ]}"#;
+    let mut ingested = crate::file_actions::ingest_op_source(source, host.editor_state())
+        .expect("canonical .op source");
+    ingested.state.editor_ui.file_name_display = Some("font-check.op".to_string());
+
+    host.install_ingested_state(ingested.state);
+
+    assert!(host.editor_state.editor_ui.missing_fonts_pending_detect);
+    assert_eq!(
+        host.editor_state.editor_ui.file_name_display.as_deref(),
+        Some("font-check.op")
+    );
+}
+
+#[test]
 fn export_svg_document_returns_vector_markup() {
     let host = WidgetHost::new();
     let svg = crate::file_actions::export_svg_document(&host.editor_state)

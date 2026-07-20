@@ -32,10 +32,12 @@ impl WidgetHost {
         match hit {
             AgentSettingsHit::Close | AgentSettingsHit::Outside => {
                 self.commit_settings_focus();
+                self.editor_state.editor_ui.close_font_picker();
                 self.editor_state.editor_ui.agent_settings_open = false;
             }
             AgentSettingsHit::SelectTab(tab) => {
                 self.commit_settings_focus();
+                self.editor_state.editor_ui.close_font_picker();
                 self.editor_state.editor_ui.agent_settings.tab = tab;
                 self.editor_state.editor_ui.agent_settings.scroll_y.offset = 0.0;
                 if matches!(tab, op_editor_core::AgentSettingsTab::Fonts) {
@@ -90,19 +92,8 @@ impl WidgetHost {
                     .mcp_client_config_clipboard_text();
                 self.host_copy_text(&config);
             }
-            AgentSettingsHit::MissingFontChooseFile(row) => {
-                self.editor_state.editor_ui.missing_fonts_import_row = Some(row);
-            }
-            AgentSettingsHit::RemoveImportedFont(index) => {
-                if let Some(family) = self
-                    .editor_state
-                    .editor_ui
-                    .imported_font_families
-                    .get(index)
-                    .cloned()
-                {
-                    self.editor_state.editor_ui.pending_font_remove = Some(family);
-                }
+            AgentSettingsHit::Fonts(hit) => {
+                self.dispatch_settings_fonts_press(hit);
             }
             AgentSettingsHit::ToggleImagesAdvanced => {
                 self.editor_state

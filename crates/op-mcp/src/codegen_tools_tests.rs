@@ -87,6 +87,22 @@ fn create_sample_plan() -> String {
     out["planId"].as_str().expect("planId").to_string()
 }
 
+fn create_dependency_chain_plan() -> String {
+    let plan = json!({
+        "chunks": [
+            { "id": "a", "nodeIds": ["n11"], "dependencies": [] },
+            { "id": "b", "nodeIds": ["n12"], "dependencies": ["a"] },
+            { "id": "c", "nodeIds": ["n11"], "dependencies": ["b"] },
+            { "id": "x", "nodeIds": ["n12"], "dependencies": [] }
+        ],
+        "sharedStyles": [],
+        "rootLayout": { "direction": "column", "gap": 0, "responsive": false }
+    })
+    .to_string();
+    let out = expect_json(codegen_plan_snapshot(&sample()).call(&args_with(&[("plan", &plan)])));
+    out["planId"].as_str().expect("planId").to_string()
+}
+
 // --- codegen_plan ----------------------------------------------------------
 
 #[test]
@@ -226,6 +242,23 @@ fn codegen_plan_missing_plan_reports_route_message() {
 }
 
 #[test]
+fn codegen_plan_rejects_empty_chunk_list() {
+    let state = sample();
+    let tool = codegen_plan_snapshot(&state);
+    let plan = json!({
+        "chunks": [],
+        "sharedStyles": [],
+        "rootLayout": { "direction": "column", "gap": 0, "responsive": false }
+    })
+    .to_string();
+    let (_, message) = expect_err(tool.call(&args_with(&[("plan", &plan)])));
+    assert_eq!(
+        message,
+        "codegen_plan failed: Plan needs at least one chunk"
+    );
+}
+
+#[test]
 fn codegen_plan_defaults_to_first_page_and_honors_page_id() {
     use jian_ops_schema::page::PenPage;
     let mut state = state_with(vec![]);
@@ -338,7 +371,7 @@ fn codegen_submit_chunk_degraded_when_component_name_missing_from_code() {
 }
 
 #[test]
-fn codegen_submit_chunk_status_override_passes_null_contract_downstream() {
+fn codegen_submit_chunk_failure_blocks_dependent_until_retry() {
     let plan_id = create_sample_plan();
     let tool = codegen_submit_chunk_snapshot();
     let out = expect_json(tool.call(&args_with(&[
@@ -348,9 +381,77 @@ fn codegen_submit_chunk_status_override_passes_null_contract_downstream() {
     ])));
     let progress = out["progress"].as_array().expect("progress");
     assert_eq!(progress[1]["status"], "failed");
-    // Failed dep → depContracts entry is null (TS ResolvedDepContract).
-    assert_eq!(out["nextChunk"]["id"], "b");
-    assert_eq!(out["nextChunk"]["depContracts"], json!([null]));
+    assert_eq!(progress[1]["attempts"], json!(1));
+    assert_eq!(out["submission"]["retryable"], json!(true));
+    assert_eq!(progress[0]["status"], "blocked");
+    assert_eq!(progress[0]["blockedBy"], json!(["a"]));
+    assert!(out.get("nextChunk").is_none(), "{out}");
+
+    let (_, message) = expect_err(tool.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("b", "ButtonChunk")),
+    ])));
+    assert!(message.contains("blocked by failed/skipped dependencies: a"));
+
+    let retried = expect_json(tool.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ])));
+    assert_eq!(retried["progress"][0]["status"], "pending");
+    assert_eq!(retried["nextChunk"]["id"], "b");
+    let _ = codegen_clean_snapshot().call(&args_with(&[("planId", &plan_id)]));
+}
+
+#[test]
+fn codegen_submit_chunk_accepts_minimal_failure_and_can_retry_it() {
+    let plan_id = create_sample_plan();
+    let tool = codegen_submit_chunk_snapshot();
+    let failure = json!({
+        "chunkId": "a",
+        "error": "provider timed out after 30s"
+    })
+    .to_string();
+    let failed = expect_json(tool.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &failure),
+        ("status", "failed"),
+    ])));
+    assert_eq!(failed["submission"]["status"], "failed");
+    assert_eq!(failed["submission"]["attempt"], json!(1));
+    assert_eq!(
+        failed["validation"]["issues"][0],
+        "provider timed out after 30s"
+    );
+
+    let retried = expect_json(tool.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ])));
+    assert_eq!(retried["submission"]["status"], "done");
+    assert_eq!(retried["submission"]["attempt"], json!(2));
+    assert_eq!(retried["progress"][1]["status"], "done");
+    let _ = codegen_clean_snapshot().call(&args_with(&[("planId", &plan_id)]));
+}
+
+#[test]
+fn codegen_submit_chunk_rejects_unknown_chunk_without_corrupting_plan() {
+    let plan_id = create_sample_plan();
+    let tool = codegen_submit_chunk_snapshot();
+    let unknown = chunk_result_json("ghost", "GhostChunk");
+    let (_, message) =
+        expect_err(tool.call(&args_with(&[("planId", &plan_id), ("result", &unknown)])));
+    assert_eq!(
+        message,
+        format!(
+            "codegen_submit_chunk failed: Chunk ghost is not part of plan {plan_id}; use a chunkId from executionPlan"
+        )
+    );
+
+    let valid = expect_json(tool.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ])));
+    assert_eq!(valid["submission"]["status"], "done");
     let _ = codegen_clean_snapshot().call(&args_with(&[("planId", &plan_id)]));
 }
 
@@ -411,20 +512,206 @@ fn codegen_assemble_returns_topo_results_and_clears_the_plan() {
 }
 
 #[test]
-fn codegen_assemble_marks_degraded_when_chunks_are_not_done() {
+fn codegen_assemble_rejects_pending_chunks_and_preserves_plan_for_retry() {
     let plan_id = create_sample_plan();
     let submit = codegen_submit_chunk_snapshot();
     let _ = submit.call(&args_with(&[
         ("planId", &plan_id),
         ("result", &chunk_result_json("a", "TitleChunk")),
     ]));
-    // b never submitted → pending → degraded; framework omitted defaults
-    // to react (TS route: `query.framework || 'react'`).
+    // b was never submitted. Assembly must not silently finalize or delete
+    // the plan: the error names the actionable chunk and a later submit works.
+    let (_, message) =
+        expect_err(codegen_assemble_snapshot().call(&args_with(&[("planId", &plan_id)])));
+    assert!(message.contains("pending chunks: b"), "{message}");
+    assert!(message.contains("plan remains available"), "{message}");
+
+    let b = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("b", "ButtonChunk")),
+    ])));
+    assert_eq!(b["submission"]["status"], "done");
     let out = expect_json(codegen_assemble_snapshot().call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(out["degraded"], json!(false));
+    assert_eq!(out["chunks"].as_array().expect("chunks").len(), 2);
+}
+
+#[test]
+fn codegen_assemble_returns_safe_partial_result_with_omissions() {
+    let plan_id = create_sample_plan();
+    let submit = codegen_submit_chunk_snapshot();
+    let _ = submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ]));
+    let failure = json!({ "chunkId": "b", "error": "model quota exceeded" }).to_string();
+    let _ = submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &failure),
+        ("status", "failed"),
+    ]));
+
+    let tool = codegen_assemble_snapshot();
+    let out = expect_json(tool.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(out["partial"], json!(true));
     assert_eq!(out["degraded"], json!(true));
+    assert_eq!(out["retryable"], json!(true));
+    assert_eq!(out["planRetained"], json!(true));
     assert_eq!(out["chunks"].as_array().expect("chunks").len(), 1);
-    // dependencyGraph still lists every chunk.
+    assert_eq!(out["chunks"][0]["chunkId"], "a");
+    assert_eq!(out["omittedChunks"][0]["chunkId"], "b");
+    assert_eq!(out["omittedChunks"][0]["status"], "failed");
+    assert_eq!(out["omittedChunks"][0]["reason"], "model quota exceeded");
+    assert_eq!(out["chunkStatuses"][0]["chunkId"], "a");
+    assert_eq!(out["chunkStatuses"][1]["chunkId"], "b");
     assert_eq!(out["dependencyGraph"]["b"], json!(["a"]));
+
+    // Retryable partial assembly is a snapshot, not a destructive terminal
+    // read. Repairing the omitted chunk can still produce the full result.
+    let repeated = expect_json(tool.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(repeated["chunks"].as_array().expect("chunks").len(), 1);
+    let retried = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("b", "ButtonChunk")),
+    ])));
+    assert_eq!(retried["submission"]["attempt"], json!(2));
+    let completed = expect_json(tool.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(completed["partial"], json!(false));
+    assert_eq!(completed["planRetained"], json!(false));
+
+    let (_, message) = expect_err(tool.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(
+        message,
+        format!("codegen_assemble failed: Plan {plan_id} not found")
+    );
+}
+
+#[test]
+fn degraded_assembly_retains_plan_until_valid_retry() {
+    let plan_id = create_sample_plan();
+    let submit = codegen_submit_chunk_snapshot();
+    let _ = submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ]));
+    let degraded = json!({
+        "chunkId": "b",
+        "code": "export default function () { return null; }",
+        "contract": { "componentName": "ButtonChunk" }
+    })
+    .to_string();
+    let _ = submit.call(&args_with(&[("planId", &plan_id), ("result", &degraded)]));
+
+    let assemble = codegen_assemble_snapshot();
+    let first = expect_json(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(first["partial"], json!(false));
+    assert_eq!(first["degraded"], json!(true));
+    assert_eq!(first["retryable"], json!(true));
+    assert_eq!(first["planRetained"], json!(true));
+
+    let retried = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("b", "ButtonChunk")),
+    ])));
+    assert_eq!(retried["submission"]["attempt"], json!(2));
+    let completed = expect_json(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(completed["degraded"], json!(false));
+    assert_eq!(completed["planRetained"], json!(false));
+}
+
+#[test]
+fn failed_ancestor_recursively_blocks_and_invalidates_dependency_chain() {
+    let plan_id = create_dependency_chain_plan();
+    let submit = codegen_submit_chunk_snapshot();
+    for (id, component) in [
+        ("a", "RootChunk"),
+        ("b", "MiddleChunk"),
+        ("c", "LeafChunk"),
+        ("x", "IndependentChunk"),
+    ] {
+        let out = expect_json(submit.call(&args_with(&[
+            ("planId", &plan_id),
+            ("result", &chunk_result_json(id, component)),
+        ])));
+        assert_eq!(out["submission"]["status"], "done");
+    }
+
+    // Replacing a previously successful ancestor with a failure invalidates
+    // stale descendant code and blocks the entire transitive chain.
+    let failure = json!({ "chunkId": "a", "error": "provider unavailable" }).to_string();
+    let failed = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &failure),
+        ("status", "failed"),
+    ])));
+    let progress = failed["progress"].as_array().expect("progress");
+    assert_eq!(progress[1]["status"], "blocked");
+    assert_eq!(progress[1]["blockedBy"], json!(["a"]));
+    assert!(progress[1].get("result").is_none(), "{}", progress[1]);
+    assert_eq!(progress[2]["status"], "blocked");
+    assert_eq!(progress[2]["blockedBy"], json!(["a"]));
+    assert!(progress[2].get("result").is_none(), "{}", progress[2]);
+
+    // The independent branch is the only safe partial output. Code from b/c
+    // must not survive merely because it was submitted before a failed.
+    let assemble = codegen_assemble_snapshot();
+    let partial = expect_json(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(partial["chunks"].as_array().expect("chunks").len(), 1);
+    assert_eq!(partial["chunks"][0]["chunkId"], "x");
+    assert_eq!(partial["omittedChunks"][1]["status"], "blocked");
+    assert_eq!(partial["omittedChunks"][1]["blockedBy"], json!(["a"]));
+    assert_eq!(partial["omittedChunks"][2]["status"], "blocked");
+    assert_eq!(partial["retryable"], json!(true));
+    assert_eq!(partial["planRetained"], json!(true));
+
+    // Retrying the ancestor unblocks b, then b unblocks c. Both descendants
+    // must be regenerated before the full terminal assembly consumes the plan.
+    let a = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "RootChunk")),
+    ])));
+    assert_eq!(a["nextChunk"]["id"], "b");
+    let b = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("b", "MiddleChunk")),
+    ])));
+    assert_eq!(b["nextChunk"]["id"], "c");
+    let _ = submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("c", "LeafChunk")),
+    ]));
+    let completed = expect_json(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(completed["chunks"].as_array().expect("chunks").len(), 4);
+    assert_eq!(completed["retryable"], json!(false));
+    assert_eq!(completed["planRetained"], json!(false));
+}
+
+#[test]
+fn codegen_assemble_with_no_usable_code_preserves_plan_for_resubmit() {
+    let plan_id = create_sample_plan();
+    let submit = codegen_submit_chunk_snapshot();
+    for (chunk_id, status) in [("a", "failed"), ("b", "skipped")] {
+        let result =
+            json!({ "chunkId": chunk_id, "error": format!("{chunk_id} unavailable") }).to_string();
+        let _ = submit.call(&args_with(&[
+            ("planId", &plan_id),
+            ("result", &result),
+            ("status", status),
+        ]));
+    }
+    let assemble = codegen_assemble_snapshot();
+    let (_, message) = expect_err(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert!(message.contains("no usable chunk code"), "{message}");
+    assert!(message.contains("plan remains available"), "{message}");
+
+    let retried = expect_json(submit.call(&args_with(&[
+        ("planId", &plan_id),
+        ("result", &chunk_result_json("a", "TitleChunk")),
+    ])));
+    assert_eq!(retried["submission"]["attempt"], json!(2));
+    let out = expect_json(assemble.call(&args_with(&[("planId", &plan_id)])));
+    assert_eq!(out["partial"], json!(true));
+    assert_eq!(out["chunks"].as_array().expect("chunks").len(), 1);
 }
 
 // --- codegen_clean ---------------------------------------------------------

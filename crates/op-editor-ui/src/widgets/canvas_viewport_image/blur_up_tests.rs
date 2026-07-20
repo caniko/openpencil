@@ -27,7 +27,10 @@ impl RenderBackend for BlurCaptureBackend {
     }
     fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
     fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
-    fn image_decoded(&mut self, _: u64, _: &[u8]) -> bool {
+    fn image_decoded(&mut self, _: u64, _: &[u8], _: u32) -> bool {
+        false
+    }
+    fn image_resident(&mut self, _: u64) -> bool {
         false
     }
     fn draw_image_thumb(&mut self, _: Rect, _: u64, _: &[u8]) {
@@ -60,6 +63,7 @@ fn undecoded_image_paints_thumb_before_fill_and_glyph() {
         Rect::xywh(0.0, 0.0, 100.0, 50.0),
         1.0,
         src,
+        true,
     );
 
     assert_eq!(&backend.ops[..2], &["thumb", "fill"]);

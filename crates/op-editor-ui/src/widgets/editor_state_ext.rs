@@ -154,9 +154,14 @@ pub fn missing_fonts_button(
     use crate::widgets::missing_fonts_panel::MissingFontsHit;
     use op_editor_core::missing_fonts::MissingFontsHover;
     match hit {
-        MissingFontsHit::ChooseFile(row) => Some(MissingFontsHover::ChooseFile(row)),
+        MissingFontsHit::ChooseFont(row) => Some(MissingFontsHover::ChooseFile(row)),
         MissingFontsHit::Dismiss => Some(MissingFontsHover::Dismiss),
-        MissingFontsHit::Inside | MissingFontsHit::Outside => None,
+        MissingFontsHit::SelectFont(_)
+        | MissingFontsHit::ImportFont(_)
+        | MissingFontsHit::ClosePicker
+        | MissingFontsHit::PickerInside
+        | MissingFontsHit::Inside
+        | MissingFontsHit::Outside => None,
     }
 }
 
@@ -269,7 +274,7 @@ pub fn topbar_button_hover(
     match hit {
         W::ToggleSidebar => O::ToggleSidebar,
         W::ToggleFileMenu => O::ToggleFileMenu,
-        W::OpenFigmaImport => O::OpenFigmaImport,
+        W::OpenImportMenu => O::OpenImportMenu,
         W::ToggleTheme => O::ToggleTheme,
         W::ToggleLocale => O::ToggleLocale,
         W::OpenAgentSettings => O::OpenAgentSettings,

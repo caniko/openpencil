@@ -27,6 +27,86 @@ export function setImageCacheFactory(factory) {
   createWebImageCaches = factory;
 }
 
+const CSS_GENERIC_FONT_FAMILIES = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+  'math',
+  'emoji',
+  'fangsong',
+  '-apple-system',
+  'blinkmacsystemfont',
+]);
+
+// Family matching is ASCII-case-insensitive. Deliberately avoid locale-aware
+// case conversion: font registry keys must be stable in every browser locale.
+export function opCkNormalizeFontFamilyName(family) {
+  return String(family || '').trim().replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 32));
+}
+
+// Parse a CSS font-family list without splitting commas contained in quoted
+// family names. A backslash quotes the following character, which is enough
+// for the escaped quotes and commas emitted by our HTML/Figma importers.
+export function opCkParseFontFamilyStack(family) {
+  const candidates = [];
+  let current = '';
+  let quote = '';
+  let escaped = false;
+  const push = () => {
+    const candidate = current.trim();
+    if (candidate) candidates.push(candidate);
+    current = '';
+  };
+  for (const ch of String(family || '')) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+    } else if (ch === '\\') {
+      escaped = true;
+    } else if (quote) {
+      if (ch === quote) quote = '';
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ',') {
+      push();
+    } else {
+      current += ch;
+    }
+  }
+  if (escaped) current += '\\';
+  push();
+  return candidates;
+}
+
+// Resolve registered families in authored CSS order. For one candidate an
+// explicit browser import wins over the system face with the same name. A
+// generic family is already available through the browser canvas path, so it
+// terminates named-face lookup instead of skipping ahead in the stack.
+export function opCkResolveRegisteredTypeface(family, importedTypefaces, systemTypefacesByFamily) {
+  for (const candidate of opCkParseFontFamilyStack(family)) {
+    const familyKey = opCkNormalizeFontFamilyName(candidate);
+    if (!familyKey) continue;
+    if (CSS_GENERIC_FONT_FAMILIES.has(familyKey)) return null;
+    const imported = importedTypefaces.get(familyKey);
+    if (imported) {
+      return { key: `imported:${familyKey}`, familyKey, source: 'imported', tf: imported.tf };
+    }
+    const system = systemTypefacesByFamily.get(familyKey);
+    if (system) {
+      return { key: `system:${familyKey}`, familyKey, source: 'system', tf: system.tf };
+    }
+  }
+  return null;
+}
+
 // Initialise CanvasKit on `canvasId`. Returns a bridge object the Rust backend
 // drives. Text is rasterized with browser/system fonts by default; the Rust
 // side can additionally register Local Font Access faces through
@@ -44,6 +124,7 @@ export async function opCkInit(canvasId) {
 
   const systemTypefaces = [];
   const systemTypefaceKeys = new Set();
+  const systemTypefacesByFamily = new Map();
   // User-imported font faces, keyed by normalized family name -> { tf, family }.
   // A named family is a deliberate single-typeface choice (mirrors how native
   // resolves a named family via FontMgr before any script fallback), so
@@ -51,27 +132,27 @@ export async function opCkInit(canvasId) {
   // re-segmenting by script.
   const importedTypefaces = new Map();
   const coverageCache = new Map();
-  // Per-CHARACTER coverage segments for imported-family text, keyed on
-  // `(imported family key, size, text)`. `importedCoverageSegments` used to
+  // Per-CHARACTER coverage segments for explicitly selected family text,
+  // keyed on `(registry + family key, size, text)`. This used to
   // rebuild a throwaway CK.Font + call getGlyphIDs over the whole string on
   // EVERY drawText/measureTextFamilyStyled call, every frame — bounded FIFO
   // cache like `browserTextCache` below (values are plain JS arrays, no
   // wasm handles, so eviction is a plain `.delete()` on the Map).
-  const IMPORTED_COVERAGE_CACHE_CAP = 512;
-  const importedCoverageCache = new Map();
-  // Per-(imported family key, size) CK.Font instances shared by the
-  // family-aware draw + measure paths (`importedFamilyFont`). Bounded,
+  const REGISTERED_COVERAGE_CACHE_CAP = 512;
+  const registeredCoverageCache = new Map();
+  // Per-(registry + family key, size) CK.Font instances shared by the
+  // family-aware draw + measure paths (`registeredFamilyFont`). Bounded,
   // full-wipe eviction mirroring `svgPathCache` below (these ARE wasm
   // handles and must be `.delete()`d before the Map entry is dropped).
-  const IMPORTED_FONT_CACHE_CAP = 512;
-  const importedFamilyFontCache = new Map();
-  // Both imported-font caches key off `importedTypefaces`' identity, so any
-  // registry change (register / remove) invalidates both — called from
-  // `registerImportedFont` and `removeImportedFont` below.
-  const clearImportedFontCaches = () => {
-    importedCoverageCache.clear();
-    for (const f of importedFamilyFontCache.values()) f.delete();
-    importedFamilyFontCache.clear();
+  const REGISTERED_FONT_CACHE_CAP = 512;
+  const registeredFamilyFontCache = new Map();
+  // These caches key off the selected registry identity. Any imported or
+  // system registry change invalidates them so later exact-name matches use
+  // the newly registered face.
+  const clearRegisteredFontCaches = () => {
+    registeredCoverageCache.clear();
+    for (const f of registeredFamilyFontCache.values()) f.delete();
+    registeredFamilyFontCache.clear();
   };
   const browserTextCanvas = document.createElement('canvas');
   const browserTextCtx = browserTextCanvas.getContext('2d', { willReadFrequently: true });
@@ -143,7 +224,7 @@ export async function opCkInit(canvasId) {
     }
     return false;
   };
-  const normalizedFamily = (family) => String(family || '').trim().toLowerCase();
+  const normalizedFamily = opCkNormalizeFontFamilyName;
   const familyIncludes = (family, parts) => {
     const f = normalizedFamily(family);
     return parts.some((part) => f.includes(part.toLowerCase()));
@@ -394,30 +475,23 @@ export async function opCkInit(canvasId) {
   };
   const tfFor = (t, emojiRun) => systemTypefaceFor(t, emojiRun) || CK.Typeface.GetDefault();
   const runWidth = (f, s) => { const ids = f.getGlyphIDs(s); return f.getGlyphWidths(ids).reduce((a, v) => a + v, 0); };
-  // Normalize a CSS font stack to an imported-family key, mirroring jian-skia
-  // `primary_font_family`: first family before a comma, quotes stripped;
-  // empty / generic keywords resolve to no imported family.
-  const GENERIC_FAMILIES = new Set(['system-ui', 'sans-serif', 'serif', 'monospace', '-apple-system']);
+  // Normalize the primary family for imported-font registry mutations. Text
+  // lookup itself uses every authored candidate via `familyTypefaceEntry`.
   const primaryFamilyKey = (family) => {
-    const first = String(family || '').split(',')[0].trim().replace(/^["']|["']$/g, '').trim();
+    const first = opCkParseFontFamilyStack(family)[0] || '';
     if (!first) return '';
-    const key = first.toLowerCase();
-    return GENERIC_FAMILIES.has(key) ? '' : key;
+    const key = normalizedFamily(first);
+    return CSS_GENERIC_FONT_FAMILIES.has(key) ? '' : key;
   };
-  // Resolve the imported typeface entry for a family stack (null when
-  // unregistered). Returns `{ key, tf }` — `key` is the same
-  // `importedTypefaces` key used to look the typeface up, so callers can
-  // key the coverage/font caches below on the same identity.
+  // Resolve an explicit imported/system face in authored stack order. Generic
+  // candidates intentionally return null and continue through browser text.
   const familyTypefaceEntry = (family) => {
-    const key = primaryFamilyKey(family);
-    if (!key) return null;
-    const entry = importedTypefaces.get(key);
-    return entry ? { key, tf: entry.tf } : null;
+    return opCkResolveRegisteredTypeface(family, importedTypefaces, systemTypefacesByFamily);
   };
   // Shared "typeface + font for (family, sz)" so the family-aware draw and
   // measure paths build the SAME CK.Font and agree to sub-pixel. Cached per
-  // `(family key, size)` — `importedFamilyFont` used to build + discard a
-  // fresh CK.Font on every imported segment of every draw/measure call.
+  // `(registry + family key, size)` — this used to build + discard a
+  // fresh CK.Font on every selected segment of every draw/measure call.
   // Iterations that use this font always fully consume it (draw or measure)
   // before the next one is fetched, so a single shared instance per key is
   // safe to reuse across loop iterations and across calls. Skew (italic) is
@@ -425,32 +499,32 @@ export async function opCkInit(canvasId) {
   // reused for an italic run and then a later upright run. Callers must NOT
   // `.delete()` the returned Font; eviction (mirroring `svgPathCache`) frees
   // every cached wasm Font before wiping the map. Invalidated wholesale by
-  // `clearImportedFontCaches` whenever the imported-font registry changes.
-  const importedFamilyFont = (key, tf, sz, italic) => {
+  // `clearRegisteredFontCaches` whenever either font registry changes.
+  const registeredFamilyFont = (key, tf, sz, italic) => {
     const cacheKey = key + '\n' + sz;
-    let f = importedFamilyFontCache.get(cacheKey);
+    let f = registeredFamilyFontCache.get(cacheKey);
     if (!f) {
       f = new CK.Font(tf, sz);
-      if (importedFamilyFontCache.size >= IMPORTED_FONT_CACHE_CAP) {
-        for (const v of importedFamilyFontCache.values()) v.delete();
-        importedFamilyFontCache.clear();
+      if (registeredFamilyFontCache.size >= REGISTERED_FONT_CACHE_CAP) {
+        for (const v of registeredFamilyFontCache.values()) v.delete();
+        registeredFamilyFontCache.clear();
       }
-      importedFamilyFontCache.set(cacheKey, f);
+      registeredFamilyFontCache.set(cacheKey, f);
     }
     f.setSkewX(italic ? -0.25 : 0);
     return f;
   };
-  // Split a run into maximal {text, imported} segments by whether the imported
+  // Split a run into maximal {text, registered} segments by whether the named
   // typeface has a glyph for each char (glyph id 0 = .notdef = uncovered). This
-  // is per-CHARACTER, so a mixed run keeps the imported face for the chars it
+  // is per-CHARACTER, so a mixed run keeps the selected face for the chars it
   // covers and falls back (system/CJK/emoji) only for the rest — matching how
   // native resolves a named family per character, instead of dropping the
   // imported family for the whole run. `getGlyphIDs` returns one id per
   // codepoint, so it aligns with the codepoint iteration; if the counts don't
   // line up we conservatively treat the whole run as uncovered.
-  const importedCoverageSegments = (key, tf, sz, t) => {
+  const registeredCoverageSegments = (key, tf, sz, t) => {
     const cacheKey = key + '\n' + sz + '\n' + t;
-    const cached = importedCoverageCache.get(cacheKey);
+    const cached = registeredCoverageCache.get(cacheKey);
     if (cached) return cached;
     const cps = Array.from(t);
     let segs;
@@ -466,32 +540,32 @@ export async function opCkInit(canvasId) {
       }
       f.delete();
       if (!ids || ids.length !== cps.length) {
-        segs = [{ text: t, imported: false }];
+        segs = [{ text: t, registered: false }];
       } else {
         const out = [];
         let cur = '';
-        let curImported = null;
+        let curRegistered = null;
         for (let i = 0; i < cps.length; i++) {
-          const imp = ids[i] !== 0;
-          if (curImported === null) {
-            curImported = imp;
+          const registered = ids[i] !== 0;
+          if (curRegistered === null) {
+            curRegistered = registered;
             cur = cps[i];
-          } else if (imp === curImported) {
+          } else if (registered === curRegistered) {
             cur += cps[i];
           } else {
-            out.push({ text: cur, imported: curImported });
+            out.push({ text: cur, registered: curRegistered });
             cur = cps[i];
-            curImported = imp;
+            curRegistered = registered;
           }
         }
-        if (cur) out.push({ text: cur, imported: curImported });
+        if (cur) out.push({ text: cur, registered: curRegistered });
         segs = out;
       }
     }
-    importedCoverageCache.set(cacheKey, segs);
-    if (importedCoverageCache.size > IMPORTED_COVERAGE_CACHE_CAP) {
-      const firstKey = importedCoverageCache.keys().next().value;
-      importedCoverageCache.delete(firstKey);
+    registeredCoverageCache.set(cacheKey, segs);
+    if (registeredCoverageCache.size > REGISTERED_COVERAGE_CACHE_CAP) {
+      const firstKey = registeredCoverageCache.keys().next().value;
+      registeredCoverageCache.delete(firstKey);
     }
     return segs;
   };
@@ -533,7 +607,17 @@ export async function opCkInit(canvasId) {
       path.transform(CK.Matrix.translated(x, y));
       return path;
     }
-    const bounds = path.getBounds();
+    // Match native Skia's `compute_tight_bounds`: control points may sit far
+    // outside the actual Bezier curve, so loose bounds can visibly shrink or
+    // offset a fitted path. Older CanvasKit builds lack the tight API; retain
+    // `getBounds` as a compatibility fallback.
+    let bounds = null;
+    if (typeof path.computeTightBounds === 'function') {
+      try { bounds = path.computeTightBounds(); } catch (_error) { bounds = null; }
+    }
+    if (!pathIsFinite(bounds)) {
+      try { bounds = path.getBounds(); } catch (_error) { bounds = null; }
+    }
     if (!pathIsFinite(bounds)) {
       path.transform(CK.Matrix.translated(x, y));
       return path;
@@ -619,6 +703,20 @@ export async function opCkInit(canvasId) {
       0, 0, 0, 1, 0,
     );
   };
+
+  const blendModeForCode = (blendMode) => [
+    CK.BlendMode.SrcOver,
+    CK.BlendMode.Darken,
+    CK.BlendMode.Multiply,
+    CK.BlendMode.Screen,
+    CK.BlendMode.Overlay,
+    CK.BlendMode.Lighten,
+    CK.BlendMode.Difference,
+    CK.BlendMode.Hue,
+    CK.BlendMode.Saturation,
+    CK.BlendMode.Color,
+    CK.BlendMode.Luminosity,
+  ][blendMode] || CK.BlendMode.SrcOver;
 
   const drawImageRectLinear = (image, src, dst, paint) => {
     if (canvas.drawImageRectOptions) {
@@ -772,19 +870,19 @@ export async function opCkInit(canvasId) {
       offsetPath.delete(); path.delete();
     },
 
-    imageDecoded(imageIdLo, imageIdHi) {
-      return imageCaches.hasFullImage(imageIdLo, imageIdHi);
+    imageDecoded(imageIdLo, imageIdHi, maxEdgePx) {
+      return imageCaches.hasFullImage(imageIdLo, imageIdHi, maxEdgePx);
     },
 
-    decodeImage(imageIdLo, imageIdHi, encoded) {
-      return imageCaches.installFullImage(imageIdLo, imageIdHi, encoded);
+    decodeImage(imageIdLo, imageIdHi, encoded, maxEdgePx) {
+      return imageCaches.installFullImage(imageIdLo, imageIdHi, encoded, maxEdgePx);
     },
 
     drawImageThumb(imageIdLo, imageIdHi, x, y, w, h, jpeg) {
       imageCaches.drawThumbnailCover(canvas, imageIdLo, imageIdHi, jpeg, x, y, w, h);
     },
 
-    drawImageWithOptions(imageIdLo, imageIdHi, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius) {
+    drawImageWithOptions(imageIdLo, imageIdHi, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius, blendMode) {
       const image = imageCaches.fullImage(imageIdLo, imageIdHi);
       if (!image || !(w > 0) || !(h > 0)) return;
       const imageW = image.width();
@@ -795,6 +893,7 @@ export async function opCkInit(canvasId) {
       const paint = new CK.Paint();
       paint.setAntiAlias(true);
       paint.setAlphaf(Math.max(0, Math.min(1, opacity)));
+      paint.setBlendMode(blendModeForCode(blendMode));
       const matrix = imageAdjustmentMatrix(adjustments);
       const colorFilter = matrix && CK.ColorFilter && CK.ColorFilter.MakeMatrix
         ? CK.ColorFilter.MakeMatrix(matrix)
@@ -851,14 +950,14 @@ export async function opCkInit(canvasId) {
 
     drawText(t, family, x, y, sz, weight, italic, r, g, b, a) {
       if (!t) return;
-      // Per-CHARACTER family resolution: chars the imported face covers draw
+      // Per-CHARACTER family resolution: chars the selected named face covers draw
       // with it; the rest fall to the script-segmented path — so a mixed run
-      // keeps the imported family where it applies and never renders tofu,
-      // matching native. Draw + measure split on the SAME importedCoverage
-      // segments and share drawScriptRun/importedFamilyFont, so advances agree.
-      const importedEntry = familyTypefaceEntry(family);
-      const covSegs = importedEntry ? importedCoverageSegments(importedEntry.key, importedEntry.tf, sz, t) : null;
-      if (!covSegs || (covSegs.length === 1 && !covSegs[0].imported)) {
+      // keeps the named family where it applies and never renders tofu,
+      // matching native. Draw + measure split on the SAME registeredCoverage
+      // segments and share drawScriptRun/registeredFamilyFont, so advances agree.
+      const familyEntry = familyTypefaceEntry(family);
+      const covSegs = familyEntry ? registeredCoverageSegments(familyEntry.key, familyEntry.tf, sz, t) : null;
+      if (!covSegs || (covSegs.length === 1 && !covSegs[0].registered)) {
         drawScriptRun(t, x, y, sz, weight, italic, r, g, b, a);
         return;
       }
@@ -869,8 +968,8 @@ export async function opCkInit(canvasId) {
       }
       let cx = x;
       for (const seg of covSegs) {
-        if (seg.imported) {
-          const f = importedFamilyFont(importedEntry.key, importedEntry.tf, sz, italic);
+        if (seg.registered) {
+          const f = registeredFamilyFont(familyEntry.key, familyEntry.tf, sz, italic);
           canvas.drawText(seg.text, cx, y, p, f);
           cx += runWidth(f, seg.text);
         } else {
@@ -882,8 +981,8 @@ export async function opCkInit(canvasId) {
       return this.measureTextStyled(t, sz, 400, false);
     },
     textAscent(family, sz, weight) {
-      const importedEntry = familyTypefaceEntry(family);
-      const font = new CK.Font(importedEntry ? importedEntry.tf : tfFor('M', false), sz);
+      const familyEntry = familyTypefaceEntry(family);
+      const font = new CK.Font(familyEntry ? familyEntry.tf : tfFor('M', false), sz);
       let ascent = sz * 0.8;
       if (font.getMetrics) {
         const metrics = font.getMetrics();
@@ -893,18 +992,79 @@ export async function opCkInit(canvasId) {
       font.delete();
       return ascent;
     },
+    textFirstBaseline(t, family, sz, weight, italic, lineHeight) {
+      const firstBreak = String(t || '').search(/[\r\n]/);
+      const line = firstBreak < 0 ? String(t || '') : String(t || '').slice(0, firstBreak);
+      const sample = line || 'M';
+      const familyEntry = familyTypefaceEntry(family);
+      const covSegs = familyEntry
+        ? registeredCoverageSegments(familyEntry.key, familyEntry.tf, sz, sample)
+        : null;
+      let ascent = 0;
+      let descent = 0;
+      const includeBrowserMetrics = (text) => {
+        if (!browserTextCtx) return false;
+        browserTextCtx.font = browserTextFont(sz, weight, italic);
+        const metrics = browserTextCtx.measureText(text);
+        const fontAscent = Number(metrics.fontBoundingBoxAscent);
+        const fontDescent = Number(metrics.fontBoundingBoxDescent);
+        const inkAscent = Number(metrics.actualBoundingBoxAscent);
+        const inkDescent = Number(metrics.actualBoundingBoxDescent);
+        ascent = Math.max(ascent,
+          Number.isFinite(fontAscent) ? fontAscent : 0,
+          Number.isFinite(inkAscent) ? inkAscent : 0);
+        descent = Math.max(descent,
+          Number.isFinite(fontDescent) ? fontDescent : 0,
+          Number.isFinite(inkDescent) ? inkDescent : 0);
+        return true;
+      };
+      const includeFontMetrics = (font) => {
+        if (!font || !font.getMetrics) return;
+        const metrics = font.getMetrics();
+        if (!metrics) return;
+        const candidateAscent = -Number(metrics.ascent);
+        const candidateDescent = Number(metrics.descent);
+        if (Number.isFinite(candidateAscent)) ascent = Math.max(ascent, candidateAscent);
+        if (Number.isFinite(candidateDescent)) descent = Math.max(descent, candidateDescent);
+      };
+      const includeFallback = (text) => {
+        for (const seg of segments(text)) {
+          if (includeBrowserMetrics(seg.text)) continue;
+          const font = new CK.Font(tfFor(seg.text, seg.emoji), sz);
+          includeFontMetrics(font);
+          font.delete();
+        }
+      };
+      if (covSegs && covSegs.some((seg) => seg.registered)) {
+        for (const seg of covSegs) {
+          if (seg.registered) {
+            includeFontMetrics(registeredFamilyFont(familyEntry.key, familyEntry.tf, sz, italic));
+          } else {
+            includeFallback(seg.text);
+          }
+        }
+      } else {
+        includeFallback(sample);
+      }
+      if (!(ascent > 0)) ascent = sz * 0.8;
+      if (!(descent > 0)) descent = sz * 0.2;
+      const naturalHeight = ascent + descent;
+      const targetHeight = lineHeight > 0 ? sz * lineHeight : naturalHeight;
+      const baseline = ascent + (targetHeight - naturalHeight) / 2;
+      return Number.isFinite(baseline) && baseline > 0 ? baseline : sz * 0.8;
+    },
     measureTextFamilyStyled(t, family, sz, weight, italic) {
-      const importedEntry = familyTypefaceEntry(family);
-      const covSegs = importedEntry ? importedCoverageSegments(importedEntry.key, importedEntry.tf, sz, t) : null;
-      if (!covSegs || (covSegs.length === 1 && !covSegs[0].imported)) {
-        // No imported family (or it covers nothing): the family-blind
+      const familyEntry = familyTypefaceEntry(family);
+      const covSegs = familyEntry ? registeredCoverageSegments(familyEntry.key, familyEntry.tf, sz, t) : null;
+      if (!covSegs || (covSegs.length === 1 && !covSegs[0].registered)) {
+        // No registered family (or it covers nothing): the family-blind
         // script-segmented measure — the SAME path drawText falls to.
         return this.measureTextStyled(t, sz, weight, italic);
       }
       let w = 0;
       for (const seg of covSegs) {
-        if (seg.imported) {
-          const f = importedFamilyFont(importedEntry.key, importedEntry.tf, sz, italic);
+        if (seg.registered) {
+          const f = registeredFamilyFont(familyEntry.key, familyEntry.tf, sz, italic);
           w += runWidth(f, seg.text);
         } else {
           w += this.measureTextStyled(seg.text, sz, weight, italic);
@@ -931,16 +1091,19 @@ export async function opCkInit(canvasId) {
       if (!key || systemTypefaceKeys.has(key)) return Boolean(key);
       const tf = CK.Typeface.MakeFreeTypeFaceFromData(copyBytes(bytes));
       if (!tf) return false;
-      systemTypefaceKeys.add(key);
-      systemTypefaces.push({
+      const entry = {
         key,
         family: String(family || ''),
         tf,
         cjk: isCjkFamily(family),
         emoji: isEmojiFamily(family),
         textFallback: isTextFallbackFamily(family),
-      });
+      };
+      systemTypefaceKeys.add(key);
+      systemTypefaces.push(entry);
+      systemTypefacesByFamily.set(key, entry);
       coverageCache.clear();
+      clearRegisteredFontCaches();
       return true;
     },
     registerImportedFont(family, bytes) {
@@ -953,7 +1116,7 @@ export async function opCkInit(canvasId) {
       if (prev && prev.tf && prev.tf.delete) prev.tf.delete();
       importedTypefaces.set(key, { tf, family: String(family || '') });
       coverageCache.clear();
-      clearImportedFontCaches();
+      clearRegisteredFontCaches();
       return true;
     },
     // (Fresh browser imports parse the family name in Rust via `ttf-parser` —
@@ -976,7 +1139,7 @@ export async function opCkInit(canvasId) {
       if (!entry) return;
       if (entry.tf && entry.tf.delete) entry.tf.delete();
       importedTypefaces.delete(key);
-      clearImportedFontCaches();
+      clearRegisteredFontCaches();
     },
 
     clipRect(x, y, w, h) { canvas.clipRect(CK.LTRBRect(x, y, x + w, y + h), CK.ClipOp.Intersect, true); },
@@ -985,7 +1148,52 @@ export async function opCkInit(canvasId) {
       const rr = Float32Array.of(x, y, x + w, y + h, tl, tl, tr, tr, br, br, bl, bl);
       canvas.clipRRect(rr, CK.ClipOp.Intersect, true);
     },
+    clipOval(x, y, w, h) {
+      const path = new CK.Path();
+      path.addOval(CK.LTRBRect(x, y, x + w, y + h));
+      canvas.clipPath(path, CK.ClipOp.Intersect, true);
+      path.delete();
+    },
+    clipPolygon(pts) {
+      if (pts.length < 6) {
+        canvas.clipRect(CK.LTRBRect(0, 0, 0, 0), CK.ClipOp.Intersect, true);
+        return;
+      }
+      const path = new CK.Path(); path.moveTo(pts[0], pts[1]);
+      for (let i = 2; i < pts.length; i += 2) path.lineTo(pts[i], pts[i + 1]);
+      path.close();
+      canvas.clipPath(path, CK.ClipOp.Intersect, true);
+      path.delete();
+    },
+    clipSvgPathInRect(d, x, y, w, h, evenOdd) {
+      const path = cachedSvgPath(d);
+      if (!path) {
+        canvas.clipRect(CK.LTRBRect(0, 0, 0, 0), CK.ClipOp.Intersect, true);
+        return;
+      }
+      if (evenOdd) path.setFillType(CK.FillType.EvenOdd);
+      fitPathToRect(path, x, y, w, h);
+      canvas.clipPath(path, CK.ClipOp.Intersect, true);
+      path.delete();
+    },
     save() { canvas.save(); },
+    pushCompositeLayer(x, y, w, h, opacity, blendMode) {
+      const paint = new CK.Paint();
+      paint.setAlphaf(Math.max(0, Math.min(1, opacity)));
+      paint.setBlendMode(blendModeForCode(blendMode));
+      canvas.saveLayer(paint, CK.LTRBRect(x, y, x + w, y + h));
+      paint.delete();
+    },
+    pushBlendLayer(blendMode) {
+      if (!blendMode) {
+        canvas.save();
+        return;
+      }
+      const paint = new CK.Paint();
+      paint.setBlendMode(blendModeForCode(blendMode));
+      canvas.saveLayer(paint);
+      paint.delete();
+    },
     pushBackdropBlurLayer(sigma) {
       if (!(sigma > 0) || !CK.ImageFilter || !CK.ImageFilter.MakeBlur) {
         canvas.save();

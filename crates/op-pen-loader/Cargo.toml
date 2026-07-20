@@ -33,6 +33,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_stacker = { workspace = true }
 
+[dev-dependencies]
+op-html = { path = "../op-html" }
+
 [features]
 # Real skia text measurement (native + web-skia). Off → jian-core estimate
 # backend, so the CanvasKit web build links no skia-safe.

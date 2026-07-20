@@ -68,7 +68,9 @@ pub fn spawn(host: &mut WidgetHostNative, path: PathBuf) -> FigmaImportSession {
     // overlay widget reads `editor_ui.figma_import_in_progress`
     // directly, not through `layout_scene`, so the cached layout
     // from before the spawn is fine to keep painting underneath.
-    host.editor_state_mut().editor_ui.figma_import_in_progress = true;
+    let ui = &mut host.editor_state_mut().editor_ui;
+    ui.import_source = op_editor_core::figma_import_state::ImportSource::Figma;
+    ui.figma_import_in_progress = true;
 
     let path_for_thread = path.clone();
     thread::Builder::new()

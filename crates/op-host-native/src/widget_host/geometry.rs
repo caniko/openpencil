@@ -170,6 +170,23 @@ impl WidgetHostNative {
                 return true;
             }
         }
+        if self.editor_state.editor_ui.import_menu_open {
+            use op_editor_ui::widgets::ImportMenu;
+            self.refresh_layout_scene();
+            let (anchor, viewport) =
+                self.import_menu_anchor(self.last_viewport_w, self.last_viewport_h);
+            let menu = ImportMenu::for_editor_ui(&self.editor_state.editor_ui);
+            let new_hover = match menu.hit(anchor, viewport, Point2D::new(x, y)) {
+                op_editor_ui::widgets::import_menu::SelectHit::Row(idx) => Some(idx),
+                op_editor_ui::widgets::import_menu::SelectHit::Inside
+                | op_editor_ui::widgets::import_menu::SelectHit::Outside => None,
+            };
+            if new_hover != self.editor_state.editor_ui.import_menu.hover {
+                self.editor_state.editor_ui.import_menu.hover = new_hover;
+                self.mark_dirty();
+                return true;
+            }
+        }
         if self.editor_state.editor_ui.locale_picker.open {
             use op_editor_ui::widgets::locale_picker::LocalePicker;
             self.refresh_layout_scene();

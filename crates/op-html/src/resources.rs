@@ -1,10 +1,12 @@
 use base64::Engine as _;
-use html5ever::tendril::TendrilSink;
-use html5ever::{parse_document, ParseOpts};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::style::PenFill;
-use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use std::collections::HashMap;
+use url::Url;
+
+#[path = "resources_css_urls.rs"]
+mod css_urls;
+pub(crate) use css_urls::rebase_stylesheet_urls;
 
 pub type ResourceFetcher<'a> = dyn Fn(&str) -> Option<Vec<u8>> + 'a;
 pub type ImageTransform<'a> = dyn Fn(&[u8]) -> Option<Vec<u8>> + 'a;
@@ -34,88 +36,14 @@ impl ResourceBudget {
 
 pub fn resolve_url(base: Option<&str>, href: &str) -> Option<String> {
     let href = href.trim();
-    if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("data:") {
-        return Some(href.to_string());
+    if let Ok(url) = Url::parse(href) {
+        return matches!(url.scheme(), "http" | "https" | "data").then(|| url.to_string());
     }
-    let base = base?.trim();
-    let (scheme, rest) = base.split_once("://")?;
-    if !matches!(scheme, "http" | "https") {
+    let base = Url::parse(base?.trim()).ok()?;
+    if !matches!(base.scheme(), "http" | "https") {
         return None;
     }
-    if let Some(protocol_relative) = href.strip_prefix("//") {
-        return Some(format!("{scheme}://{protocol_relative}"));
-    }
-    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let href_path = if href.starts_with('/') {
-        href.to_string()
-    } else {
-        let clean_path = path.split(['?', '#']).next().unwrap_or_default();
-        let directory = clean_path
-            .rsplit_once('/')
-            .map(|(dir, _)| format!("/{dir}/"))
-            .unwrap_or_else(|| "/".to_string());
-        format!("{directory}{href}")
-    };
-    Some(format!(
-        "{scheme}://{authority}{}",
-        normalize_path(&href_path)
-    ))
-}
-
-fn normalize_path(path: &str) -> String {
-    let split = path.find(['?', '#']).unwrap_or(path.len());
-    let (path_only, suffix) = path.split_at(split);
-    let mut segments = Vec::new();
-    for segment in path_only.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                segments.pop();
-            }
-            other => segments.push(other),
-        }
-    }
-    format!("/{}{suffix}", segments.join("/"))
-}
-
-pub(crate) fn stylesheet_links(source: &str) -> Vec<String> {
-    let mut bytes = source.as_bytes();
-    let dom = parse_document(RcDom::default(), ParseOpts::default())
-        .from_utf8()
-        .read_from(&mut bytes)
-        .expect("reading from &[u8] cannot fail");
-    let mut links = Vec::new();
-    collect_stylesheet_links(&dom.document, &mut links);
-    links
-}
-
-fn collect_stylesheet_links(handle: &Handle, links: &mut Vec<String>) {
-    if let NodeData::Element { name, attrs, .. } = &handle.data {
-        if name.local.as_ref() == "link" {
-            let attrs = attrs.borrow();
-            let rel = attrs
-                .iter()
-                .find(|attr| attr.name.local.as_ref() == "rel")
-                .map(|attr| attr.value.to_string());
-            let href = attrs
-                .iter()
-                .find(|attr| attr.name.local.as_ref() == "href")
-                .map(|attr| attr.value.to_string());
-            let is_stylesheet = rel.as_deref().is_some_and(|value| {
-                value
-                    .split_whitespace()
-                    .any(|token| token.eq_ignore_ascii_case("stylesheet"))
-            });
-            if is_stylesheet {
-                if let Some(href) = href {
-                    links.push(href);
-                }
-            }
-        }
-    }
-    for child in handle.children.borrow().iter() {
-        collect_stylesheet_links(child, links);
-    }
+    base.join(href).ok().map(Into::into)
 }
 
 pub(crate) fn embed_images(

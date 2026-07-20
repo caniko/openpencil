@@ -18,11 +18,15 @@ fn seed_two_chat_models(host: &mut WidgetHost) {
     host.editor_state
         .chat
         .available_models
-        .push(ModelEntry::new(AgentProvider::CodexCli, "gpt-4", "GPT-4"));
+        .push(ModelEntry::new(
+            AgentProvider::GeminiCli,
+            "gemini-2.5-pro",
+            "Gemini 2.5 Pro",
+        ));
 }
 
 #[test]
-fn chat_model_row_press_defers_selection_until_release() {
+fn chat_model_row_press_selects_and_closes_immediately() {
     let mut host = WidgetHost::new();
     seed_two_chat_models(&mut host);
     host.editor_state.editor_ui.chat_model_picker.open = true;
@@ -34,21 +38,19 @@ fn chat_model_row_press_defers_selection_until_release() {
         + ai_chat_model_picker::MODEL_PICKER_PAD_Y
         + ai_chat_model_picker::MODEL_GROUP_H
         + ai_chat_model_picker::MODEL_ROW_H
+        + ai_chat_model_picker::MODEL_GROUP_H
         + ai_chat_model_picker::MODEL_ROW_H / 2.0;
 
-    assert!(host.apply_click(picker.origin.x + 24.0, row_y, 1200.0, 800.0));
+    assert!(host.apply_press(picker.origin.x + 24.0, row_y, 1200.0, 800.0));
 
-    assert_eq!(host.editor_state.chat.selected_model, 0);
-    assert!(host.editor_state.editor_ui.chat_model_picker.open);
-    assert_eq!(
-        host.editor_state.editor_ui.chat_model_picker.pressed,
-        Some(1)
-    );
-
-    assert!(host.apply_release_with_viewport(1200.0, 800.0));
     assert_eq!(host.editor_state.chat.selected_model, 1);
+    assert_eq!(host.editor_state.editor_ui.chat_selected_agent, 4);
     assert!(!host.editor_state.editor_ui.chat_model_picker.open);
+    assert!(!host.editor_state_dirty);
     assert_eq!(host.editor_state.editor_ui.chat_model_picker.pressed, None);
+
+    assert!(!host.apply_release_with_viewport(1200.0, 800.0));
+    assert_eq!(host.editor_state.chat.selected_model, 1);
 }
 
 #[test]

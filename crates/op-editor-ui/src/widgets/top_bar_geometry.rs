@@ -42,6 +42,20 @@ impl TopBar {
         }
     }
 
+    /// Import button, right of the file menu. Canonical anchor shared by
+    /// hit-test, paint, and the import dropdown so they cannot drift.
+    pub fn import_button_rect(&self, top_bar_rect: Rect) -> Rect {
+        let divider_span = DIVIDER_GAP + DIVIDER_W + DIVIDER_GAP;
+        let file_menu = self.file_menu_rect_for(top_bar_rect);
+        Rect {
+            origin: Point2D::new(
+                file_menu.origin.x + FILE_MENU_BUTTON_WIDTH + divider_span,
+                file_menu.origin.y,
+            ),
+            size: Point2D::new(FILE_MENU_BUTTON_WIDTH, ICON_BUTTON),
+        }
+    }
+
     /// Whether the Preview (Play) button paints / hit-tests. Gated only by
     /// the host capability (`PREVIEW_BUTTON_AVAILABLE`, desktop-only) —
     /// preview interaction graduated out of the experimental-features gate

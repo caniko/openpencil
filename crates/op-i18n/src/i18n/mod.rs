@@ -145,12 +145,13 @@ mod preview_device_key_tests {
 mod missing_fonts_key_tests {
     #[test]
     fn missing_fonts_keys_exist_in_every_locale_table() {
-        const KEYS: [&str; 10] = [
+        const KEYS: [&str; 11] = [
             "settings.tab.fonts",
             "missingFonts.title",
             "missingFonts.subtitle",
             "missingFonts.usage",
             "missingFonts.chooseFile",
+            "missingFonts.chooseFont",
             "missingFonts.resolved",
             "missingFonts.dismiss",
             "missingFonts.mismatch",

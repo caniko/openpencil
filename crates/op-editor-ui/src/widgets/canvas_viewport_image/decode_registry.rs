@@ -4,9 +4,19 @@ use std::sync::{Mutex, OnceLock};
 const PENDING_DECODE_CAP: usize = 64;
 const FAILED_DECODE_CAP: usize = 1024;
 
+/// A queued decode: the image plus the longest edge (device px) the
+/// current view actually needs. Decoding a 2048 px source for a node
+/// drawn 40 px wide costs 16 MB of raster for 6 KB of visible pixels —
+/// on an image-dense page zoomed out that alone thrashed the cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingDecode {
+    pub id: u64,
+    pub max_edge_px: u32,
+}
+
 #[derive(Default)]
 struct DecodeRegistry {
-    pending: VecDeque<u64>,
+    pending: VecDeque<PendingDecode>,
     in_flight: HashSet<u64>,
     failed: HashSet<u64>,
     failed_order: VecDeque<u64>,
@@ -18,31 +28,39 @@ fn decodes() -> &'static Mutex<DecodeRegistry> {
     DECODES.get_or_init(|| Mutex::new(DecodeRegistry::default()))
 }
 
-pub fn note_pending_decode(id: u64) {
+pub fn note_pending_decode(id: u64, max_edge_px: u32) {
     let Ok(mut registry) = decodes().lock() else {
         return;
     };
-    if registry.failed.contains(&id)
-        || registry.in_flight.contains(&id)
-        || registry.pending.contains(&id)
-        || registry.pending.len() >= PENDING_DECODE_CAP
-    {
+    if registry.failed.contains(&id) || registry.in_flight.contains(&id) {
         return;
     }
-    registry.pending.push_back(id);
+    // Already queued: keep the largest requested edge so one pass
+    // satisfies every node sharing the image (a page can draw the same
+    // asset as a thumbnail and as a hero).
+    if let Some(queued) = registry.pending.iter_mut().find(|queued| queued.id == id) {
+        queued.max_edge_px = queued.max_edge_px.max(max_edge_px);
+        return;
+    }
+    if registry.pending.len() >= PENDING_DECODE_CAP {
+        return;
+    }
+    registry
+        .pending
+        .push_back(PendingDecode { id, max_edge_px });
 }
 
-pub fn take_pending_decodes(max: usize) -> Vec<u64> {
+pub fn take_pending_decodes(max: usize) -> Vec<PendingDecode> {
     let Ok(mut registry) = decodes().lock() else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(max.min(registry.pending.len()));
     while out.len() < max {
-        let Some(id) = registry.pending.pop_front() else {
+        let Some(entry) = registry.pending.pop_front() else {
             break;
         };
-        registry.in_flight.insert(id);
-        out.push(id);
+        registry.in_flight.insert(entry.id);
+        out.push(entry);
     }
     out
 }
@@ -57,7 +75,7 @@ pub fn mark_decode_failed(id: u64) {
     let Ok(mut registry) = decodes().lock() else {
         return;
     };
-    registry.pending.retain(|queued| *queued != id);
+    registry.pending.retain(|queued| queued.id != id);
     registry.in_flight.remove(&id);
     if registry.failed.insert(id) {
         registry.failed_order.push_back(id);
@@ -101,40 +119,44 @@ pub(crate) fn lock_decode_registry_for_tests() -> std::sync::MutexGuard<'static,
 mod tests {
     use super::*;
 
+    fn taken_ids(taken: Vec<PendingDecode>) -> Vec<u64> {
+        taken.into_iter().map(|entry| entry.id).collect()
+    }
+
     #[test]
     fn pending_decode_queue_dedupes_and_tracks_in_flight_lifecycle() {
         let _guard = lock_decode_registry_for_tests();
-        note_pending_decode(41);
-        note_pending_decode(41);
+        note_pending_decode(41, 256);
+        note_pending_decode(41, 256);
 
         assert!(has_pending_decodes());
-        assert_eq!(take_pending_decodes(8), vec![41]);
+        assert_eq!(taken_ids(take_pending_decodes(8)), vec![41]);
         assert!(!has_pending_decodes());
-        note_pending_decode(41);
+        note_pending_decode(41, 256);
         assert!(
             take_pending_decodes(8).is_empty(),
             "in-flight ids stay deduped"
         );
 
         mark_decode_done(41);
-        note_pending_decode(41);
-        assert_eq!(take_pending_decodes(8), vec![41]);
+        note_pending_decode(41, 256);
+        assert_eq!(taken_ids(take_pending_decodes(8)), vec![41]);
     }
 
     #[test]
     fn failed_decode_is_removed_and_never_requeued() {
         let _guard = lock_decode_registry_for_tests();
-        note_pending_decode(42);
-        assert_eq!(take_pending_decodes(1), vec![42]);
+        note_pending_decode(42, 256);
+        assert_eq!(taken_ids(take_pending_decodes(1)), vec![42]);
 
         mark_decode_failed(42);
-        note_pending_decode(42);
+        note_pending_decode(42, 256);
 
         assert!(!has_pending_decodes());
         assert!(take_pending_decodes(1).is_empty());
 
         // Failure is terminal even when reported before a queued id is taken.
-        note_pending_decode(43);
+        note_pending_decode(43, 256);
         mark_decode_failed(43);
         assert!(take_pending_decodes(1).is_empty());
     }
@@ -146,17 +168,17 @@ mod tests {
             mark_decode_failed(id);
         }
 
-        note_pending_decode(0);
-        note_pending_decode(FAILED_DECODE_CAP as u64);
+        note_pending_decode(0, 256);
+        note_pending_decode(FAILED_DECODE_CAP as u64, 256);
 
-        assert_eq!(take_pending_decodes(2), vec![0]);
+        assert_eq!(taken_ids(take_pending_decodes(2)), vec![0]);
     }
 
     #[test]
     fn pending_decode_queue_is_bounded() {
         let _guard = lock_decode_registry_for_tests();
         for id in 0..(PENDING_DECODE_CAP as u64 + 10) {
-            note_pending_decode(id);
+            note_pending_decode(id, 256);
         }
         assert_eq!(take_pending_decodes(usize::MAX).len(), PENDING_DECODE_CAP);
     }
@@ -164,11 +186,11 @@ mod tests {
     #[test]
     fn pending_decode_count_tracks_only_queued_work() {
         let _guard = lock_decode_registry_for_tests();
-        note_pending_decode(51);
-        note_pending_decode(52);
+        note_pending_decode(51, 256);
+        note_pending_decode(52, 256);
         assert_eq!(pending_decode_count(), 2);
 
-        assert_eq!(take_pending_decodes(1), vec![51]);
+        assert_eq!(taken_ids(take_pending_decodes(1)), vec![51]);
         assert_eq!(pending_decode_count(), 1, "in-flight work is not pending");
         mark_decode_failed(52);
         assert_eq!(pending_decode_count(), 0);

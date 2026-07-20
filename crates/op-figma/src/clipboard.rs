@@ -379,15 +379,7 @@ pub fn parse_clipboard_html_styles(html: &str) -> HashMap<String, HtmlStyleHint>
                 match slot {
                     0 => hint.color = css_color_to_hex(&val),
                     1 => {
-                        let family = val
-                            .trim()
-                            .trim_matches(|c: char| c == '\'' || c == '"')
-                            .split(',')
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        if !family.is_empty() {
+                        if let Some(family) = first_css_font_family(&val) {
                             hint.font_family = Some(family);
                         }
                     }
@@ -471,6 +463,36 @@ fn scan_css_value(attr: &str, key: &str) -> Option<String> {
         search_from = abs + key.len();
     }
     None
+}
+
+/// Decode the first family in a CSS `font-family` stack. Figma's HTML
+/// clipboard normally emits one family plus a fallback, but quoted family
+/// names may legally contain commas and backslashes may escape separators.
+fn first_css_font_family(stack: &str) -> Option<String> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut end = stack.len();
+    for (index, ch) in stack.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+        } else if ch == ',' {
+            end = index;
+            break;
+        }
+    }
+    // Retain CSS quoting/escaping in the canonical node value. Downstream
+    // stack parsers then keep a comma inside the family rather than treating
+    // the decoded name as two fallback candidates.
+    let family = stack[..end].trim();
+    (!family.is_empty()).then(|| family.to_string())
 }
 
 // ── PenNode tree walkers ────────────────────────────────────────────

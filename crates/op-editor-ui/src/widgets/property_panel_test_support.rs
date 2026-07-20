@@ -86,6 +86,7 @@ pub(super) struct CountingBackend {
     pub(super) images: Vec<(Rect, u64, usize)>,
     pub(super) image_modes: Vec<ImageDrawMode>,
     pub(super) image_decode_ready: Option<bool>,
+    pub(super) image_resident_ready: Option<bool>,
 }
 impl crate::RenderBackend for CountingBackend {
     fn begin_frame(&mut self) {}
@@ -108,8 +109,11 @@ impl crate::RenderBackend for CountingBackend {
     }
     fn stroke_round_rect(&mut self, _: Rect, _: f32, _: Color, _: f32) {}
     fn stroke_svg_path(&mut self, _: &str, _: Point2D, _: f32, _: Color, _: f32) {}
-    fn image_decoded(&mut self, _: u64, _: &[u8]) -> bool {
+    fn image_decoded(&mut self, _: u64, _: &[u8], _: u32) -> bool {
         self.image_decode_ready.unwrap_or(true)
+    }
+    fn image_resident(&mut self, _: u64) -> bool {
+        self.image_resident_ready.unwrap_or(true)
     }
     fn draw_image(&mut self, rect: Rect, image_id: u64, encoded: &[u8]) {
         self.images.push((rect, image_id, encoded.len()));

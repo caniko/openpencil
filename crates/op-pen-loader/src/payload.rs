@@ -49,6 +49,12 @@ pub struct NodePayload {
     pub h: f32,
     #[serde(default)]
     pub fill: Option<[f32; 4]>,
+    /// Canonical fill stack in paint order (first entry is topmost).
+    /// The legacy single-fill fields below remain populated so older
+    /// payload readers keep working; an absent stack means the payload
+    /// predates multi-fill support and must use those legacy fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_layers: Vec<jian_ops_schema::style::PenFill>,
     #[serde(default)]
     pub stroke: Option<StrokePayload>,
     #[serde(default)]
@@ -189,6 +195,10 @@ pub struct NodePayload {
     /// `tile`, `stretch`). `None` defaults to `fill`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_fit: Option<String>,
+    /// Compositing mode for a canonical `ImageNode`. `None` is normal
+    /// source-over painting and preserves older payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_blend_mode: Option<jian_ops_schema::style::BlendMode>,
     /// Figma image-fill affine transform in normalized UV coordinates.
     /// `[m00, m01, m02, m10, m11, m12]` maps a node-local unit point
     /// `(x, y)` to image UV as `(m00*x + m01*y + m02,

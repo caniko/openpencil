@@ -4,7 +4,7 @@
 //! support landed; the typeface caches stay fields on the spine
 //! struct, this sibling only houses the `impl` block.
 
-use op_editor_ui::{Point2D, TextLayout};
+use op_editor_ui::{Point2D, TextBaselineRequest, TextLayout};
 
 use super::NativeBackend;
 
@@ -125,6 +125,25 @@ impl NativeBackend {
         } else {
             fallback
         }
+    }
+
+    /// First alphabetic baseline measured from the authored line-box top.
+    /// Paragraph shapes the actual line, so fallback emoji/CJK faces and CSS
+    /// half-leading participate in the same metric instead of sampling `M`.
+    pub fn text_first_baseline(&mut self, request: &TextBaselineRequest<'_>) -> f32 {
+        self.paragraph_baseline
+            .first_line_baseline(
+                &self.font_resolver,
+                request.text,
+                request.font_family,
+                request.font_size,
+                request.font_weight,
+                request.italic,
+                request.line_height,
+            )
+            .unwrap_or_else(|| {
+                self.text_ascent_family(request.font_size, request.font_family, request.font_weight)
+            })
     }
 
     /// Render every shaped run in the layout via cached typefaces +

@@ -298,9 +298,7 @@ fn build_auto_generate_body(state: &EditorState) -> Option<String> {
     // The web AI surface exposes built-in providers only. Keep the request
     // scoped credential path from the deployment-aware web host, while using
     // provider identity only for an actual built-in catalog entry.
-    if selected.builtin_provider_id.is_none() {
-        return None;
-    }
+    selected.builtin_provider_id.as_ref()?;
     let (model, credential) = crate::web_ai_credentials::selected_target(state);
     let user = build_design_md_user_message(state);
     let body = serde_json::json!({

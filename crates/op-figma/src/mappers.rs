@@ -146,6 +146,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                     .and_then(normalize_image_transform),
                 explain: None,
                 opacity,
+                blend_mode: None,
                 exposure: None,
                 contrast: None,
                 saturation: None,

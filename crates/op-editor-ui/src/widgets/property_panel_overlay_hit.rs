@@ -50,6 +50,7 @@ impl PropertyPanel {
     pub fn font_picker_entries(&self) -> Rc<Vec<property_panel_typography::FontPickerEntry>> {
         property_panel_typography::font_picker_entries(
             &self.imported_font_families,
+            &self.bundled_font_families,
             &self.system_font_families,
             &self.font_picker_search,
         )

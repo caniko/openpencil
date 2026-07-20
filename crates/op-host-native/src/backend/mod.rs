@@ -13,7 +13,7 @@ pub mod skia;
 
 pub use frame_backend::NativeFrameBackend;
 pub use skia::{
-    begin_image_paint_diagnostics, decode_raster, end_image_paint_diagnostics,
-    enumerate_system_font_families, image_paint_diagnostics_snapshot, to_jian_rect,
-    ImagePaintDiagnostics, NativeBackend,
+    begin_image_paint_diagnostics, decode_raster, decode_raster_capped,
+    end_image_paint_diagnostics, enumerate_system_font_families, image_paint_diagnostics_snapshot,
+    to_jian_rect, ImagePaintDiagnostics, NativeBackend,
 };

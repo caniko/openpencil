@@ -9,7 +9,7 @@ use crate::theme::Theme;
 use crate::widgets::icons::{draw_icon, Icon};
 use crate::widgets::property_panel_action::{CodegenAction, PropertyPanelAction};
 use crate::widgets::property_panel_inputs::{
-    paint_section_label, INPUT_HEIGHT, PAD_X, SECTION_GAP, SECTION_HEADER_HEIGHT, TAB_HEIGHT,
+    paint_section_label, INPUT_HEIGHT, PAD_X, SECTION_HEADER_HEIGHT, TAB_HEIGHT,
 };
 use crate::widgets::PaintCx;
 use crate::{Color, Point2D, Rect, TextLayout};
@@ -21,8 +21,18 @@ use op_i18n::Locale;
 mod code_i18n;
 #[path = "property_panel_code_complete.rs"]
 mod complete;
+#[path = "property_panel_code_error.rs"]
+mod error;
+#[path = "property_panel_code_framework.rs"]
+mod framework;
 #[path = "property_panel_code_generating.rs"]
 mod generating;
+
+use framework::{
+    chips_body_top, framework_chevron_zones, framework_chip_rects, paint_framework_chips,
+    CHEVRON_ZONE_W,
+};
+pub use framework::{framework_at, framework_row_band, framework_row_overflow};
 
 /// Map a click on the Code tab to its action (framework chip / button), or
 /// `None`. Uses the same content origin the painter does (panel left,
@@ -136,18 +146,6 @@ fn code_text_offset_at_in_panel(
     complete::code_text_offset_at_in_panel(state, point, complete_layout(panel_rect))
 }
 
-/// Height of a framework chip + the gap below the chip row.
-const CHIP_HEIGHT: f32 = 22.0;
-const CHIP_PAD_X: f32 = 8.0;
-const CHIP_FONT_SIZE: f32 = 11.0;
-const CHIP_GAP: f32 = 2.0;
-/// Width of each scroll-chevron zone reserved at the strip ends when the
-/// framework row overflows. Paint + hit-test inset the chip clip band by
-/// this on each side so chips never paint under the chevrons.
-const CHEVRON_ZONE_W: f32 = 18.0;
-/// Extra space below the chip row for the divider line that separates the
-/// framework selector from the phase body (TS parity).
-const CHIP_DIVIDER_GAP: f32 = 8.0;
 /// Centered Idle empty-state metrics (TS parity).
 const BADGE_SIZE: f32 = 44.0;
 const IDLE_TOP_PAD: f32 = 24.0;
@@ -250,273 +248,6 @@ fn paint_full_button(
         &crate::widgets::button::tokens_from_theme(theme),
     );
     y + INPUT_HEIGHT + 12.0
-}
-
-fn framework_tab_label(fw: Framework) -> &'static str {
-    match fw {
-        Framework::React => "React",
-        Framework::Vue => "Vue",
-        Framework::Svelte => "Svelte",
-        Framework::Html => "HTML",
-        Framework::Flutter => "Flutter",
-        Framework::SwiftUi => "SwiftUI",
-        Framework::Compose => "Compose",
-        Framework::ReactNative => "RN",
-    }
-}
-
-/// Backend-free advance estimate for a chip label at 11px, matching the
-/// `RenderBackend::measure_text` trait-default heuristic (0.55 × size per
-/// ASCII char) so painter + hit-test wrap identically. TS tab labels are
-/// all ASCII, so the same label drives geometry and paint.
-fn chip_label_width(label: &str) -> f32 {
-    label.chars().fold(0.0, |w, c| {
-        w + if c.is_ascii() {
-            CHIP_FONT_SIZE * 0.55
-        } else {
-            CHIP_FONT_SIZE
-        }
-    })
-}
-
-/// Total width of the single-row framework strip (all chips + inter-gaps).
-fn framework_row_width() -> f32 {
-    let mut total = 0.0;
-    for (i, fw) in Framework::ALL.iter().enumerate() {
-        if i > 0 {
-            total += CHIP_GAP;
-        }
-        total += chip_label_width(framework_tab_label(*fw)) + CHIP_PAD_X * 2.0;
-    }
-    total
-}
-
-/// True when the framework strip is wider than the usable panel width and
-/// must scroll — i.e. the chevron controls appear and the chips inset past
-/// them.
-fn framework_overflows(w: f32) -> bool {
-    framework_row_width() > (w - PAD_X * 2.0).max(0.0)
-}
-
-/// The maximum horizontal scroll of the framework strip (0 when it fits).
-/// When it overflows, the two chevron zones each consume `CHEVRON_ZONE_W`
-/// of the usable width, so the chips scroll within the narrower middle band.
-/// The host clamps `framework_scroll` to `[0, this]`.
-pub fn framework_row_overflow(w: f32) -> f32 {
-    let usable = (w - PAD_X * 2.0).max(0.0);
-    if framework_row_width() <= usable {
-        return 0.0;
-    }
-    (framework_row_width() - (usable - 2.0 * CHEVRON_ZONE_W)).max(0.0)
-}
-
-/// The y-band `[top, bottom]` of the framework tab strip, given the panel's
-/// top-left y. The host routes a wheel over this band into the horizontal
-/// `framework_scroll` instead of the panel's vertical scroll.
-pub fn framework_row_band(panel_top: f32) -> (f32, f32) {
-    let top = panel_top + TAB_HEIGHT + SECTION_HEADER_HEIGHT;
-    (top, top + CHIP_HEIGHT)
-}
-
-/// Pure-geometry walker for the single-row framework strip — one
-/// `(Framework, Rect)` per `Framework::ALL`, laid left→right and shifted by
-/// `-scroll`. Chips may fall partly/fully outside the visible band (the
-/// painter clips; off-band chips take no in-panel clicks). Paint + hit-test
-/// share this so they can't drift.
-fn framework_chip_rects(x: f32, y: f32, w: f32, scroll: f32) -> Vec<(Framework, Rect)> {
-    // When the strip overflows, inset past the left chevron zone so the
-    // first/last chips sit between the arrows instead of behind them.
-    let inset = if framework_overflows(w) {
-        CHEVRON_ZONE_W
-    } else {
-        0.0
-    };
-    // Content-width layout via jian Tabs (the host owns the deterministic width
-    // fn `chip_label_width`); these rects drive BOTH paint and hit.
-    let widths: Vec<f32> = Framework::ALL
-        .iter()
-        .map(|fw| chip_label_width(framework_tab_label(*fw)) + CHIP_PAD_X * 2.0)
-        .collect();
-    let advances: Vec<f32> = widths.iter().map(|w| w + CHIP_GAP).collect();
-    let rects = jian_widgets::components::tabs::Tabs::content_rects(
-        Point2D::new(x + PAD_X + inset, y),
-        &widths,
-        &advances,
-        CHIP_HEIGHT,
-        scroll,
-    );
-    Framework::ALL.iter().copied().zip(rects).collect()
-}
-
-/// The y after the single-row chip strip + divider + trailing gap — the
-/// start of the phase-specific body.
-fn chips_body_top(y: f32) -> f32 {
-    y + CHIP_HEIGHT + CHIP_DIVIDER_GAP + SECTION_GAP
-}
-
-/// The left + right scroll-chevron zone rects when the strip overflows the
-/// usable width, else `None`. Anchored to the padded band ends at chip y.
-/// Shared by paint + hit-test so the clickable zones match the painted
-/// chevrons exactly.
-fn framework_chevron_zones(x: f32, y: f32, w: f32) -> Option<(Rect, Rect)> {
-    if !framework_overflows(w) {
-        return None;
-    }
-    let band_l = x + PAD_X;
-    let band_r = x + w - PAD_X;
-    let left = Rect {
-        origin: Point2D::new(band_l, y),
-        size: Point2D::new(CHEVRON_ZONE_W, CHIP_HEIGHT),
-    };
-    let right = Rect {
-        origin: Point2D::new(band_r - CHEVRON_ZONE_W, y),
-        size: Point2D::new(CHEVRON_ZONE_W, CHIP_HEIGHT),
-    };
-    Some((left, right))
-}
-
-/// The framework whose visible (scrolled, band-clipped) chip rect contains
-/// `point`, or `None`. Shares `framework_chip_rects` so it agrees with both
-/// paint + click hit-test. Chips fully under a chevron zone (when the strip
-/// overflows) are excluded so a hover doesn't leak behind the arrows.
-pub fn framework_at(x: f32, y: f32, w: f32, point: Point2D, scroll: f32) -> Option<Framework> {
-    let usable = (w - PAD_X * 2.0).max(0.0);
-    let overflow = framework_row_overflow(w) > 0.0;
-    let inset = if overflow { CHEVRON_ZONE_W } else { 0.0 };
-    let band_l = x + PAD_X + inset;
-    let band_r = x + PAD_X + usable - inset;
-    framework_chip_rects(x, y, w, scroll)
-        .into_iter()
-        .filter(|(_, r)| r.origin.x + r.size.x > band_l && r.origin.x < band_r)
-        .find(|(_, r)| {
-            point.x >= r.origin.x.max(band_l)
-                && point.x <= (r.origin.x + r.size.x).min(band_r)
-                && point.y >= r.origin.y
-                && point.y <= r.origin.y + r.size.y
-        })
-        .map(|(fw, _)| fw)
-}
-
-/// Paint a single scroll chevron centred in `zone` over a subtle muted
-/// background. `enabled` controls the glyph tint (dimmed at a scroll end).
-fn paint_chevron(
-    cx: &mut PaintCx<'_>,
-    theme: &Theme,
-    icon: Icon,
-    zone: Rect,
-    enabled: bool,
-    hovered: bool,
-) {
-    cx.backend.fill_round_rect(zone, 6.0, theme.muted);
-    if hovered {
-        cx.backend
-            .fill_round_rect(zone, 6.0, code_neutral_hover_color(theme));
-    }
-    let glyph = 14.0;
-    let color = if enabled {
-        theme.foreground
-    } else {
-        theme.muted_foreground
-    };
-    draw_icon(
-        cx.backend,
-        icon,
-        Point2D::new(
-            zone.origin.x + (zone.size.x - glyph) / 2.0,
-            zone.origin.y + (zone.size.y - glyph) / 2.0,
-        ),
-        glyph,
-        color,
-        1.6,
-    );
-}
-
-/// Paint the framework tab row (active = blue filled pill, inactive =
-/// plain text) + a divider below it. Returns the y after the strip.
-fn paint_framework_chips(
-    cx: &mut PaintCx<'_>,
-    theme: &Theme,
-    state: &CodegenState,
-    x: f32,
-    y: f32,
-    w: f32,
-) -> f32 {
-    let usable = (w - PAD_X * 2.0).max(0.0);
-    // When the strip overflows, scroll chevrons occupy a zone at each end;
-    // inset the chip clip band so chips never paint under them.
-    let zones = framework_chevron_zones(x, y, w);
-    let inset = if zones.is_some() { CHEVRON_ZONE_W } else { 0.0 };
-    let band = Rect {
-        origin: Point2D::new(x + PAD_X + inset, y),
-        size: Point2D::new((usable - inset * 2.0).max(0.0), CHIP_HEIGHT),
-    };
-    // Clip the strip so scrolled-off chips don't bleed past the panel edges.
-    cx.backend.save();
-    cx.backend.clip_rect(band);
-    // jian Tabs renders the content-width chip strip (active = primary pill,
-    // inactive-hover = wash); the clip band above culls scrolled-off chips and
-    // the scroll chevrons are painted below.
-    let labels: Vec<&str> = Framework::ALL
-        .iter()
-        .map(|fw| framework_tab_label(*fw))
-        .collect();
-    let rects: Vec<Rect> = framework_chip_rects(x, y, w, state.framework_scroll.offset)
-        .into_iter()
-        .map(|(_, chip)| chip)
-        .collect();
-    let active = Framework::ALL
-        .iter()
-        .position(|fw| *fw == state.framework)
-        .unwrap_or(0);
-    let hover = state
-        .framework_hover
-        .and_then(|h| Framework::ALL.iter().position(|fw| *fw == h));
-    jian_widgets::components::tabs::Tabs {
-        labels: &labels,
-        active,
-        hover,
-    }
-    .paint_content(
-        cx.backend,
-        &rects,
-        jian_widgets::components::tabs::ActiveStyle::PrimaryPill,
-        false,
-        CHIP_PAD_X,
-        CHIP_FONT_SIZE,
-        &crate::widgets::button::tokens_from_theme(theme),
-    );
-    cx.backend.restore();
-    // Scroll chevrons (only when the strip overflows). Each sits over a
-    // subtle muted background; dim the one that can't scroll further.
-    if let Some((left, right)) = zones {
-        let max = framework_row_overflow(w);
-        paint_chevron(
-            cx,
-            theme,
-            Icon::ChevronLeft,
-            left,
-            state.framework_scroll.offset > 0.0,
-            action_hovered(state, CodegenHover::ScrollFrameworksLeft),
-        );
-        paint_chevron(
-            cx,
-            theme,
-            Icon::ChevronRight,
-            right,
-            state.framework_scroll.offset < max,
-            action_hovered(state, CodegenHover::ScrollFrameworksRight),
-        );
-    }
-    // A thin divider line below the strip, spanning the padded width.
-    let dy = y + CHIP_HEIGHT + CHIP_DIVIDER_GAP / 2.0;
-    cx.backend.fill_rect(
-        Rect {
-            origin: Point2D::new(x + PAD_X, dy),
-            size: Point2D::new(usable, 1.0),
-        },
-        theme.border,
-    );
-    chips_body_top(y)
 }
 
 /// A centered fixed-height button rect at `top`, clamped to width.
@@ -627,9 +358,13 @@ fn paint_idle_body(
     let gen = idle_generate_y(state, body_y);
     // 4. Optional error row, above the Generate button.
     if let Some(err) = state.error.as_ref() {
+        let detail = error::display_error_detail(strings, err);
+        let detail = crate::util::ellipsize_to_width(&detail, w - PAD_X * 2.0, |text| {
+            cx.backend.measure_text(text, 13.0)
+        });
         draw_centered_line(
             cx,
-            err,
+            &detail,
             theme.destructive,
             x,
             w,
@@ -661,40 +396,6 @@ fn paint_idle_body(
         action_hovered(state, CodegenHover::ExportBundle),
     );
     by + IDLE_BTN_H + 12.0
-}
-
-/// y of the Error Regenerate button — past the error-text row.
-fn error_regenerate_y(y: f32) -> f32 {
-    y + PROGRESS_ROW_H + SECTION_GAP
-}
-
-/// Error body: error text (destructive) + a full-width Regenerate button.
-fn paint_error_body(
-    cx: &mut PaintCx<'_>,
-    theme: &Theme,
-    state: &CodegenState,
-    strings: CodePanelStrings,
-    x: f32,
-    y: f32,
-    w: f32,
-) -> f32 {
-    let msg = state
-        .error
-        .as_deref()
-        .unwrap_or(strings.generation_failed());
-    draw_line(cx, msg, theme.destructive, x + PAD_X, y + 16.0);
-    paint_full_button(
-        cx,
-        theme,
-        strings.regenerate(),
-        x,
-        error_regenerate_y(y),
-        w,
-        FullButtonStyle {
-            filled: true,
-            hovered: action_hovered(state, CodegenHover::Regenerate),
-        },
-    )
 }
 
 /// Paint the full Code panel from `state`: framework chip row + a
@@ -833,7 +534,7 @@ fn paint_code_panel_with_bottom(
             },
             pressed,
         ),
-        CodegenPhase::Error => paint_error_body(cx, theme, state, strings, x, y, w),
+        CodegenPhase::Error => error::paint_error_body(cx, theme, state, strings, x, y, w),
     }
 }
 
@@ -885,9 +586,12 @@ fn code_action_rects_with_bottom(
     // When the strip overflows, the scroll chevrons take precedence over
     // chips at the band ends (pushed first → win the topmost hit-test).
     let zones = framework_chevron_zones(x, chips_y, w);
-    if let Some((left, right)) = zones {
-        out.push((CodegenAction::ScrollFrameworksLeft, left));
-        out.push((CodegenAction::ScrollFrameworksRight, right));
+    let framework_interactive = !matches!(state.phase, CodegenPhase::Generating);
+    if framework_interactive {
+        if let Some((left, right)) = zones {
+            out.push((CodegenAction::ScrollFrameworksLeft, left));
+            out.push((CodegenAction::ScrollFrameworksRight, right));
+        }
     }
     let inset = if zones.is_some() { CHEVRON_ZONE_W } else { 0.0 };
     let (band_l, band_r) = (x + PAD_X + inset, x + w - PAD_X - inset);
@@ -904,7 +608,9 @@ fn code_action_rects_with_bottom(
             origin: Point2D::new(left, rect.origin.y),
             size: Point2D::new(right - left, rect.size.y),
         };
-        out.push((CodegenAction::SelectFramework(fw), clipped));
+        if framework_interactive {
+            out.push((CodegenAction::SelectFramework(fw), clipped));
+        }
     }
     let body_y = chips_body_top(chips_y);
     match state.phase {
@@ -936,8 +642,7 @@ fn code_action_rects_with_bottom(
             out.push((CodegenAction::Regenerate, regen));
         }
         CodegenPhase::Error => {
-            let regen_y = error_regenerate_y(body_y);
-            out.push((CodegenAction::Regenerate, full_button_rect(x, regen_y, w)));
+            out.extend(error::error_action_rects(state, x, body_y, w));
         }
     }
     out

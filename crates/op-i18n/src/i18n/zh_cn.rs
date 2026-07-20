@@ -546,6 +546,7 @@ pub fn lookup(key: &str) -> Option<&'static str> {
         "missingFonts.subtitle" => "以下字体未安装,文本暂以回退字体渲染。",
         "missingFonts.usage" => "{n} 处使用",
         "missingFonts.chooseFile" => "选择字体文件…",
+        "missingFonts.chooseFont" => "选择字体…",
         "missingFonts.resolved" => "已补充",
         "missingFonts.dismiss" => "暂不处理",
         "missingFonts.mismatch" => "该文件是 {actual},不是 {expected}",
@@ -683,6 +684,13 @@ pub fn lookup(key: &str) -> Option<&'static str> {
             "OpenPencil {{version}} 已可用(当前版本 {{current}})。\n\n是否打开发布页面下载?"
         }
         "a11y.figmaImport" => "从 Figma 导入",
+        "a11y.import" => "导入",
+        "import.fromFigma" => "从 Figma 导入",
+        "import.fromHtml" => "从 HTML 导入",
+        "html.title" => "从 HTML 导入",
+        "html.dropFile" => "将 .html 文件拖放到此处",
+        "html.orBrowse" => "或点击浏览",
+        "html.saveTip" => "在浏览器中用 Cmd+S 保存为“网页，全部”",
         "a11y.fileMenu" => "文件菜单",
         "a11y.layerContextMenu" => "图层右键菜单",
         "a11y.aiChat" => "AI 聊天",

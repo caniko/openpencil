@@ -125,6 +125,7 @@ pub(crate) fn provider_for_model_id(id: &str) -> AgentProvider {
 }
 
 /// Merge legacy model ids into the same built-in-only catalog.
+#[cfg(test)]
 pub(crate) fn apply_models(state: &mut EditorState, ids: &[String]) {
     let entries = ids
         .iter()

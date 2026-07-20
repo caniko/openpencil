@@ -1,23 +1,37 @@
 use jian_ops_schema::node::base::{NumberOrExpression, PenNodeBase};
-use jian_ops_schema::node::container::{
-    AlignItems, ContainerProps, CornerRadius, JustifyContent, LayoutMode, Padding,
-};
-use jian_ops_schema::node::{FrameNode, ImageSrc, PenNode};
-use jian_ops_schema::sizing::{SizingBehavior, SizingKeyword};
-use jian_ops_schema::style::{
-    GradientStop, ImageFillBody, LinearGradientBody, PenEffect, PenFill, PenStroke,
-    RadialGradientBody, ShadowBody, SolidFillBody, StrokeThickness,
-};
+use jian_ops_schema::node::container::{AlignItems, ContainerProps, JustifyContent, LayoutMode};
+use jian_ops_schema::node::{FrameNode, PenNode};
+use jian_ops_schema::sizing::{SizeLimits, SizingBehavior, SizingKeyword};
 
-use crate::color::parse_css_color;
-use crate::css::cascade::{compute_style, ComputedStyle, StyleRule};
+use crate::css::cascade::{compute_style_for_viewport, ComputedStyle, StyleRule};
 use crate::dom::{DomElement, DomNode};
 use crate::length::{parse_length, CssLength, LengthCtx};
 use crate::HtmlImportOptions;
 
 #[path = "layout_heuristics.rs"]
 mod layout_heuristics;
+pub(crate) use layout_heuristics::infer_child_alignment;
 pub use layout_heuristics::infer_gap_from_margins;
+
+#[path = "mapper_visual.rs"]
+mod visual;
+pub(crate) use visual::map_blend_mode;
+
+#[path = "mapper_grid.rs"]
+mod grid;
+
+#[path = "mapper_pseudo.rs"]
+pub(crate) mod pseudo;
+
+#[path = "mapper_stack.rs"]
+mod stack;
+
+#[path = "mapper_box.rs"]
+mod box_model;
+
+#[cfg(test)]
+#[path = "mapper_position_tests.rs"]
+mod position_tests;
 
 pub struct MapCtx<'a> {
     pub opts: &'a HtmlImportOptions,
@@ -25,6 +39,13 @@ pub struct MapCtx<'a> {
     pub warnings: Vec<String>,
     pub next_id: u32,
     pub node_count: usize,
+    /// Current CSS containing block used to resolve percentages.
+    pub containing_width: f64,
+    pub containing_height: f64,
+    pub containing_width_is_definite: bool,
+    /// Nearest non-static ancestor used by absolutely positioned descendants.
+    pub positioned_width: f64,
+    pub positioned_height: f64,
 }
 
 impl MapCtx<'_> {
@@ -46,50 +67,82 @@ pub fn map_element(
     path: &[&DomElement],
     parent_style: Option<&ComputedStyle>,
 ) -> Option<PenNode> {
+    if context.node_count >= crate::MAX_OUTPUT_NODES {
+        context.warn_once("node limit reached while mapping HTML");
+        return None;
+    }
     let element = *path.last()?;
-    let style = compute_style(
+    let style = compute_style_for_viewport(
         path,
         context.rules,
         parent_style,
         context.opts.base_font_size,
+        context.opts.viewport_width,
+        context.opts.viewport_width * 0.625,
     );
     if style.get("display") == Some("none") {
         return None;
     }
-    layout_heuristics::warn_for_degradations(&style, context);
+    let previous_containing = (context.containing_width, context.containing_height);
+    let previous_width_is_definite = context.containing_width_is_definite;
+    let previous_positioned = (context.positioned_width, context.positioned_height);
+    match style.get("position") {
+        Some("fixed") => {
+            context.containing_width = context.opts.viewport_width;
+            context.containing_height = context.opts.viewport_width * 0.625;
+            context.containing_width_is_definite = true;
+        }
+        Some("absolute") => {
+            context.containing_width = context.positioned_width;
+            context.containing_height = context.positioned_height;
+            context.containing_width_is_definite = true;
+        }
+        _ => {}
+    }
+    layout_heuristics::warn_for_degradations(
+        &style,
+        matches!(element.tag.as_str(), "img" | "svg"),
+        context,
+    );
     if let Some(mapped) = crate::special::map_radio_group(context, path, &style)
         .or_else(|| crate::special::map_special(context, element, &style))
     {
+        context.containing_width = previous_containing.0;
+        context.containing_height = previous_containing.1;
+        context.containing_width_is_definite = previous_width_is_definite;
         return mapped;
     }
-    let children = crate::text::map_children(context, path, &style, &element.children);
+    // Reserve this frame before generated content and descendants consume the
+    // remaining budget, so no successfully mapped child becomes orphaned.
+    context.node_count += 1;
     let mut container = container_props_from(&style, context);
-    if container.gap.is_none() {
-        let child_styles: Vec<_> = element
-            .children
-            .iter()
-            .filter_map(|child| match child {
-                DomNode::Element(child_element) => {
-                    let mut child_path = path.to_vec();
-                    child_path.push(child_element);
-                    Some(compute_style(
-                        &child_path,
-                        context.rules,
-                        Some(&style),
-                        context.opts.base_font_size,
-                    ))
-                }
-                DomNode::Text(_) => None,
-            })
-            .collect();
-        let refs: Vec<_> = child_styles.iter().collect();
-        let (gap, deviated) = infer_gap_from_margins(&refs, style.font_size);
-        container.gap = gap.map(NumberOrExpression::Number);
-        if deviated {
-            context.warn_once("mixed adjacent margins approximated using the most common gap");
+    if container.align_items.is_none() {
+        container.align_items = infer_child_alignment(context, path, &style, &element.children);
+    }
+    // Native buttons center their anonymous content box even when the author
+    // does not opt into flex/grid. A plain vertical Jian frame otherwise puts
+    // labels such as the 31×31 product-card `+` at the top-left. Preserve any
+    // explicit author alignment and only supply the browser control defaults.
+    if element.tag == "button" {
+        if container.justify_content.is_none() {
+            container.justify_content = Some(JustifyContent::Center);
+        }
+        if container.align_items.is_none() {
+            container.align_items = Some(AlignItems::Center);
         }
     }
-    layout_heuristics::apply_sizing_defaults(&mut container, &style, parent_style);
+    layout_heuristics::apply_sizing_defaults(
+        &mut container,
+        &style,
+        parent_style,
+        context.containing_width_is_definite,
+    );
+    layout_heuristics::apply_legacy_size_limits(
+        &mut container,
+        context.containing_width,
+        context.containing_height,
+    );
+    let parent_reference = (context.containing_width, context.containing_height);
     let mut base = PenNodeBase {
         id: context.generate_id(),
         name: Some(element.tag.clone()),
@@ -98,8 +151,54 @@ pub fn map_element(
         ..Default::default()
     };
     apply_base_style(&mut base, &style, context);
-    context.node_count += 1;
+    context.containing_width_is_definite = layout_heuristics::width_is_definite(
+        container.width.as_ref(),
+        context.containing_width_is_definite,
+    );
+    context.containing_width = layout_heuristics::resolved_axis(
+        container.width.as_ref(),
+        container.limits.min_width,
+        container.limits.max_width,
+        parent_reference.0,
+    );
+    context.containing_height = layout_heuristics::resolved_axis(
+        container.height.as_ref(),
+        container.limits.min_height,
+        container.limits.max_height,
+        parent_reference.1,
+    );
+    if layout_heuristics::establishes_positioning_context(&style) {
+        context.positioned_width = context.containing_width;
+        context.positioned_height = context.containing_height;
+    }
+    let children = map_container_children(context, path, &style, &element.children);
+    context.containing_width = previous_containing.0;
+    context.containing_height = previous_containing.1;
+    context.containing_width_is_definite = previous_width_is_definite;
+    context.positioned_width = previous_positioned.0;
+    context.positioned_height = previous_positioned.1;
     Some(frame(base, container, children))
+}
+
+pub(crate) fn map_container_children(
+    context: &mut MapCtx<'_>,
+    path: &[&DomElement],
+    style: &ComputedStyle,
+    dom_children: &[DomNode],
+) -> Vec<PenNode> {
+    let mut children = crate::text::map_children(context, path, style, dom_children);
+    if matches!(
+        style.get("flex-direction"),
+        Some("row-reverse" | "column-reverse")
+    ) {
+        children.reverse();
+    }
+    children = stack::layer_absolute_children(children);
+    grid::wrap_grid_rows(context, style, children)
+}
+
+pub(crate) fn layer_positioned_children(children: Vec<PenNode>) -> Vec<PenNode> {
+    stack::layer_absolute_children(children)
 }
 
 pub fn container_props_from(style: &ComputedStyle, context: &mut MapCtx<'_>) -> ContainerProps {
@@ -108,26 +207,116 @@ pub fn container_props_from(style: &ComputedStyle, context: &mut MapCtx<'_>) -> 
         (Some("flex" | "inline-flex"), _) => LayoutMode::Horizontal,
         _ => LayoutMode::Vertical,
     };
-    let gap = style
-        .get("gap")
-        .and_then(|value| length_px(value, style.font_size, context.opts))
-        .map(NumberOrExpression::Number);
-    let padding = map_padding(style, context.opts);
-    let justify_content = style.get("justify-content").and_then(map_justify);
+    let gap_property = if layout == LayoutMode::Horizontal {
+        "column-gap"
+    } else {
+        "row-gap"
+    };
+    let gap = if matches!(style.get("display"), Some("grid" | "inline-grid")) {
+        grid::grid_row_gap(style, context)
+    } else {
+        style
+            .get(gap_property)
+            .or_else(|| style.get("gap"))
+            .and_then(|value| {
+                length_px(
+                    value,
+                    style.font_size,
+                    context.opts,
+                    context.containing_width,
+                )
+            })
+    }
+    .map(NumberOrExpression::Number);
+    let fill = visual::map_fill(style, context);
+    let border_widths = box_model::border_widths(style, context);
+    let stroke = visual::map_stroke(style, context);
+    let effects = visual::map_effects(style, context);
+    let padding = box_model::map_padding(
+        style,
+        context,
+        border_widths,
+        fill.is_some() || stroke.is_some() || effects.is_some() || border_widths != [0.0; 4],
+    );
+    let justify_content = style
+        .get("justify-content")
+        .or_else(|| style.get("justify-items"))
+        .and_then(map_justify);
     let align_items = style.get("align-items").and_then(AlignItems::from_css);
-    let width = style
-        .get("width")
-        .and_then(|value| map_sizing(value, style.font_size, context.opts));
-    let height = style
-        .get("height")
-        .and_then(|value| map_sizing(value, style.font_size, context.opts));
-    let fill = map_fill(style);
-    let stroke = map_stroke(style, context);
-    let corner_radius = style
-        .get("border-radius")
-        .and_then(|value| map_corner_radius(value, style.font_size, context.opts));
-    let effects = style.get("box-shadow").and_then(map_shadows);
-    ContainerProps {
+    let mut width = style.get("width").and_then(|value| {
+        map_sizing(
+            value,
+            style.font_size,
+            context.opts,
+            context.containing_width,
+        )
+    });
+    let mut height = style.get("height").and_then(|value| {
+        map_sizing(
+            value,
+            style.font_size,
+            context.opts,
+            context.containing_height,
+        )
+    });
+    let absolute = matches!(style.get("position"), Some("absolute" | "fixed"));
+    let infer_stretched_width = absolute
+        && width.is_none()
+        && layout_heuristics::has_non_auto(style, "left")
+        && layout_heuristics::has_non_auto(style, "right");
+    let infer_stretched_height = absolute
+        && height.is_none()
+        && layout_heuristics::has_non_auto(style, "top")
+        && layout_heuristics::has_non_auto(style, "bottom");
+    // A FillContainer leaf is represented as a percentage in Jian/Taffy. An
+    // absolutely positioned percentage has no flex track to fill, so the
+    // legacy loader can resolve it to zero. Bake the selected viewport's
+    // containing block into an explicit size instead. This is also the exact
+    // static-canvas meaning of CSS `width/height:100%` at import time.
+    if absolute {
+        layout_heuristics::resolve_absolute_fill(&mut width, context.containing_width);
+        layout_heuristics::resolve_absolute_fill(&mut height, context.containing_height);
+    }
+    let mut limits = map_size_limits(style, context);
+    box_model::apply_box_sizing(
+        style,
+        context,
+        border_widths,
+        &mut width,
+        &mut height,
+        &mut limits,
+    );
+    // Auto size plus opposing insets uses the remaining containing-block
+    // space. Apply this after content-box expansion: unlike an authored
+    // width, the inferred value already denotes the outer box.
+    if infer_stretched_width {
+        width = Some(SizingBehavior::Number(
+            layout_heuristics::stretched_absolute_axis(
+                style,
+                context,
+                "left",
+                "right",
+                context.containing_width,
+            ),
+        ));
+    }
+    if infer_stretched_height {
+        height = Some(SizingBehavior::Number(
+            layout_heuristics::stretched_absolute_axis(
+                style,
+                context,
+                "top",
+                "bottom",
+                context.containing_height,
+            ),
+        ));
+    }
+    let own_width =
+        layout_heuristics::resolved_axis(width.as_ref(), None, None, context.containing_width);
+    let own_height =
+        layout_heuristics::resolved_axis(height.as_ref(), None, None, context.containing_height);
+    let corner_radius = visual::map_corner_radius(style, context, own_width, own_height);
+    let mut container = ContainerProps {
         width,
         height,
         layout: Some(layout),
@@ -135,15 +324,28 @@ pub fn container_props_from(style: &ComputedStyle, context: &mut MapCtx<'_>) -> 
         padding,
         justify_content,
         align_items,
-        clip_content: (style.get("overflow") == Some("hidden")).then_some(true),
+        clip_content: matches!(
+            style
+                .get("overflow")
+                .or_else(|| style.get("overflow-x"))
+                .or_else(|| style.get("overflow-y")),
+            Some("hidden" | "clip")
+        )
+        .then_some(true),
         corner_radius,
         fill,
         stroke,
         effects,
         // No responsive-schema (jian formatVersion 1.2) source in HTML
         // import — this pipeline only ever emits non-responsive documents.
-        limits: Default::default(),
-    }
+        limits,
+    };
+    layout_heuristics::apply_legacy_size_limits(
+        &mut container,
+        context.containing_width,
+        context.containing_height,
+    );
+    container
 }
 
 fn frame(base: PenNodeBase, container: ContainerProps, children: Vec<PenNode>) -> PenNode {
@@ -167,11 +369,30 @@ fn frame(base: PenNodeBase, container: ContainerProps, children: Vec<PenNode>) -
     })
 }
 
-fn apply_base_style(base: &mut PenNodeBase, style: &ComputedStyle, context: &mut MapCtx<'_>) {
+pub(crate) fn apply_base_style(
+    base: &mut PenNodeBase,
+    style: &ComputedStyle,
+    context: &mut MapCtx<'_>,
+) {
     base.opacity = style
         .get("opacity")
         .and_then(|value| value.parse::<f64>().ok())
-        .map(NumberOrExpression::Number);
+        .map(|value| NumberOrExpression::Number(value.clamp(0.0, 1.0)));
+    if matches!(style.get("visibility"), Some("hidden" | "collapse")) {
+        base.visible = Some(false);
+    }
+    let position = style.get("position");
+    let explicit_z_index = style
+        .get("z-index")
+        .filter(|value| !value.eq_ignore_ascii_case("auto"))
+        .and_then(|value| value.parse::<i32>().ok());
+    // Relative/sticky elements with z-index:auto remain ordinary flow items.
+    // Marking them as a layer would reorder auto-layout children and change
+    // their geometry even though CSS preserves their source-order position.
+    if matches!(position, Some("absolute" | "fixed")) || explicit_z_index.is_some() {
+        let z_index = explicit_z_index.unwrap_or(0);
+        base.explain = Some(format!("{}{z_index}", stack::Z_INDEX_HINT));
+    }
     if let Some(transform) = style.get("transform") {
         if let Some(degrees) = parse_rotate(transform) {
             base.rotation = Some(degrees);
@@ -184,7 +405,18 @@ fn apply_base_style(base: &mut PenNodeBase, style: &ComputedStyle, context: &mut
 
 fn parse_rotate(value: &str) -> Option<f64> {
     let inner = value.trim().strip_prefix("rotate(")?.strip_suffix(')')?;
-    inner.strip_suffix("deg")?.trim().parse().ok()
+    let inner = inner.trim();
+    if let Some(value) = inner.strip_suffix("deg") {
+        value.trim().parse().ok()
+    } else if let Some(value) = inner.strip_suffix("turn") {
+        value.trim().parse::<f64>().ok().map(|turns| turns * 360.0)
+    } else if let Some(value) = inner.strip_suffix("grad") {
+        value.trim().parse::<f64>().ok().map(|grads| grads * 0.9)
+    } else if let Some(value) = inner.strip_suffix("rad") {
+        value.trim().parse::<f64>().ok().map(f64::to_degrees)
+    } else {
+        None
+    }
 }
 
 fn length_context(font_size: f64, options: &HtmlImportOptions) -> LengthCtx {
@@ -196,41 +428,42 @@ fn length_context(font_size: f64, options: &HtmlImportOptions) -> LengthCtx {
     }
 }
 
-fn length_px(value: &str, font_size: f64, options: &HtmlImportOptions) -> Option<f64> {
-    match parse_length(value, &length_context(font_size, options))? {
-        CssLength::Px(value) => Some(value),
-        CssLength::Percent(_) => None,
-    }
+fn length_px(
+    value: &str,
+    font_size: f64,
+    options: &HtmlImportOptions,
+    reference: f64,
+) -> Option<f64> {
+    Some(parse_length(value, &length_context(font_size, options))?.resolve(reference))
 }
 
-fn map_sizing(value: &str, font_size: f64, options: &HtmlImportOptions) -> Option<SizingBehavior> {
-    match parse_length(value, &length_context(font_size, options))? {
-        CssLength::Px(value) => Some(SizingBehavior::Number(value)),
+fn map_sizing(
+    value: &str,
+    font_size: f64,
+    options: &HtmlImportOptions,
+    reference: f64,
+) -> Option<SizingBehavior> {
+    let length = parse_length(value, &length_context(font_size, options))?;
+    match &length {
+        CssLength::Px(value) => Some(SizingBehavior::Number(*value)),
         CssLength::Percent(100.0) => Some(SizingBehavior::Keyword(SizingKeyword::FillContainer)),
-        CssLength::Percent(_) => None,
+        _ => Some(SizingBehavior::Number(length.resolve(reference))),
     }
 }
 
-fn map_padding(style: &ComputedStyle, options: &HtmlImportOptions) -> Option<Padding> {
-    let names = [
-        "padding-top",
-        "padding-right",
-        "padding-bottom",
-        "padding-left",
-    ];
-    if !names.iter().any(|name| style.get(name).is_some()) {
-        return None;
-    }
-    let values = names.map(|name| {
+fn map_size_limits(style: &ComputedStyle, context: &MapCtx<'_>) -> SizeLimits {
+    let resolve = |name: &str, reference: f64| {
         style
             .get(name)
-            .and_then(|value| length_px(value, style.font_size, options))
-            .unwrap_or(0.0)
-    });
-    if values.iter().all(|value| *value == values[0]) {
-        Some(Padding::Uniform(values[0]))
-    } else {
-        Some(Padding::LtrB(values))
+            .and_then(|value| parse_length(value, &length_context(style.font_size, context.opts)))
+            .map(|length| length.resolve(reference))
+            .filter(|value| value.is_finite() && *value >= 0.0)
+    };
+    SizeLimits {
+        min_width: resolve("min-width", context.containing_width),
+        max_width: resolve("max-width", context.containing_width),
+        min_height: resolve("min-height", context.containing_height),
+        max_height: resolve("max-height", context.containing_height),
     }
 }
 
@@ -243,295 +476,6 @@ fn map_justify(value: &str) -> Option<JustifyContent> {
         "space-around" | "space-evenly" => Some(JustifyContent::SpaceAround),
         _ => None,
     }
-}
-
-fn solid_fill(color: String) -> PenFill {
-    PenFill::Solid(SolidFillBody {
-        color,
-        explain: None,
-        opacity: None,
-        blend_mode: None,
-    })
-}
-
-fn map_fill(style: &ComputedStyle) -> Option<Vec<PenFill>> {
-    let mut fills = Vec::new();
-    if let Some(color) = style.get("background-color").and_then(parse_css_color) {
-        fills.push(solid_fill(color));
-    }
-    if let Some(image) = style.get("background-image") {
-        if let Some(gradient) = map_gradient(image) {
-            fills.push(gradient);
-        } else if let Some(url) = extract_url(image) {
-            fills.push(PenFill::Image(ImageFillBody {
-                url: ImageSrc::from(url),
-                mode: None,
-                original_size: None,
-                transform: None,
-                explain: None,
-                opacity: None,
-                exposure: None,
-                contrast: None,
-                saturation: None,
-                temperature: None,
-                tint: None,
-                highlights: None,
-                shadows: None,
-            }));
-        }
-    }
-    (!fills.is_empty()).then_some(fills)
-}
-
-fn extract_url(value: &str) -> Option<String> {
-    let start = value.find("url(")? + 4;
-    let end = value[start..].find(')')? + start;
-    Some(
-        value[start..end]
-            .trim()
-            .trim_matches(['\'', '"'])
-            .to_string(),
-    )
-}
-
-fn map_gradient(value: &str) -> Option<PenFill> {
-    let (radial, body) = if let Some(body) = value.strip_prefix("linear-gradient(") {
-        (false, body.strip_suffix(')')?)
-    } else if let Some(body) = value.strip_prefix("radial-gradient(") {
-        (true, body.strip_suffix(')')?)
-    } else {
-        return None;
-    };
-    let mut parts = split_top_level(body, ',');
-    let mut angle = None;
-    if !radial {
-        angle = parts.first().and_then(|part| parse_gradient_angle(part));
-        if angle.is_some() {
-            parts.remove(0);
-        }
-    } else if parts
-        .first()
-        .is_some_and(|part| parse_color_stop(part).is_none())
-    {
-        parts.remove(0);
-    }
-    let stop_count = parts.len();
-    if stop_count < 2 {
-        return None;
-    }
-    let stops: Option<Vec<_>> = parts
-        .iter()
-        .enumerate()
-        .map(|(index, part)| {
-            let (color, explicit) = parse_color_stop(part)?;
-            let offset = explicit.unwrap_or_else(|| index as f32 / (stop_count - 1) as f32);
-            Some(GradientStop { offset, color })
-        })
-        .collect();
-    let stops = stops?;
-    if radial {
-        Some(PenFill::RadialGradient(RadialGradientBody {
-            cx: None,
-            cy: None,
-            radius: None,
-            stops,
-            explain: None,
-            opacity: None,
-            blend_mode: None,
-        }))
-    } else {
-        Some(PenFill::LinearGradient(LinearGradientBody {
-            angle: Some(angle.unwrap_or(180.0)),
-            stops,
-            explain: None,
-            opacity: None,
-            blend_mode: None,
-        }))
-    }
-}
-
-fn parse_gradient_angle(value: &str) -> Option<f32> {
-    let value = value.trim().to_ascii_lowercase();
-    if let Some(degrees) = value.strip_suffix("deg") {
-        return degrees.trim().parse().ok();
-    }
-    match value.as_str() {
-        "to top" => Some(0.0),
-        "to right" => Some(90.0),
-        "to bottom" => Some(180.0),
-        "to left" => Some(270.0),
-        _ => None,
-    }
-}
-
-fn parse_color_stop(value: &str) -> Option<(String, Option<f32>)> {
-    let value = value.trim();
-    if let Some(color) = parse_css_color(value) {
-        return Some((color, None));
-    }
-    let (color_source, remainder) = if value.starts_with("rgb") || value.starts_with("hsl") {
-        let end = value.find(')')? + 1;
-        (&value[..end], value[end..].trim())
-    } else {
-        value
-            .split_once(char::is_whitespace)
-            .map_or((value, ""), |(color, rest)| (color, rest.trim()))
-    };
-    let color = parse_css_color(color_source)?;
-    let offset = remainder
-        .strip_suffix('%')
-        .and_then(|number| number.trim().parse::<f32>().ok())
-        .map(|percent| percent / 100.0);
-    Some((color, offset))
-}
-
-fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Option<PenStroke> {
-    let widths = ["top", "right", "bottom", "left"].map(|side| {
-        style
-            .get(&format!("border-{side}-width"))
-            .or_else(|| style.get("border-width"))
-            .and_then(|value| length_px(value, style.font_size, context.opts))
-            .unwrap_or(0.0) as f32
-    });
-    let max_width = widths.iter().copied().fold(0.0_f32, f32::max);
-    if max_width <= 0.0 {
-        return None;
-    }
-    if widths.iter().any(|width| *width != widths[0]) {
-        context.warn_once("per-side border widths approximated using the widest side");
-    }
-    let color = style
-        .get("border-color")
-        .or_else(|| {
-            ["top", "right", "bottom", "left"]
-                .iter()
-                .find_map(|side| style.get(&format!("border-{side}-color")))
-        })
-        .or_else(|| style.get("color"))
-        .and_then(parse_css_color)
-        .unwrap_or_else(|| "#000000".to_string());
-    Some(PenStroke {
-        thickness: StrokeThickness::Uniform(max_width),
-        align: None,
-        join: None,
-        cap: None,
-        dash_pattern: None,
-        dash_offset: None,
-        fill: Some(vec![solid_fill(color)]),
-    })
-}
-
-fn map_corner_radius(
-    value: &str,
-    font_size: f64,
-    options: &HtmlImportOptions,
-) -> Option<CornerRadius> {
-    let parts: Vec<_> = value.split_whitespace().collect();
-    let values = match parts.as_slice() {
-        [all] => [*all, *all, *all, *all],
-        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
-        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
-        [top, right, bottom, left] => [*top, *right, *bottom, *left],
-        _ => return None,
-    };
-    let radii = values
-        .map(|part| length_px(part, font_size, options))
-        .into_iter()
-        .collect::<Option<Vec<_>>>()?;
-    if radii.iter().all(|radius| *radius == radii[0]) {
-        Some(CornerRadius::Uniform(radii[0]))
-    } else {
-        Some(CornerRadius::PerCorner([
-            radii[0], radii[1], radii[2], radii[3],
-        ]))
-    }
-}
-
-fn map_shadows(value: &str) -> Option<Vec<PenEffect>> {
-    let effects: Vec<_> = split_top_level(value, ',')
-        .into_iter()
-        .filter_map(map_shadow)
-        .map(PenEffect::Shadow)
-        .collect();
-    (!effects.is_empty()).then_some(effects)
-}
-
-fn map_shadow(value: &str) -> Option<ShadowBody> {
-    let mut inner = false;
-    let mut color = "#000000".to_string();
-    let mut lengths = Vec::new();
-    for token in split_whitespace_top_level(value) {
-        if token == "inset" {
-            inner = true;
-        } else if let Some(parsed) = parse_css_color(token) {
-            color = parsed;
-        } else if let Some(length) = parse_shadow_length(token) {
-            lengths.push(length);
-        }
-    }
-    if lengths.len() < 2 {
-        return None;
-    }
-    Some(ShadowBody {
-        inner: inner.then_some(true),
-        visible: None,
-        offset_x: lengths[0],
-        offset_y: lengths[1],
-        blur: lengths.get(2).copied().unwrap_or(0.0),
-        spread: lengths.get(3).copied().unwrap_or(0.0),
-        color,
-    })
-}
-
-fn parse_shadow_length(value: &str) -> Option<f32> {
-    let number = value.strip_suffix("px").unwrap_or(value);
-    number.parse().ok()
-}
-
-fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut start = 0;
-    let mut depth = 0u32;
-    for (index, ch) in input.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            _ if ch == delimiter && depth == 0 => {
-                result.push(input[start..index].trim());
-                start = index + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    result.push(input[start..].trim());
-    result
-}
-
-fn split_whitespace_top_level(input: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut start = None;
-    let mut depth = 0u32;
-    for (index, ch) in input.char_indices() {
-        match ch {
-            '(' => {
-                depth += 1;
-                start.get_or_insert(index);
-            }
-            ')' => depth = depth.saturating_sub(1),
-            _ if ch.is_whitespace() && depth == 0 => {
-                if let Some(token_start) = start.take() {
-                    result.push(&input[token_start..index]);
-                }
-            }
-            _ => {
-                start.get_or_insert(index);
-            }
-        }
-    }
-    if let Some(token_start) = start {
-        result.push(&input[token_start..]);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -553,6 +497,11 @@ mod tests {
             warnings: Vec::new(),
             next_id: 0,
             node_count: 0,
+            containing_width: options.viewport_width,
+            containing_height: options.viewport_width * 0.625,
+            containing_width_is_definite: true,
+            positioned_width: options.viewport_width,
+            positioned_height: options.viewport_width * 0.625,
         };
         map_element(&mut context, &[&html_element], None)
     }
@@ -676,10 +625,13 @@ mod tests {
     }
 
     #[test]
-    fn block_child_defaults_to_fill_width_and_frames_hug_height() {
+    fn definite_column_child_fills_but_row_flex_item_shrink_wraps() {
         let parent = crate::dom::DomElement {
             tag: "div".into(),
-            attrs: vec![],
+            attrs: vec![(
+                "style".into(),
+                "display:flex;flex-direction:column;width:600px".into(),
+            )],
             children: vec![crate::dom::DomNode::Element(crate::dom::DomElement {
                 tag: "div".into(),
                 attrs: vec![],
@@ -699,6 +651,26 @@ mod tests {
         );
         assert_eq!(
             child.container.height,
+            Some(SizingBehavior::Keyword(SizingKeyword::FitContent))
+        );
+
+        let row = crate::dom::DomElement {
+            tag: "div".into(),
+            attrs: vec![("style".into(), "display:flex;width:600px".into())],
+            children: vec![crate::dom::DomNode::Element(crate::dom::DomElement {
+                tag: "div".into(),
+                attrs: vec![],
+                children: Vec::new(),
+            })],
+        };
+        let Some(PenNode::Frame(row)) = map_one(row, "") else {
+            panic!()
+        };
+        let PenNode::Frame(item) = &row.children.as_ref().unwrap()[0] else {
+            panic!()
+        };
+        assert_eq!(
+            item.container.width,
             Some(SizingBehavior::Keyword(SizingKeyword::FitContent))
         );
     }
@@ -721,7 +693,57 @@ mod tests {
     }
 
     #[test]
-    fn grid_degrades_with_single_warning() {
+    fn right_offset_and_inline_flex_use_parent_geometry() {
+        let parent = crate::dom::DomElement {
+            tag: "div".into(),
+            attrs: vec![(
+                "style".into(),
+                "position:relative;width:38px;height:38px".into(),
+            )],
+            children: vec![DomNode::Element(crate::dom::DomElement {
+                tag: "small".into(),
+                attrs: vec![(
+                    "style".into(),
+                    "position:absolute;right:-4px;top:-5px;width:17px;height:17px".into(),
+                )],
+                children: vec![DomNode::Text("2".into())],
+            })],
+        };
+        let Some(PenNode::Frame(frame)) = map_one(parent, "") else {
+            panic!()
+        };
+        let PenNode::Frame(badge) = &frame.children.as_ref().unwrap()[0] else {
+            panic!()
+        };
+        assert_eq!((badge.base.x, badge.base.y), (Some(25.0), Some(-5.0)));
+
+        let child = crate::dom::DomElement {
+            tag: "button".into(),
+            attrs: vec![("style".into(), "display:inline-flex".into())],
+            children: vec![DomNode::Text("Go".into())],
+        };
+        let parent = crate::dom::DomElement {
+            tag: "div".into(),
+            attrs: Vec::new(),
+            children: vec![DomNode::Element(child)],
+        };
+        let Some(PenNode::Frame(frame)) = map_one(parent, "") else {
+            panic!()
+        };
+        let PenNode::Frame(inline_row) = &frame.children.as_ref().unwrap()[0] else {
+            panic!()
+        };
+        let PenNode::Frame(button) = &inline_row.children.as_ref().unwrap()[0] else {
+            panic!()
+        };
+        assert_eq!(
+            button.container.width,
+            Some(SizingBehavior::Keyword(SizingKeyword::FitContent))
+        );
+    }
+
+    #[test]
+    fn implicit_single_column_grid_does_not_warn() {
         let (rules, _) = crate::css::cascade::parse_stylesheet("", 1000);
         let options = crate::HtmlImportOptions::default();
         let mut context = MapCtx {
@@ -730,6 +752,11 @@ mod tests {
             warnings: Vec::new(),
             next_id: 0,
             node_count: 0,
+            containing_width: options.viewport_width,
+            containing_height: options.viewport_width * 0.625,
+            containing_width_is_definite: true,
+            positioned_width: options.viewport_width,
+            positioned_height: options.viewport_width * 0.625,
         };
         for _ in 0..2 {
             let element = crate::dom::DomElement {
@@ -739,13 +766,9 @@ mod tests {
             };
             map_element(&mut context, &[&element], None);
         }
-        assert_eq!(
-            context
-                .warnings
-                .iter()
-                .filter(|warning| warning.contains("grid"))
-                .count(),
-            1
-        );
+        assert!(context
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("grid")));
     }
 }

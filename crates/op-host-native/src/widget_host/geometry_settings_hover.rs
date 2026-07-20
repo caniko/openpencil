@@ -371,27 +371,42 @@ impl WidgetHostNative {
                 .hover_image_gen_provider_option = new_image_provider_option_hover;
             changed = true;
         }
-        let new_missing_hover = if matches!(
+        let (new_missing_hover, font_picker_hover, font_import_hover) = if matches!(
             self.editor_state.editor_ui.agent_settings.tab,
             op_editor_core::AgentSettingsTab::Fonts
         ) {
+            use op_editor_ui::widgets::agent_settings_fonts::FontsHit;
             use op_editor_ui::widgets::agent_settings_panel::AgentSettingsHit;
             let panel = AgentSettingsPanel::for_editor(&self.editor_state);
             let panel_rect = panel.rect(self.last_viewport_w, self.last_viewport_h);
             match panel.hit_test(panel_rect, point) {
-                AgentSettingsHit::MissingFontChooseFile(row) => {
-                    Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row))
-                }
-                AgentSettingsHit::RemoveImportedFont(row) => {
-                    Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row))
-                }
-                _ => None,
+                AgentSettingsHit::Fonts(FontsHit::ChooseFont(row)) => (
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::ChooseFile(row)),
+                    None,
+                    false,
+                ),
+                AgentSettingsHit::Fonts(FontsHit::RemoveImportedFont(row)) => (
+                    Some(op_editor_core::missing_fonts::MissingFontsHover::RemoveImported(row)),
+                    None,
+                    false,
+                ),
+                AgentSettingsHit::Fonts(FontsHit::SelectFont(index)) => (None, Some(index), false),
+                AgentSettingsHit::Fonts(FontsHit::ImportFont(_)) => (None, None, true),
+                _ => (None, None, false),
             }
         } else {
-            None
+            (None, None, false)
         };
         if new_missing_hover != self.editor_state.editor_ui.missing_fonts_hover {
             self.editor_state.editor_ui.missing_fonts_hover = new_missing_hover;
+            changed = true;
+        }
+        if font_picker_hover != self.editor_state.editor_ui.font_picker.hover {
+            self.editor_state.editor_ui.font_picker.hover = font_picker_hover;
+            changed = true;
+        }
+        if font_import_hover != self.editor_state.editor_ui.font_picker_import_hover {
+            self.editor_state.editor_ui.font_picker_import_hover = font_import_hover;
             changed = true;
         }
         if changed {

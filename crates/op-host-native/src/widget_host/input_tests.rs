@@ -2499,3 +2499,81 @@ fn codegen_cancel_resets_phase_by_code_presence() {
     host.apply_property_action(PropertyPanelAction::Codegen(CodegenAction::Cancel));
     assert_eq!(host.editor_state().codegen.phase, CodegenPhase::Complete);
 }
+
+/// The top-bar import button opens a two-row menu; the Figma row keeps
+/// the existing modal, and the HTML row raises the file action the
+/// desktop runner turns into a file dialog + background import.
+#[test]
+fn import_menu_routes_its_two_rows_to_figma_and_html() {
+    use op_editor_ui::widgets::{ImportMenu, TopBar};
+
+    let (vw, vh) = (1200.0, 800.0);
+    let button = {
+        let host = WidgetHostNative::new();
+        let top_bar_rect = op_editor_ui::Rect {
+            origin: op_editor_ui::Point2D::new(0.0, 0.0),
+            size: op_editor_ui::Point2D::new(vw, op_editor_ui::widgets::TOP_BAR_HEIGHT),
+        };
+        TopBar::for_editor_ui(&host.editor_state().editor_ui).import_button_rect(top_bar_rect)
+    };
+    let button_center = op_editor_ui::Point2D::new(
+        button.origin.x + button.size.x / 2.0,
+        button.origin.y + button.size.y / 2.0,
+    );
+
+    let row_point = |host: &WidgetHostNative, idx: usize| {
+        let menu = ImportMenu::for_editor_ui(&host.editor_state().editor_ui);
+        let anchor_viewport = (
+            op_editor_ui::Rect {
+                origin: button.origin,
+                size: op_editor_ui::Point2D::new(
+                    op_editor_ui::widgets::IMPORT_MENU_WIDTH,
+                    button.size.y,
+                ),
+            },
+            op_editor_ui::Rect {
+                origin: op_editor_ui::Point2D::new(0.0, 0.0),
+                size: op_editor_ui::Point2D::new(vw, vh),
+            },
+        );
+        let panel = menu.popup_rect(anchor_viewport.0, anchor_viewport.1);
+        let row_h = panel.size.y / 2.0;
+        op_editor_ui::Point2D::new(
+            panel.origin.x + panel.size.x / 2.0,
+            panel.origin.y + row_h * idx as f32 + row_h / 2.0,
+        )
+    };
+
+    // Figma row → the existing import modal.
+    let mut host = WidgetHostNative::new();
+    assert!(host.apply_press(button_center.x, button_center.y, vw, vh));
+    assert!(host.editor_state().editor_ui.import_menu_open);
+    let figma_row = row_point(&host, 0);
+    assert!(host.apply_press(figma_row.x, figma_row.y, vw, vh));
+    assert!(!host.editor_state().editor_ui.import_menu_open);
+    assert!(host.editor_state().editor_ui.figma_import_open);
+    assert_eq!(
+        host.editor_state().editor_ui.import_source,
+        op_editor_core::figma_import_state::ImportSource::Figma
+    );
+    assert_eq!(host.editor_state().editor_ui.pending_file_action, None);
+
+    // HTML row → the same modal, showing the HTML source.
+    let mut host = WidgetHostNative::new();
+    assert!(host.apply_press(button_center.x, button_center.y, vw, vh));
+    let html_row = row_point(&host, 1);
+    assert!(host.apply_press(html_row.x, html_row.y, vw, vh));
+    assert!(!host.editor_state().editor_ui.import_menu_open);
+    assert!(host.editor_state().editor_ui.figma_import_open);
+    assert_eq!(
+        host.editor_state().editor_ui.import_source,
+        op_editor_core::figma_import_state::ImportSource::Html
+    );
+    assert_eq!(host.editor_state().editor_ui.pending_file_action, None);
+
+    // A second press on the button closes the menu instead of reopening.
+    let mut host = WidgetHostNative::new();
+    assert!(host.apply_press(button_center.x, button_center.y, vw, vh));
+    assert!(host.apply_press(button_center.x, button_center.y, vw, vh));
+    assert!(!host.editor_state().editor_ui.import_menu_open);
+}

@@ -17,7 +17,7 @@ pub enum TopBarButton {
     /// Folder + chevron compound — toggles the file menu.
     ToggleFileMenu,
     /// Figma logo — opens the .fig import modal.
-    OpenFigmaImport,
+    OpenImportMenu,
     /// Sun / Moon icon — flips the theme.
     ToggleTheme,
     /// Globe + chevron — opens the locale picker.

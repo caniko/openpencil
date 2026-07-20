@@ -72,8 +72,20 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
     } else {
         None
     };
+    let mut letter_spacing = if node.letter_spacing.is_finite() {
+        node.letter_spacing
+    } else {
+        0.0
+    };
     let lines: Vec<String> = if let Some(doc_wrap_width) = wrap_width_doc {
-        super::canvas_viewport_overlay::wrap_text(backend, text, font_size, doc_wrap_width, weight)
+        super::canvas_viewport_overlay::wrap_text(
+            backend,
+            text,
+            font_size,
+            doc_wrap_width,
+            weight,
+            letter_spacing,
+        )
     } else {
         text.split('\n').map(str::to_string).collect()
     };
@@ -83,7 +95,6 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
     // gets clipped by the parent frame). Scale the font down so the
     // widest line fits, preserving the imported layout. Wrapping text
     // breaks lines instead, so it is left untouched.
-    let mut letter_spacing = node.letter_spacing;
     let box_w = node.bounds.size.x;
     if !node.text_wrap && box_w > 0.0 {
         let widest = lines
@@ -206,6 +217,12 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                 ) + self.letter_spacing;
+            }
+            // Tracking belongs between glyphs. Internal caret boundaries
+            // include the following gap; the end boundary stops at the
+            // final glyph edge, matching paint and line measurement.
+            if offset == line.len() {
+                w -= self.letter_spacing;
             }
             w
         }

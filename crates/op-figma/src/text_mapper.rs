@@ -38,7 +38,7 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         content: apply_text_case(build_content(node), node.get_str("textCase")),
         font_family: font_name
             .and_then(|f| f.get_str("family"))
-            .map(|s| s.to_string()),
+            .map(canonical_font_family_value),
         font_size: node.get_f64("fontSize"),
         font_weight: parse_font_weight(&style_lower),
         font_style: if style_lower.contains("italic") {
@@ -143,7 +143,7 @@ fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSeg
     let font_name = ov.get("fontName");
     if let Some(family) = font_name.and_then(|f| f.get_str("family")) {
         if !family.is_empty() {
-            seg.font_family = Some(family.to_string());
+            seg.font_family = Some(canonical_font_family_value(family));
         }
     }
     if let Some(size) = ov.get_f64("fontSize") {
@@ -175,6 +175,28 @@ fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSeg
         seg.fill = Some(figma_color_to_hex(&color));
     }
     seg
+}
+
+/// Store one Figma family in the schema's CSS-stack-shaped string field.
+/// Figma supplies a raw family name, so quote names containing CSS separators
+/// before downstream renderers and missing-font detection parse the value.
+fn canonical_font_family_value(family: &str) -> String {
+    if !family
+        .chars()
+        .any(|ch| ch == ',' || ch == '"' || ch == '\'' || ch == '\\')
+    {
+        return family.to_string();
+    }
+    let mut value = String::with_capacity(family.len() + 2);
+    value.push('"');
+    for ch in family.chars() {
+        if ch == '"' || ch == '\\' {
+            value.push('\\');
+        }
+        value.push(ch);
+    }
+    value.push('"');
+    value
 }
 
 /// Apply Figma `textCase` (UPPER / LOWER / TITLE) to the content.

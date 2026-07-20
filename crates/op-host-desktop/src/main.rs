@@ -80,8 +80,8 @@ use winit::window::Window;
 const INITIAL_VIEWPORT_W: f32 = 1440.0;
 const INITIAL_VIEWPORT_H: f32 = 900.0;
 
-type HtmlPastePayload = (Vec<jian_ops_schema::node::PenNode>, Vec<String>);
-type PendingHtmlPaste = (u64, std::sync::mpsc::Receiver<HtmlPastePayload>);
+type HtmlPasteResult = (Vec<jian_ops_schema::node::PenNode>, Vec<String>);
+type PendingHtmlPaste = (u64, std::sync::mpsc::Receiver<HtmlPasteResult>);
 
 #[derive(Clone, Copy, Debug)]
 enum DesktopEvent {

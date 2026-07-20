@@ -84,7 +84,12 @@ impl WidgetHostNative {
                 self.editor_state.editor_ui.figma_import_hover = None;
             }
             FigmaImportHit::DropZone => {
-                self.editor_state.editor_ui.pending_file_action = Some(FileAction::ImportFigma);
+                use op_editor_core::figma_import_state::ImportSource;
+                self.editor_state.editor_ui.pending_file_action =
+                    Some(match self.editor_state.editor_ui.import_source {
+                        ImportSource::Figma => FileAction::ImportFigma,
+                        ImportSource::Html => FileAction::ImportHtml,
+                    });
                 self.editor_state.editor_ui.figma_import_open = false;
                 self.editor_state.editor_ui.figma_import_hover = None;
             }

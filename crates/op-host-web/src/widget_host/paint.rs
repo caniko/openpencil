@@ -33,7 +33,7 @@ impl WidgetHost {
 
     /// Backend-generic composition pass. Layer order matches the
     /// native shell so paint output is cross-platform identical:
-    ///   1. background fill (+ Figma-import progress early-return)
+    ///   1. background fill (+ document-import progress early-return)
     ///   2. TopBar
     ///   3. LayerPanel (left rail, sidebar-gated)
     ///   4. CanvasViewport (center band)
@@ -69,11 +69,11 @@ impl WidgetHost {
 
         let dpi = backend.dpi_scale();
 
-        // During a Figma import, keep the frame path independent from
+        // During a document import, keep the frame path independent from
         // document layout/canvas paint (mirrors native — the parser is
         // CPU-heavy and repainting the old scene reads as frozen).
         if self.editor_state.editor_ui.figma_import_in_progress {
-            use op_editor_ui::widgets::figma_import_progress::FigmaImportProgressOverlay;
+            use op_editor_ui::widgets::figma_import_progress::ImportProgressOverlay;
             backend.fill_rect(
                 Rect {
                     origin: Point2D::new(0.0, 0.0),
@@ -86,7 +86,7 @@ impl WidgetHost {
                     a: 0.55,
                 },
             );
-            let overlay = FigmaImportProgressOverlay::for_editor(&self.editor_state, self.now_ms);
+            let overlay = ImportProgressOverlay::for_editor(&self.editor_state, self.now_ms);
             let rect = overlay.rect(viewport_width, viewport_height);
             let mut cx = PaintCx {
                 backend: &mut *backend,
@@ -344,6 +344,16 @@ impl WidgetHost {
             picker.paint(&mut cx, picker_rect);
         }
 
+        if ui.import_menu_open {
+            use op_editor_ui::widgets::ImportMenu;
+            let (anchor, menu_viewport) = self.import_menu_anchor(viewport_width, viewport_height);
+            let menu = ImportMenu::for_editor_ui(&self.editor_state.editor_ui);
+            let mut cx = PaintCx {
+                backend: &mut *backend,
+            };
+            menu.paint_select(&mut cx, anchor, menu_viewport);
+        }
+
         if ui.locale_picker.open {
             let picker_rect = self.locale_picker_rect(viewport_width);
             let picker = LocalePicker::for_editor_ui(&self.editor_state.editor_ui);
@@ -551,6 +561,15 @@ impl WidgetHost {
                 backend: &mut *backend,
             };
             panel.paint(&mut cx, panel_rect);
+            panel.paint_picker(
+                &mut cx,
+                panel_rect,
+                Rect {
+                    origin: Point2D::new(0.0, 0.0),
+                    size: Point2D::new(viewport_width, viewport_height),
+                },
+                self.now_ms,
+            );
         }
     }
 }

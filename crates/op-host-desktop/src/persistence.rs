@@ -1,20 +1,9 @@
-//! `.pen` / `.op` file Save / Open — desktop-side dialog flow.
+//! Desktop `.pen` / `.op` Save and Open dialog flow.
 //!
-//! The headless load / save core (the canonical serializer, embedded
-//! editor view-state plus legacy `.opmeta` fallback,
-//! legacy-`DocPayload` detection, and the `EditorState`
-//! preference-carry helpers) lives in
-//! [`op_host_services::doc_io`]; this module keeps the rfd / winit dialog
-//! flow — the Save / Save-As / Open pickers, the file-menu
-//! [`run_action`] router, and the native error dialog — and imports the
-//! headless functions back.
-//!
-//! The native host's single source of truth is
-//! `op_editor_core::EditorState` (built on the canonical
-//! `jian_ops_schema::PenDocument`): Save serializes `editor_state.doc`
-//! straight to canonical `.op` JSON and Open re-seeds `EditorState`
-//! via the shared parser the TS editor / Jian apps use. See `doc_io`
-//! for the on-disk format, editor metadata, and legacy-file handling.
+//! Headless serialization, editor metadata, legacy-file handling, and preference preservation
+//! live in [`op_host_services::doc_io`]. This module owns the native pickers, [`run_action`]
+//! routing, and error dialogs. `op_editor_core::EditorState` remains the source of truth: Save
+//! writes its canonical document and Open recreates it through the shared parser.
 
 use std::path::PathBuf;
 
@@ -341,6 +330,22 @@ pub fn run_action(
             host.mark_editor_state_dirty();
             ActionOutcome::Noop
         }
+        FileAction::ImportHtml => {
+            let path = match rfd::FileDialog::new()
+                .set_title(op_i18n::translate(
+                    host.editor_state().editor_ui.locale,
+                    "dialog.pickerOpenTitle",
+                ))
+                .add_filter("HTML", &["html", "htm"])
+                .pick_file()
+            {
+                Some(p) => p,
+                None => return ActionOutcome::Noop,
+            };
+            // Same worker-thread rationale as the Figma branch: the CSS
+            // cascade + resource fetch takes seconds on a real page.
+            ActionOutcome::HtmlImportStarted(path)
+        }
         FileAction::ImportFigma => {
             let path = match rfd::FileDialog::new()
                 .set_title(op_i18n::translate(
@@ -576,6 +581,48 @@ mod tests {
             .available_models
             .iter()
             .any(|m| m.builtin_provider_id.as_deref() == Some(builtin_id.as_str())));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(sidecar_path(&path));
+    }
+
+    #[test]
+    fn opening_op_preserves_font_catalog_and_detects_only_real_missing_families() {
+        let mut host = WidgetHostNative::new();
+        {
+            let ui = &mut host.editor_state_mut().editor_ui;
+            ui.font_import_supported = true;
+            ui.system_fonts_loaded = true;
+            ui.system_font_families = std::sync::Arc::new(vec!["PingFang SC".into()]);
+            ui.bundled_font_families = std::sync::Arc::new(vec!["Inter".into()]);
+            ui.imported_font_families = std::sync::Arc::new(vec!["Brand Sans".into()]);
+        }
+        let doc = jian_ops_schema::load_str(
+            r#"{"version":"1.0.0","children":[
+                {"type":"text","id":"system","content":"系统字体","fontFamily":"pingfang sc"},
+                {"type":"text","id":"bundled","content":"Bundled","fontFamily":"INTER"},
+                {"type":"text","id":"imported","content":"Imported","fontFamily":"brand sans"},
+                {"type":"text","id":"css-stack","content":"Stack","fontFamily":"Inter,ui-sans-serif,system-ui,-apple-system,\"PingFang SC\",sans-serif"},
+                {"type":"text","id":"generic","content":"Generic","fontFamily":"sans-serif"},
+                {"type":"text","id":"missing","content":"Missing","fontFamily":"__MissingOpFont__"}
+            ]}"#,
+        )
+        .expect("fixture JSON parses")
+        .value;
+        let path = temp_op_path("open-font-matching");
+        save_to_path(&EditorState::from_document(doc), &path).expect("save succeeds");
+        let mut current_path = None;
+        assert!(open_path(&mut host, path.clone(), &mut current_path, None));
+        let ui = &host.editor_state().editor_ui;
+        assert!(ui.font_import_supported);
+        assert!(ui.system_fonts_loaded);
+        assert_eq!(&*ui.system_font_families, &["PingFang SC"]);
+        assert_eq!(&*ui.bundled_font_families, &["Inter"]);
+        assert_eq!(&*ui.imported_font_families, &["Brand Sans"]);
+        assert!(ui.missing_fonts_modal_open);
+        let entries = &ui.missing_fonts_prompt.as_ref().expect("prompt").entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].family, "__MissingOpFont__");
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(sidecar_path(&path));

@@ -26,7 +26,7 @@ use op_editor_host_core::codegen_session::run_pipeline;
 pub use op_editor_host_core::codegen_session::{CodegenDelta, CodegenResult, CodegenSession};
 use op_host_native::WidgetHostNative;
 
-use crate::chat_session::provider_for_selected_model;
+use crate::chat_session::{provider_for_selected_model, selected_cli_model_id};
 
 /// Pump the in-flight generation's deltas into `editor_state.codegen`.
 /// Clears `current` once the turn finishes and parks the completed result
@@ -174,6 +174,13 @@ pub fn launch_codegen_if_pending(
     };
     // Capture the target framework BEFORE `input` is moved into the worker.
     let framework = host.editor_state().codegen.framework;
+    if let Some(error) = fixed_provider_launch_error(host) {
+        let cg = &mut host.editor_state_mut().codegen;
+        cg.error = Some(error);
+        cg.phase = op_editor_core::codegen::CodegenPhase::Error;
+        return true;
+    }
+    let model = selected_cli_model_id(host);
     let Some(provider) = provider_for_selected_model(host) else {
         let cg = &mut host.editor_state_mut().codegen;
         cg.error = Some("No model configured".into());
@@ -196,8 +203,50 @@ pub fn launch_codegen_if_pending(
         cg.phase = op_editor_core::codegen::CodegenPhase::Generating;
         cg.selection_snapshot = selection_snapshot;
     }
-    *current = Some(CodegenSession::start(provider, input, framework));
+    *current = Some(CodegenSession::start_with_model(
+        provider, input, framework, model,
+    ));
     true
+}
+
+/// Built-in and ACP selections carry their own ready-state and are validated
+/// while constructing the provider. Fixed CLI providers must have completed
+/// the connect probe; otherwise the default agent index would silently spawn
+/// an unconfigured Claude turn and fail much later inside a chunk request.
+fn fixed_provider_launch_error(host: &WidgetHostNative) -> Option<String> {
+    use op_editor_core::agent_settings::ProviderConnectPhase;
+
+    let state = host.editor_state();
+    if state
+        .chat
+        .selected_model_entry()
+        .is_some_and(|entry| entry.builtin_provider_id.is_some() || entry.acp_agent_id().is_some())
+    {
+        return None;
+    }
+    let provider = *op_editor_core::AgentProvider::ALL.get(state.editor_ui.chat_selected_agent)?;
+    let settings = &state.editor_ui.agent_settings;
+    if settings.provider_verified_connected(provider) {
+        return None;
+    }
+    let idx = op_editor_core::agent_settings::AgentSettings::provider_index(provider);
+    let connection = settings.provider_connection.get(idx)?;
+    Some(match connection.phase {
+        ProviderConnectPhase::Probing => format!(
+            "{} is still connecting. Try code generation again when the connection check finishes.",
+            provider.name()
+        ),
+        ProviderConnectPhase::Error => connection.error.clone().unwrap_or_else(|| {
+            format!(
+                "{} is not available. Reconnect it in Agent Settings before generating code.",
+                provider.name()
+            )
+        }),
+        ProviderConnectPhase::Idle | ProviderConnectPhase::Connected => format!(
+            "Connect {} in Agent Settings before generating code.",
+            provider.name()
+        ),
+    })
 }
 
 /// Drain a Cancel request raised by the Code panel (TS parity:
@@ -307,7 +356,8 @@ mod tests {
 
     /// A cancel raised mid-run stops the pipeline at the next hook point:
     /// the in-flight request's stream is abandoned, no later phase is
-    /// dispatched, and the only delta is the terminal Aborted failure.
+    /// dispatched. The planning-running snapshot precedes the cancellation;
+    /// no progress is emitted after the terminal Aborted failure.
     #[test]
     fn run_pipeline_cancel_mid_run_stops_dispatch_and_aborts() {
         let plan = r#"{"chunks":[{"id":"c1","name":"Root","nodeIds":["n1"],"role":"r","suggestedComponentName":"Root","dependencies":[]}],"sharedStyles":[],"rootLayout":{"direction":"column","gap":0,"responsive":false}}"#;
@@ -327,8 +377,9 @@ mod tests {
         drop(tx);
 
         let deltas: Vec<CodegenDelta> = rx.into_iter().collect();
-        assert_eq!(deltas.len(), 1, "no Progress after a canceled stream");
-        match &deltas[0] {
+        assert_eq!(deltas.len(), 2, "running snapshot then terminal failure");
+        assert!(matches!(deltas[0], CodegenDelta::Progress(_)));
+        match &deltas[1] {
             CodegenDelta::Failed(message) => assert!(message.contains("Aborted")),
             _ => panic!("expected the Aborted terminal failure"),
         }
@@ -349,6 +400,7 @@ mod tests {
             rx,
             finished: false,
             framework: Framework::React,
+            model: None,
             cancel: Arc::new(AtomicBool::new(false)),
             run_epoch: 1,
         });
@@ -402,6 +454,7 @@ mod tests {
             rx: rx_live,
             finished: false,
             framework: Framework::React,
+            model: None,
             cancel: Arc::new(AtomicBool::new(false)),
             run_epoch: 1,
         });
@@ -416,6 +469,27 @@ mod tests {
         assert!(launch_codegen_if_pending(&mut host, &mut current));
         assert!(!host.editor_state().codegen.pending_generate);
         assert_eq!(host.editor_state().codegen.phase, CodegenPhase::Error);
+    }
+
+    #[test]
+    fn disconnected_fixed_provider_fails_before_spawning_a_worker() {
+        use op_editor_core::codegen::CodegenPhase;
+
+        let mut host = WidgetHostNative::new();
+        host.editor_state_mut().codegen.pending_generate = true;
+        let mut current = None;
+
+        assert!(launch_codegen_if_pending(&mut host, &mut current));
+        assert!(current.is_none(), "an unconfigured CLI must not be spawned");
+        let cg = &host.editor_state().codegen;
+        assert_eq!(cg.phase, CodegenPhase::Error);
+        assert!(
+            cg.error
+                .as_deref()
+                .is_some_and(|message| message.contains("Agent Settings")),
+            "error should direct the user to provider setup: {:?}",
+            cg.error
+        );
     }
 
     /// Every `start` stamps a strictly larger run epoch, so the run that

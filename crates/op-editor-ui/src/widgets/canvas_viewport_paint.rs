@@ -13,9 +13,13 @@
 //! only the viewport transform — no second layout pass, no variable
 //! lookup.
 
-use crate::layout_scene::{regular_polygon_points, SceneGradient, SceneNode};
+use crate::layout_scene::{regular_polygon_points, SceneNode};
 use crate::layout_scene::{Effect, NodeKind};
 use crate::widgets::canvas_viewport::EditCaret;
+use crate::widgets::canvas_viewport_fill_layers::{
+    fill_layer_fallback_color, paint_clipped_fill_layers_with, paint_clipped_shape_rich_fill_layer,
+    paint_fill_layers_then_stroke, paint_svg_path_fill_layers, paint_svg_path_gradient,
+};
 use crate::widgets::canvas_viewport_image::paint_image_node;
 use crate::widgets::canvas_viewport_overlay::{
     align_stroke_rect, paint_fill_then_stroke, scaled_non_uniform_corner_radii,
@@ -102,10 +106,45 @@ fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: Rect, zoom:
     let inner = node.arc_inner_radius.unwrap_or(0.0).clamp(0.0, 1.0);
     let has_arc = node.arc_start_angle.is_some() || node.arc_sweep_angle.is_some() || inner > 0.001;
     let sweep = node.arc_sweep_angle.unwrap_or(360.0);
-    // A full-circle sweep with no donut hole is just a plain oval.
-    if !has_arc || (sweep.abs() >= 359.9 && inner <= 0.001) {
-        if let Some(fill) = node.fill {
-            cx.backend.fill_oval(world_rect, fill);
+    let plain_oval = !has_arc || (sweep.abs() >= 359.9 && inner <= 0.001);
+    let arc = (!plain_oval).then(|| {
+        arc_polygon(
+            world_rect,
+            node.arc_start_angle.unwrap_or(0.0),
+            sweep,
+            inner,
+        )
+    });
+    let layered = paint_clipped_fill_layers_with(
+        cx,
+        node,
+        world_rect,
+        |backend| {
+            if let Some(poly) = arc.as_deref() {
+                backend.clip_polygon(poly);
+            } else {
+                backend.clip_oval(world_rect);
+            }
+        },
+        |cx, layer| {
+            if paint_clipped_shape_rich_fill_layer(cx, node, layer, world_rect, zoom) {
+                return;
+            }
+            let Some(fill) = fill_layer_fallback_color(layer) else {
+                return;
+            };
+            // The exact anti-aliased silhouette is already installed as the
+            // clip above. Painting that same edge a second time would multiply
+            // clip and draw coverage, leaving a dark/shrunken fringe.
+            cx.backend.fill_rect(world_rect, fill);
+        },
+    );
+
+    if plain_oval {
+        if !layered {
+            if let Some(fill) = node.fill {
+                cx.backend.fill_oval(world_rect, fill);
+            }
         }
         if let Some(stroke) = node.stroke {
             let w = stroke.width * zoom;
@@ -114,10 +153,11 @@ fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: Rect, zoom:
         }
         return;
     }
-    let start = node.arc_start_angle.unwrap_or(0.0);
-    let poly = arc_polygon(world_rect, start, sweep, inner);
-    if let Some(fill) = node.fill {
-        cx.backend.fill_polygon(&poly, fill);
+    let poly = arc.as_deref().expect("non-oval ellipse has arc geometry");
+    if !layered {
+        if let Some(fill) = node.fill {
+            cx.backend.fill_polygon(poly, fill);
+        }
     }
     if let Some(stroke) = node.stroke {
         let w = stroke.width * zoom;
@@ -136,7 +176,7 @@ fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: Rect, zoom:
             };
             cx.backend.stroke_oval(inner_rect, stroke.color, w);
         } else {
-            cx.backend.stroke_polygon(&poly, stroke.color, w);
+            cx.backend.stroke_polygon(poly, stroke.color, w);
         }
     }
 }
@@ -694,8 +734,10 @@ fn paint_node_inner<'a>(
             // fill/stroke painter. Without this branch a Frame whose
             // primary fill is `PenFill::Image { url }` only shows the
             // grey placeholder + its children, never the image.
-            if let Some(src) = node.image_src.as_deref() {
-                paint_image_node(cx, node, world_rect, zoom, src);
+            if paint_fill_layers_then_stroke(cx, node, world_rect, zoom) {
+                // painted
+            } else if let Some(src) = node.image_src.as_deref() {
+                paint_image_node(cx, node, world_rect, zoom, src, true);
             } else {
                 paint_fill_then_stroke(cx, node, world_rect, zoom, node.fill);
             }
@@ -769,17 +811,19 @@ fn paint_node_inner<'a>(
             // checkbox / slider / progress / radio_group / number_input
             // / text_area) paint their recognizable static visual on the
             // design surface instead of the bare rect.
-            if paint_widget_visual(cx, node, world_rect, zoom) {
-                // painted
-            } else if let Some(src) = node.image_src.as_deref() {
-                // Image nodes land as `kind="rect"` (the loader rewrites
-                // their variant so non-image paths keep working). When a
-                // `src` is carried, paint the bitmap; the grey `fill`
-                // remains as the placeholder visible while the decoder
-                // is missing the bytes (corrupt URL / unsupported codec).
-                paint_image_node(cx, node, world_rect, zoom, src);
-            } else {
-                paint_fill_then_stroke(cx, node, world_rect, zoom, node.fill);
+            if !paint_widget_visual(cx, node, world_rect, zoom)
+                && !paint_fill_layers_then_stroke(cx, node, world_rect, zoom)
+            {
+                if let Some(src) = node.image_src.as_deref() {
+                    // Image nodes land as `kind="rect"` (the loader rewrites
+                    // their variant so non-image paths keep working). When a
+                    // `src` is carried, paint the bitmap; the grey `fill`
+                    // remains as the placeholder visible while the decoder
+                    // is missing the bytes (corrupt URL / unsupported codec).
+                    paint_image_node(cx, node, world_rect, zoom, src, true);
+                } else {
+                    paint_fill_then_stroke(cx, node, world_rect, zoom, node.fill);
+                }
             }
             // A `rectangle` is a CONTAINER in the canonical schema (it
             // carries `clipContent` like Frame / Group), so models nest
@@ -799,12 +843,14 @@ fn paint_node_inner<'a>(
             }
         }
         NodeKind::Ellipse => {
-            if let Some(src) = node.image_src.as_deref() {
+            if !node.fill_layers.is_empty() {
+                paint_ellipse(cx, node, world_rect, zoom);
+            } else if let Some(src) = node.image_src.as_deref() {
                 // Image-fill ellipse: paint the bitmap clipped to the
                 // ellipse silhouette via skia's `clip_oval`-style
                 // approximation (no native clip_oval on the trait, so
                 // fall back to the rect-clip path the painter has).
-                paint_image_node(cx, node, world_rect, zoom, src);
+                paint_image_node(cx, node, world_rect, zoom, src, true);
                 if let Some(stroke) = node.stroke {
                     cx.backend
                         .stroke_oval(world_rect, stroke.color, stroke.width * zoom);
@@ -815,14 +861,30 @@ fn paint_node_inner<'a>(
         }
         NodeKind::Polygon => {
             let pts = regular_polygon_points(world_rect, node.polygon_sides);
-            // Image fills paint the bitmap in the AABB underneath the
-            // polygon outline; the polygon silhouette is then drawn
-            // by the stroke. A perfect clip-to-polygon path lands when
-            // `RenderBackend` grows a polygon-clip primitive.
-            if let Some(src) = node.image_src.as_deref() {
-                paint_image_node(cx, node, world_rect, zoom, src);
-            } else if let Some(fill) = node.fill {
-                cx.backend.fill_polygon(&pts, fill);
+            let layered = paint_clipped_fill_layers_with(
+                cx,
+                node,
+                world_rect,
+                |backend| backend.clip_polygon(&pts),
+                |cx, layer| {
+                    if !paint_clipped_shape_rich_fill_layer(cx, node, layer, world_rect, zoom) {
+                        if let Some(fill) = fill_layer_fallback_color(layer) {
+                            // Let the polygon clip provide the only AA edge.
+                            cx.backend.fill_rect(world_rect, fill);
+                        }
+                    }
+                },
+            );
+            if !layered {
+                // Image fills paint the bitmap in the AABB underneath the
+                // polygon outline; the polygon silhouette is then drawn
+                // by the stroke. A perfect clip-to-polygon path lands when
+                // `RenderBackend` grows a polygon-clip primitive.
+                if let Some(src) = node.image_src.as_deref() {
+                    paint_image_node(cx, node, world_rect, zoom, src, true);
+                } else if let Some(fill) = node.fill {
+                    cx.backend.fill_polygon(&pts, fill);
+                }
             }
             if let Some(stroke) = node.stroke {
                 cx.backend
@@ -869,12 +931,32 @@ fn paint_node_inner<'a>(
             // to the straight `points` polyline.
             let polyline = flatten_path_points(node);
             let points = polyline.as_slice();
-            // A closed path with a fill paints its enclosed area.
-            let filled = node.path_closed && node.fill.is_some();
-            if filled {
-                let world = world_path_points(points, viewport_origin, zoom);
+            // A closed path with a fill paints its enclosed area. Canonical
+            // fill stacks share the same ordering/blend compositor as other
+            // shapes while retaining the polyline's exact silhouette.
+            let world = node
+                .path_closed
+                .then(|| world_path_points(points, viewport_origin, zoom));
+            let layered = world.as_ref().is_some_and(|world| {
+                paint_clipped_fill_layers_with(
+                    cx,
+                    node,
+                    world_rect,
+                    |backend| backend.clip_polygon(world.as_slice()),
+                    |cx, layer| {
+                        if !paint_clipped_shape_rich_fill_layer(cx, node, layer, world_rect, zoom) {
+                            if let Some(fill) = fill_layer_fallback_color(layer) {
+                                // Let the path clip provide the only AA edge.
+                                cx.backend.fill_rect(world_rect, fill);
+                            }
+                        }
+                    },
+                )
+            });
+            let filled = node.path_closed && (layered || node.fill.is_some());
+            if filled && !layered {
                 cx.backend
-                    .fill_polygon(world.as_slice(), node.fill.unwrap());
+                    .fill_polygon(world.as_ref().unwrap().as_slice(), node.fill.unwrap());
             }
             // Stroke: an explicit stroke always paints; with no
             // stroke, only an UNfilled path strokes (so it stays
@@ -971,61 +1053,21 @@ pub(crate) fn paint_svg_path_node(
     zoom: f32,
     d: &str,
 ) {
-    // Gradient-filled paths paint through the dedicated gradient
-    // method (real shader on native, solid first-stop fallback on
-    // backends without one); solid / image fills fall back to the
-    // node's resolved `fill` colour.
-    match node.gradient.as_ref() {
-        Some(SceneGradient::Linear {
-            angle_deg,
-            opacity,
-            stops,
-        }) => {
-            let flat: Vec<(f32, crate::Color)> =
-                stops.iter().map(|s| (s.offset, s.color)).collect();
-            cx.backend
-                .fill_svg_path_in_rect_linear_gradient_with_fill_rule(
-                    d,
-                    world_rect,
-                    &flat,
-                    *angle_deg,
-                    *opacity,
-                    node.even_odd_fill,
-                );
-        }
-        Some(SceneGradient::Radial {
-            cx: gx,
-            cy,
-            radius,
-            opacity,
-            stops,
-        }) => {
-            let flat: Vec<(f32, crate::Color)> =
-                stops.iter().map(|s| (s.offset, s.color)).collect();
-            cx.backend
-                .fill_svg_path_in_rect_radial_gradient_with_fill_rule(
-                    d,
-                    world_rect,
-                    &flat,
-                    *gx,
-                    *cy,
-                    *radius,
-                    *opacity,
-                    node.even_odd_fill,
-                );
-        }
-        // Mesh gradients are a round-rect-only feature in v1 — there's
-        // no per-vertex SVG-path fill path. Degrade to the node's
-        // resolved first-vertex solid (baked by the loader) so a
-        // mesh-filled path still paints.
-        Some(SceneGradient::Mesh { .. }) | None => {
-            if let Some(fill) = node.fill {
-                cx.backend.fill_svg_path_in_rect_with_fill_rule(
-                    d,
-                    world_rect,
-                    fill,
-                    node.even_odd_fill,
-                );
+    let layered = paint_svg_path_fill_layers(cx, node, world_rect, zoom, d);
+    if !layered {
+        // Gradient-filled paths paint through the dedicated gradient method
+        // (real shader on native, solid first-stop fallback elsewhere).
+        match node.gradient.as_ref() {
+            Some(gradient) => paint_svg_path_gradient(cx, node, gradient, world_rect, d, node.fill),
+            None => {
+                if let Some(fill) = node.fill {
+                    cx.backend.fill_svg_path_in_rect_with_fill_rule(
+                        d,
+                        world_rect,
+                        fill,
+                        node.even_odd_fill,
+                    );
+                }
             }
         }
     }
@@ -1065,3 +1107,7 @@ mod reveal_tests;
 #[cfg(test)]
 #[path = "canvas_viewport_stroke_align_tests.rs"]
 mod stroke_align_tests;
+
+#[cfg(test)]
+#[path = "canvas_viewport_layered_shape_tests.rs"]
+mod layered_shape_tests;

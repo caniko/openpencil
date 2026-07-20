@@ -29,6 +29,17 @@
 //! - **componentName checks are string-only**: TS regex-tests whatever
 //!   truthy value `contract.componentName` holds (coercing non-strings);
 //!   Rust only checks string names (validate-contract.ts:8).
+//! - **Safe assembly**: incomplete or wholly unusable plans remain available.
+//!   Partial assembly omits failed/skipped/blocked dependency chains; partial
+//!   or degraded results that can be repaired also retain the plan for retry.
+//! - **Failure submissions**: explicit `failed` / `skipped` results only
+//!   require `chunkId` (plus an optional `error`) and may later be replaced
+//!   by resubmitting that chunk. Unknown chunk ids are always rejected.
+
+#[path = "codegen_plan_store_assembly.rs"]
+mod assembly;
+#[path = "codegen_plan_store_dependencies.rs"]
+mod dependencies;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,6 +47,10 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
+
+use dependencies::DependencyState;
+
+pub(crate) use assembly::assemble_plan;
 
 /// TS `TTL_MS = 30 * 60 * 1000` (codegen-plan-store.ts:31).
 const TTL_MS: u64 = 30 * 60 * 1000;
@@ -50,6 +65,7 @@ struct PlanState {
     order: HashMap<String, usize>,
     results: HashMap<String, Value>,
     statuses: HashMap<String, String>,
+    attempts: HashMap<String, u32>,
     last_activity_ms: u64,
 }
 
@@ -385,6 +401,9 @@ pub(crate) fn validate_contract(result: &Value) -> Result<Value, String> {
     };
 
     let mut issues: Vec<String> = Vec::new();
+    if code.trim().is_empty() {
+        issues.push("generated code is empty".to_string());
+    }
     let component_name = contract
         .get("componentName")
         .and_then(Value::as_str)
@@ -428,6 +447,9 @@ pub(crate) fn create_plan(plan: &Value, all_nodes: &[Value]) -> Result<Value, St
         .get("chunks")
         .and_then(Value::as_array)
         .ok_or_else(|| "plan.chunks must be an array".to_string())?;
+    if chunks.is_empty() {
+        return Err("Plan needs at least one chunk".to_string());
+    }
     // Structural normalization Rust needs up front (TS would TypeError
     // mid-validation on these shapes — see module docs).
     for chunk in chunks {
@@ -459,8 +481,11 @@ pub(crate) fn create_plan(plan: &Value, all_nodes: &[Value]) -> Result<Value, St
         .collect();
 
     let mut statuses: HashMap<String, String> = HashMap::new();
+    let mut attempts: HashMap<String, u32> = HashMap::new();
     for chunk in chunks {
-        statuses.insert(chunk_id(chunk).unwrap_or("?").to_string(), "pending".into());
+        let id = chunk_id(chunk).unwrap_or("?").to_string();
+        statuses.insert(id.clone(), "pending".into());
+        attempts.insert(id, 0);
     }
     let state = PlanState {
         chunks: chunks.clone(),
@@ -468,6 +493,7 @@ pub(crate) fn create_plan(plan: &Value, all_nodes: &[Value]) -> Result<Value, St
         order: order_map,
         results: HashMap::new(),
         statuses,
+        attempts,
         last_activity_ms: now_ms(),
     };
     lock_plans().insert(plan_id.clone(), state);
@@ -492,15 +518,45 @@ pub(crate) fn submit_chunk_result(
         .ok_or_else(|| format!("Plan {plan_id} not found"))?;
     state.last_activity_ms = now_ms(); // TS touch(planId)
 
-    let validation = validate_contract(result)?;
-    let valid = validation
-        .get("valid")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let result_chunk_id = result
         .get("chunkId")
         .and_then(Value::as_str)
         .ok_or_else(|| "result.chunkId must be a string".to_string())?;
+    if !state.statuses.contains_key(result_chunk_id) {
+        return Err(format!(
+            "Chunk {result_chunk_id} is not part of plan {plan_id}; use a chunkId from executionPlan"
+        ));
+    }
+
+    let explicit_terminal = matches!(status_override, Some("failed") | Some("skipped"));
+    let current_dependencies = DependencyState::resolve(&state.chunks, &state.statuses);
+    let blockers = current_dependencies.blockers(result_chunk_id);
+    if !explicit_terminal && !blockers.is_empty() {
+        return Err(format!(
+            "Chunk {result_chunk_id} is blocked by failed/skipped dependencies: {}. Retry those dependencies first; the plan remains available.",
+            blockers.join(", ")
+        ));
+    }
+    let validation = if explicit_terminal {
+        let reason = result
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or_else(|| {
+                if status_override == Some("skipped") {
+                    "chunk was explicitly skipped"
+                } else {
+                    "chunk generation failed"
+                }
+            });
+        json!({ "valid": false, "issues": [reason] })
+    } else {
+        validate_contract(result)?
+    };
+    let valid = validation
+        .get("valid")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let status = match status_override {
         Some("failed") => "failed",
@@ -508,12 +564,31 @@ pub(crate) fn submit_chunk_result(
         _ if valid => "done",
         _ => "degraded",
     };
+    // A dependency resubmission may change its code or contract. Previously
+    // generated descendants are stale and must be regenerated; pending and
+    // explicitly terminal descendants keep their local state.
+    for dependent in DependencyState::dependents(&state.chunks, result_chunk_id) {
+        if matches!(
+            state.statuses.get(&dependent).map(String::as_str),
+            Some("done") | Some("degraded")
+        ) {
+            state.statuses.insert(dependent.clone(), "pending".into());
+            state.results.remove(&dependent);
+        }
+    }
     state
         .results
         .insert(result_chunk_id.to_string(), result.clone());
     state
         .statuses
         .insert(result_chunk_id.to_string(), status.to_string());
+    let attempt = state
+        .attempts
+        .entry(result_chunk_id.to_string())
+        .or_default();
+    *attempt = attempt.saturating_add(1);
+    let attempt = *attempt;
+    let dependency_state = DependencyState::resolve(&state.chunks, &state.statuses);
 
     // progress over the ORIGINAL chunk order (TS maps state.plan.chunks).
     let progress: Vec<Value> = state
@@ -528,13 +603,22 @@ pub(crate) fn submit_chunk_result(
             if let Some(name) = c.get("name") {
                 entry.insert("name".into(), name.clone());
             }
+            let local_status = state
+                .statuses
+                .get(id)
+                .map(String::as_str)
+                .unwrap_or("pending");
+            let effective_status = dependency_state.effective_status(id, local_status);
+            entry.insert("status".into(), json!(effective_status));
+            if effective_status == "blocked" {
+                entry.insert("blockedBy".into(), json!(dependency_state.blockers(id)));
+                if local_status != "pending" {
+                    entry.insert("submittedStatus".into(), json!(local_status));
+                }
+            }
             entry.insert(
-                "status".into(),
-                json!(state
-                    .statuses
-                    .get(id)
-                    .map(String::as_str)
-                    .unwrap_or("pending")),
+                "attempts".into(),
+                json!(state.attempts.get(id).copied().unwrap_or(0)),
             );
             if let Some(result) = state.results.get(id) {
                 entry.insert("result".into(), result.clone());
@@ -543,21 +627,31 @@ pub(crate) fn submit_chunk_result(
         })
         .collect();
 
-    // nextChunk: first pending chunk (in topo order) whose deps all settled.
+    // nextChunk: first pending chunk whose dependencies produced usable code.
+    // Failed/skipped dependency chains are recursively blocked, not treated as
+    // settled work with null contracts.
     let mut next_chunk: Option<Value> = None;
     for chunk in topo_sort(&state.chunks) {
         let id = chunk_id(chunk).unwrap_or("?");
-        if state.statuses.get(id).map(String::as_str) != Some("pending") {
+        let local_status = state
+            .statuses
+            .get(id)
+            .map(String::as_str)
+            .unwrap_or("pending");
+        if dependency_state.effective_status(id, local_status) != "pending" {
             continue;
         }
         let deps = chunk_dependencies(chunk).map(Vec::as_slice).unwrap_or(&[]);
         let deps_ready = deps.iter().all(|dep| {
+            let dep_id = dep.as_str().unwrap_or("");
+            let dep_status = state
+                .statuses
+                .get(dep_id)
+                .map(String::as_str)
+                .unwrap_or("pending");
             matches!(
-                state
-                    .statuses
-                    .get(dep.as_str().unwrap_or(""))
-                    .map(String::as_str),
-                Some("done") | Some("degraded") | Some("failed") | Some("skipped")
+                dependency_state.effective_status(dep_id, dep_status),
+                "done" | "degraded"
             )
         });
         if deps_ready {
@@ -565,10 +659,6 @@ pub(crate) fn submit_chunk_result(
                 .iter()
                 .map(|dep| {
                     let dep_id = dep.as_str().unwrap_or("");
-                    let dep_status = state.statuses.get(dep_id).map(String::as_str);
-                    if matches!(dep_status, Some("failed") | Some("skipped")) {
-                        return Value::Null;
-                    }
                     state
                         .results
                         .get(dep_id)
@@ -592,48 +682,19 @@ pub(crate) fn submit_chunk_result(
     let mut out = Map::new();
     out.insert("validation".into(), validation);
     out.insert("progress".into(), Value::Array(progress));
+    out.insert(
+        "submission".into(),
+        json!({
+            "chunkId": result_chunk_id,
+            "status": status,
+            "attempt": attempt,
+            "retryable": matches!(status, "failed" | "degraded"),
+        }),
+    );
     if let Some(next) = next_chunk {
         out.insert("nextChunk".into(), next); // dropped when undefined in TS
     }
     Ok(Value::Object(out))
-}
-
-/// TS `assemblePlan(planId, framework)` → `{chunks, contracts,
-/// dependencyGraph, degraded}`. Terminal — removes the plan from the store.
-/// `framework` is accepted but unused, mirroring TS `_framework`.
-pub(crate) fn assemble_plan(plan_id: &str, _framework: &str) -> Result<Value, String> {
-    let mut plans = lock_plans();
-    let state = plans
-        .remove(plan_id)
-        .ok_or_else(|| format!("Plan {plan_id} not found"))?;
-
-    let mut chunks_out: Vec<Value> = Vec::new();
-    let mut contracts: Vec<Value> = Vec::new();
-    let mut dependency_graph = Map::new();
-    let mut degraded = false;
-
-    for chunk in topo_sort(&state.chunks) {
-        let id = chunk_id(chunk).unwrap_or("?");
-        if let Some(result) = state.results.get(id) {
-            chunks_out.push(result.clone());
-            // TS pushes `result.contract` even when absent — JSON null.
-            contracts.push(result.get("contract").cloned().unwrap_or(Value::Null));
-        }
-        dependency_graph.insert(
-            id.to_string(),
-            chunk.get("dependencies").cloned().unwrap_or(json!([])),
-        );
-        if state.statuses.get(id).map(String::as_str) != Some("done") {
-            degraded = true;
-        }
-    }
-
-    Ok(json!({
-        "chunks": chunks_out,
-        "contracts": contracts,
-        "dependencyGraph": dependency_graph,
-        "degraded": degraded,
-    }))
 }
 
 /// TS `cleanPlan(planId)` → `{ok, deleted}`. Idempotent.
