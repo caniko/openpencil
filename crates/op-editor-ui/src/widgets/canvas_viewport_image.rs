@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod decode_registry;
 
 #[cfg(test)]
-use decode_registry::lock_decode_registry_for_tests;
+pub(crate) use decode_registry::lock_decode_registry_for_tests;
 pub use decode_registry::{
     has_pending_decodes, mark_decode_done, mark_decode_failed, note_pending_decode,
     pending_decode_count, take_pending_decodes,

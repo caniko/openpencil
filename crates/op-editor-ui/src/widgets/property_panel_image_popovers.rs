@@ -9,6 +9,7 @@ use crate::widgets::property_panel_image_assets::{
     generate_popover_layout, search_popover_layout, GeneratePopoverView, ImageGenProfileView,
     POPOVER_PAD,
 };
+use crate::widgets::property_panel_image_preview::paint_image_source;
 use crate::widgets::property_panel_layout::VisibleSections;
 use crate::widgets::PaintCx;
 use crate::{Color, ImageAdjustments, ImageDrawMode, Point2D, Rect, TextLayout};
@@ -66,19 +67,14 @@ fn paint_centered_label(
 }
 
 fn paint_data_url_image(cx: &mut PaintCx<'_>, rect: Rect, src: &str, radius: f32) {
-    let Some(bytes) = crate::widgets::property_panel_image_preview::data_url_bytes(src) else {
-        return;
-    };
     cx.backend.save();
     cx.backend.clip_round_rect(rect, radius);
-    cx.backend.draw_image_with_options(
+    paint_image_source(
+        cx,
         rect,
-        jian_ops_schema::node::image_src::paint_image_id(src),
-        &bytes,
+        src,
         ImageDrawMode::Crop,
         ImageAdjustments::default(),
-        1.0,
-        0.0,
     );
     cx.backend.restore();
 }
@@ -424,6 +420,9 @@ pub(crate) fn warning_colors() -> (Color, Color, Color, Color) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::canvas_viewport_image::{
+        cached_bytes_for, lock_decode_registry_for_tests, mark_decode_done, take_pending_decodes,
+    };
     use crate::widgets::property_panel_test_support::CountingBackend;
 
     #[test]
@@ -444,5 +443,44 @@ mod tests {
             backend.images[0].1,
             jian_ops_schema::node::image_src::paint_image_id(src)
         );
+    }
+
+    #[test]
+    fn search_thumb_queues_decode_before_drawing() {
+        let _guard = lock_decode_registry_for_tests();
+        let src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+        let id = jian_ops_schema::node::image_src::paint_image_id(src);
+        let mut backend = CountingBackend {
+            image_decode_ready: Some(false),
+            ..Default::default()
+        };
+
+        paint_data_url_image(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            Rect::xywh(0.0, 0.0, 20.0, 20.0),
+            src,
+            4.0,
+        );
+
+        assert!(backend.images.is_empty(), "pending rasters must not draw");
+        assert_eq!(take_pending_decodes(8), vec![id]);
+        assert!(cached_bytes_for(id).is_some());
+
+        mark_decode_done(id);
+        backend.image_decode_ready = Some(true);
+        paint_data_url_image(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            Rect::xywh(0.0, 0.0, 20.0, 20.0),
+            src,
+            4.0,
+        );
+
+        assert_eq!(backend.images.len(), 1, "ready raster paints next frame");
+        assert_eq!(backend.images[0].1, id);
+        assert_eq!(backend.image_modes, vec![ImageDrawMode::Crop]);
     }
 }

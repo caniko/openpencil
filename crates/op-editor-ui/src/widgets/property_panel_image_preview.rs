@@ -1,5 +1,6 @@
 //! Shared image-fill preview helpers for the Fill row and popover.
 
+use crate::widgets::canvas_viewport_image::{image_source_bytes, note_pending_decode};
 use crate::widgets::PaintCx;
 use crate::{ImageAdjustments, ImageDrawMode, Rect};
 
@@ -9,21 +10,39 @@ pub(crate) fn paint_image_preview(
     src: &str,
     summary: &op_editor_core::ImageFillSummary,
 ) -> bool {
-    let Some(bytes) = data_url_bytes(src) else {
-        return false;
-    };
     cx.backend.save();
     cx.backend.clip_rect(rect);
-    cx.backend.draw_image_with_options(
+    let has_source = paint_image_source(
+        cx,
         rect,
-        src_hash(src),
-        &bytes,
+        src,
         mode_to_draw_mode(summary.mode),
         summary_adjustments(summary),
-        1.0,
-        0.0,
     );
     cx.backend.restore();
+    has_source
+}
+
+/// Paint an image source that participates in the shared asynchronous decode
+/// pipeline. A resolved source returns `true` while its raster is pending so
+/// callers keep their neutral placeholder instead of flashing missing-image UI.
+pub(crate) fn paint_image_source(
+    cx: &mut PaintCx<'_>,
+    rect: Rect,
+    src: &str,
+    mode: ImageDrawMode,
+    adjustments: ImageAdjustments,
+) -> bool {
+    let id = src_hash(src);
+    let Some(bytes) = image_source_bytes(src, id) else {
+        return false;
+    };
+    if !cx.backend.image_decoded(id, bytes.as_ref()) {
+        note_pending_decode(id);
+        return true;
+    }
+    cx.backend
+        .draw_image_with_options(rect, id, bytes.as_ref(), mode, adjustments, 1.0, 0.0);
     true
 }
 
@@ -46,23 +65,6 @@ fn mode_to_draw_mode(mode: op_editor_core::ImageFillMode) -> ImageDrawMode {
         op_editor_core::ImageFillMode::Crop => ImageDrawMode::Crop,
         op_editor_core::ImageFillMode::Tile => ImageDrawMode::Tile,
     }
-}
-
-pub(crate) fn data_url_bytes(src: &str) -> Option<Vec<u8>> {
-    let after_scheme = src.strip_prefix("data:")?;
-    let comma = after_scheme.find(',')?;
-    let meta = &after_scheme[..comma];
-    let payload = &after_scheme[comma + 1..];
-    if !meta.contains(";base64") {
-        return None;
-    }
-    let clean: String = payload
-        .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .collect();
-    use base64::engine::general_purpose::STANDARD as B64;
-    use base64::Engine as _;
-    B64.decode(clean.as_bytes()).ok()
 }
 
 fn src_hash(src: &str) -> u64 {

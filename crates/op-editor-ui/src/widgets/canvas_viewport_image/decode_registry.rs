@@ -89,7 +89,7 @@ pub fn pending_decode_count() -> usize {
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
-pub(super) fn lock_decode_registry_for_tests() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn lock_decode_registry_for_tests() -> std::sync::MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     if let Ok(mut registry) = decodes().lock() {
         *registry = DecodeRegistry::default();
