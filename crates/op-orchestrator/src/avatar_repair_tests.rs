@@ -111,6 +111,44 @@ fn square_clipped_avatar_with_zero_radius_becomes_round() {
     );
 }
 
+#[test]
+fn absolute_avatar_image_is_pinned_to_numeric_slot_bounds() {
+    let doc: jian_ops_schema::PenDocument = serde_json::from_str(
+        r##"{ "version": "1.0", "children": [{
+            "type":"frame", "id":"root", "name":"Screen", "width":390, "height":844,
+            "layout":"vertical", "children":[{
+                "type":"frame", "id":"slot", "name":"Avatar", "role":"avatar",
+                "width":40, "height":40, "layout":"none", "cornerRadius":20,
+                "clipContent":true, "children":[{
+                    "type":"image", "id":"img", "name":"face headshot", "src":"",
+                    "x":3, "y":5, "width":"fill_container", "height":"fill_container"
+                }]
+            }]
+        }] }"##,
+    )
+    .expect("doc");
+    let mut state = op_editor_core::EditorState::from_document(doc);
+    let mut sink = crate::loop_finalize::StateDocSink { state: &mut state };
+
+    crate::avatar_repair::repair_avatar_slots_for_all_roots(&mut sink);
+
+    let root = &state.active_children()[0];
+    let image = find_by_id(root, "img").expect("image");
+    assert_eq!(image.width_px(), Some(40.0));
+    assert_eq!(image.height_px(), Some(40.0));
+    assert_eq!(image.base().x, Some(0.0));
+    assert_eq!(image.base().y, Some(0.0));
+
+    let once = serde_json::to_string(state.active_children()).expect("snapshot");
+    let mut sink = crate::loop_finalize::StateDocSink { state: &mut state };
+    crate::avatar_repair::repair_avatar_slots_for_all_roots(&mut sink);
+    assert_eq!(
+        serde_json::to_string(state.active_children()).expect("snapshot"),
+        once,
+        "absolute avatar repair is idempotent"
+    );
+}
+
 /// The EXACT shape measured in test0711-22.op (23:07 run): slot clipped and
 /// image filling, but `width: fill_container` stretched the avatar into a
 /// page-wide pill. The repair squares it to its height.
@@ -211,6 +249,42 @@ fn fill_container_row_thumbnail_is_squared_but_numeric_wide_thumb_is_kept() {
         Some(120.0),
         "deliberate numeric wide thumb untouched"
     );
+}
+
+#[test]
+fn absolute_row_thumbnail_keeps_numeric_image_bounds_when_squared() {
+    let doc: jian_ops_schema::PenDocument = serde_json::from_str(
+        r##"{ "version": "1.0", "children": [{
+            "type":"frame", "id":"root", "name":"Music Home", "width":390, "height":844,
+            "layout":"vertical", "children":[{
+                "type":"frame", "id":"player", "name":"MiniPlayer",
+                "width":"fill_container", "height":64, "layout":"horizontal",
+                "children":[{
+                    "type":"frame", "id":"art", "name":"MPArt",
+                    "width":"fill_container", "height":40, "layout":"none",
+                    "cornerRadius":8, "clipContent":true, "children":[{
+                        "type":"image", "id":"cover", "name":"album cover", "src":"",
+                        "x":0, "y":0, "width":40, "height":40
+                    }]
+                },{
+                    "type":"text", "id":"title", "name":"Title", "content":"Midnight Static",
+                    "width":"fit_content", "height":"fit_content"
+                }]
+            }]
+        }] }"##,
+    )
+    .expect("doc");
+    let mut state = op_editor_core::EditorState::from_document(doc);
+    let mut sink = crate::loop_finalize::StateDocSink { state: &mut state };
+
+    crate::avatar_repair::repair_avatar_slots_for_all_roots(&mut sink);
+
+    let root = &state.active_children()[0];
+    let slot = find_by_id(root, "art").expect("slot");
+    let image = find_by_id(root, "cover").expect("image");
+    assert_eq!(slot.width_px(), Some(40.0));
+    assert_eq!(image.width_px(), Some(40.0));
+    assert_eq!(image.height_px(), Some(40.0));
 }
 
 /// test0711-22 00:25 shape: "AvatarImg" slot authored fill×fill holding a

@@ -50,6 +50,95 @@ fn fill_of(state: &EditorState, name: &str) -> Option<serde_json::Value> {
     Some(v.get("fill").cloned().unwrap_or(json!(null)))
 }
 
+/// A fixed-size avatar using absolute layout must leave finalize with a
+/// fixed-size image. `fill_container` has no usable cross-axis size in a
+/// `layout: none` parent and resolves the image to zero height.
+#[test]
+fn loop_finalize_keeps_absolute_avatar_image_sized_to_slot() {
+    let mut state = state_with_forest(json!([{
+        "type": "frame",
+        "id": "root",
+        "name": "Music Home",
+        "width": 390,
+        "height": 844,
+        "layout": "vertical",
+        "children": [{
+            "type": "frame",
+            "id": "header",
+            "name": "Header",
+            "width": "fill_container",
+            "height": 64,
+            "layout": "horizontal",
+            "children": [{
+                "type": "frame",
+                "id": "avatar",
+                "name": "Avatar",
+                "role": "avatar",
+                "width": 40,
+                "height": 40,
+                "layout": "none",
+                "cornerRadius": 20,
+                "clipContent": true,
+                "children": [{
+                    "type": "image",
+                    "id": "portrait",
+                    "name": "Portrait",
+                    "src": "https://example.com/avatar.jpg",
+                    "x": 0,
+                    "y": 0,
+                    "width": 40,
+                    "height": 40
+                }]
+            }]
+        }]
+    }]));
+
+    apply_loop_finalize(&mut state);
+
+    let image = find_by_name(state.active_children(), "Portrait").expect("avatar image survives");
+    assert_eq!(image.width_px(), Some(40.0));
+    assert_eq!(
+        image.height_px(),
+        Some(40.0),
+        "absolute avatar image must not be rewritten to fill_container"
+    );
+}
+
+#[test]
+fn loop_finalize_keeps_absolute_row_thumbnail_image_sized_to_slot() {
+    let mut state = state_with_forest(json!([{
+        "type":"frame", "id":"root", "name":"Music Home", "width":390, "height":844,
+        "layout":"vertical", "children":[{
+            "type":"frame", "id":"player", "name":"MiniPlayer",
+            "width":"fill_container", "height":64, "layout":"horizontal",
+            "children":[{
+                "type":"frame", "id":"art", "name":"MPArt",
+                "width":"fill_container", "height":40, "layout":"none",
+                "cornerRadius":8, "clipContent":true, "children":[{
+                    "type":"image", "id":"cover", "name":"Album Cover",
+                    "src":"https://example.com/cover.jpg", "x":0, "y":0,
+                    "width":40, "height":40
+                }]
+            },{
+                "type":"text", "id":"title", "name":"Track Title",
+                "content":"Midnight Static", "width":"fit_content", "height":"fit_content"
+            }]
+        }]
+    }]));
+
+    apply_loop_finalize(&mut state);
+
+    let slot = find_by_name(state.active_children(), "MPArt").expect("thumbnail survives");
+    let image = find_by_name(state.active_children(), "Album Cover").expect("image survives");
+    assert_eq!(slot.width_px(), Some(40.0));
+    assert_eq!(image.width_px(), Some(40.0));
+    assert_eq!(
+        image.height_px(),
+        Some(40.0),
+        "absolute row thumbnail must not be rewritten to fill_container"
+    );
+}
+
 #[test]
 fn loop_finalize_preserves_explicit_mobile_viewport_with_tall_content() {
     let mut state = state_with_forest(json!([{

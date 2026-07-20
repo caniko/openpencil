@@ -2,8 +2,10 @@
 //!
 //! An explicitly named/role-tagged avatar is a fixed SQUARE circle:
 //! `width == height`, `cornerRadius` ≥ half the size, `clipContent: true`,
-//! with its image child filling both axes. Models routinely violate that
-//! contract (measured:
+//! with its image child covering both axes. An auto-layout slot uses
+//! `fill_container`; an explicit `layout: none` slot pins the image to the
+//! slot's numeric size because fill sizing has no flex parent. Models routinely
+//! violate that contract (measured:
 //! GLM-5.2 test0711-2.op built an 88×44 pill holding a 44×44 image — on
 //! canvas it reads as an empty grey circle NEXT TO a square photo). The
 //! shape is a CONTRACT (a round avatar slot is round), so it is repaired
@@ -18,7 +20,7 @@
 //! NUMERIC thumb stays the designer's call.
 
 use crate::types::DocSink;
-use jian_ops_schema::node::container::CornerRadius;
+use jian_ops_schema::node::container::{CornerRadius, LayoutMode};
 use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorCommand, NodeId, PenNodeExt};
 
@@ -121,6 +123,7 @@ fn avatar_slot_repair(
         Some(CornerRadius::PerCorner(corners)) => corners.iter().copied().fold(f64::MAX, f64::min),
         None => 0.0,
     };
+    let absolute_slot = matches!(frame.container.layout.as_ref(), Some(LayoutMode::None));
     // Explicit-avatar branch: the slot ITSELF may carry no numeric
     // height at all (measured: an "AvatarImg" slot authored fill×fill
     // holding a fill×300 headshot resolved as a 42×300 strip down the
@@ -132,21 +135,20 @@ fn avatar_slot_repair(
             Some(height) if height > 0.0 && height <= MAX_AVATAR_SIDE => height,
             Some(_) => return None,
             None => 44.0,
-        };
+        }
+        .round();
         let clips = frame.container.clip_content == Some(true);
-        let image_fills = image_fills_both_axes(only_child);
+        let image_covers = image_covers_slot(only_child, absolute_slot, side);
         let slot_not_square = node.width_px() != Some(side) || node.height_px() != Some(side);
         let slot_not_round = radius + f64::EPSILON < side / 2.0;
-        if !clips || !image_fills || slot_not_square || slot_not_round {
+        if !clips || !image_covers || slot_not_square || slot_not_round {
             let slot_patch = format!(
                 r#"{{"width":{side},"height":{side},"clipContent":true,"cornerRadius":{radius}}}"#,
-                side = side.round(),
+                side = side,
                 radius = (side / 2.0).round()
             );
-            let image_patch = Some((
-                only_child.id_str().to_string(),
-                r#"{"width":"fill_container","height":"fill_container"}"#.to_string(),
-            ));
+            let image_patch_json = image_cover_patch(absolute_slot, side);
+            let image_patch = Some((only_child.id_str().to_string(), image_patch_json));
             return Some((slot_patch, image_patch));
         }
     }
@@ -154,6 +156,7 @@ fn avatar_slot_repair(
     if height <= 0.0 || height > MAX_AVATAR_SIDE {
         return None;
     }
+    let side = height.round();
     let width = node.width_px();
     // Row-thumb branch: only the unbounded flex-steal shape (width
     // fill_container) qualifies — a deliberately wide numeric thumb is a
@@ -166,20 +169,20 @@ fn avatar_slot_repair(
     if !row_thumb {
         return None;
     }
-    let square = width == Some(height);
+    let square = width == Some(side);
     let clips = frame.container.clip_content == Some(true);
-    let image_fills = image_fills_both_axes(only_child);
-    if square && clips && image_fills {
+    let image_covers = image_covers_slot(only_child, absolute_slot, side);
+    if square && clips && image_covers {
         return None;
     }
     let slot_patch = format!(
         r#"{{"width":{h},"height":{h},"clipContent":true}}"#,
-        h = height.round()
+        h = side
     );
-    let image_patch = (!image_fills).then(|| {
+    let image_patch = (!image_covers).then(|| {
         (
             only_child.id_str().to_string(),
-            r#"{"width":"fill_container","height":"fill_container"}"#.to_string(),
+            image_cover_patch(absolute_slot, side),
         )
     });
     Some((slot_patch, image_patch))
@@ -199,6 +202,30 @@ fn node_layout_is_horizontal(node: &PenNode) -> bool {
 fn image_fills_both_axes(node: &PenNode) -> bool {
     matches!(node, PenNode::Image(image)
         if sizing_is_fill_container(&image.width) && sizing_is_fill_container(&image.height))
+}
+
+fn image_is_pinned_to_square(node: &PenNode, side: f64) -> bool {
+    matches!(node, PenNode::Image(_))
+        && node.width_px() == Some(side)
+        && node.height_px() == Some(side)
+        && node.base().x.unwrap_or(0.0).abs() <= f64::EPSILON
+        && node.base().y.unwrap_or(0.0).abs() <= f64::EPSILON
+}
+
+fn image_covers_slot(node: &PenNode, absolute_slot: bool, side: f64) -> bool {
+    if absolute_slot {
+        image_is_pinned_to_square(node, side)
+    } else {
+        image_fills_both_axes(node)
+    }
+}
+
+fn image_cover_patch(absolute_slot: bool, side: f64) -> String {
+    if absolute_slot {
+        format!(r#"{{"x":0,"y":0,"width":{side},"height":{side}}}"#)
+    } else {
+        r#"{"width":"fill_container","height":"fill_container"}"#.to_string()
+    }
 }
 
 fn sizing_is_fill_container(width: &Option<jian_ops_schema::sizing::SizingBehavior>) -> bool {
