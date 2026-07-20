@@ -46,6 +46,10 @@ impl DesktopApp {
             || self.host.git_author_focus_active()
             || self.host.git_branch_create_focus_active()
             || self.host.git_clone_input_active();
+        let image_popover_open = {
+            let panel = &self.host.editor_state().editor_ui.image_panel;
+            panel.search_open || panel.generate_open
+        };
         match logical_key {
             // Named-key shortcuts fire only when no Cmd/Ctrl is held.
             Key::Named(NamedKey::Backspace) if !self.zoom_modifier => {
@@ -98,6 +102,34 @@ impl DesktopApp {
                 consumed = self
                     .host
                     .preview_dispatch_key("ArrowDown", self.shift_modifier);
+            }
+            Key::Named(NamedKey::ArrowLeft) if !self.zoom_modifier && image_popover_open => {
+                consumed = self
+                    .host
+                    .apply_image_panel_caret(false, self.shift_modifier);
+            }
+            Key::Named(NamedKey::ArrowRight) if !self.zoom_modifier && image_popover_open => {
+                consumed = self.host.apply_image_panel_caret(true, self.shift_modifier);
+            }
+            Key::Named(NamedKey::ArrowLeft) if self.zoom_modifier && image_popover_open => {
+                consumed = self.host.apply_image_panel_edge(false, self.shift_modifier);
+            }
+            Key::Named(NamedKey::ArrowRight) if self.zoom_modifier && image_popover_open => {
+                consumed = self.host.apply_image_panel_edge(true, self.shift_modifier);
+            }
+            Key::Named(NamedKey::Home) if image_popover_open => {
+                consumed = self.host.apply_image_panel_edge(false, self.shift_modifier);
+            }
+            Key::Named(NamedKey::End) if image_popover_open => {
+                consumed = self.host.apply_image_panel_edge(true, self.shift_modifier);
+            }
+            // A single-line image-popover input has no vertical caret motion,
+            // but still owns these keys. Never let them nudge the selected
+            // image behind the popup.
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
+                if !self.zoom_modifier && image_popover_open =>
+            {
+                consumed = true;
             }
             Key::Named(NamedKey::ArrowUp) if !self.zoom_modifier && !settings_focused => {
                 // The inline canvas text editor moves its caret by
@@ -159,7 +191,8 @@ impl DesktopApp {
                 if self.zoom_modifier
                     && self.alt_modifier
                     && !self.shift_modifier
-                    && !settings_focused =>
+                    && !settings_focused
+                    && !image_popover_open =>
             {
                 use op_editor_core::BooleanOp;
                 match ch.to_lowercase().as_str() {
@@ -208,20 +241,6 @@ impl DesktopApp {
                             self.mark_document_saved();
                         }
                     }
-                    // Track C-6: Cmd+P toggles Preview — parity with the
-                    // TopBar Play button (`press.rs`'s `TopBarHit::TogglePreview`).
-                    // Plain Cmd+P (no Shift) is otherwise unbound; Cmd+Shift+P
-                    // is Export Image, a distinct chord below. Allowed even
-                    // while a settings/Git input is focused (same tier as
-                    // Cmd+S / Cmd+O above) so it can also EXIT preview from
-                    // anywhere — preview's own keyboard takeover (Tab/arrows,
-                    // gated on `preview_active()`) only claims unmodified
-                    // named keys, never a Cmd chord, so this always reaches
-                    // `toggle_preview_with_cached_viewport` regardless of
-                    // whether preview currently owns the keyboard.
-                    "p" => {
-                        consumed = self.host.toggle_preview_with_cached_viewport();
-                    }
                     // Cmd+C / X / V / A operate on whichever text input
                     // owns the keyboard (chat / settings / git / property
                     // / rename / variables / model-picker / canvas text
@@ -233,7 +252,16 @@ impl DesktopApp {
                     "x" => consumed = self.handle_cmd_cut(),
                     "v" => consumed = self.handle_cmd_paste(),
                     "a" => consumed = self.host.apply_select_all(),
+                    _ if image_popover_open => consumed = true,
                     _ if settings_focused => {}
+                    // Track C-6: Cmd+P toggles Preview — parity with the
+                    // TopBar Play button (`press.rs`'s `TopBarHit::TogglePreview`).
+                    // A visible image-popover input owns all non-clipboard
+                    // Cmd/Ctrl chords, so this arm intentionally follows its
+                    // guard above.
+                    "p" => {
+                        consumed = self.host.toggle_preview_with_cached_viewport();
+                    }
                     "d" => consumed = self.host.apply_duplicate(),
                     "z" => consumed = self.host.apply_undo(),
                     "y" => consumed = self.host.apply_redo(),
@@ -279,6 +307,7 @@ impl DesktopApp {
                         );
                         consumed = true;
                     }
+                    _ if image_popover_open => consumed = true,
                     _ if settings_focused => {}
                     "z" => consumed = self.host.apply_redo(),
                     "g" => consumed = self.host.apply_ungroup(),
@@ -322,10 +351,10 @@ impl DesktopApp {
             }
             // `[` / `]` — z-order reorder when an input is focused (still gated by apply_reorder internally).
             Key::Character(ref ch) if !self.zoom_modifier => match ch.as_str() {
-                "[" if !settings_focused => {
+                "[" if !settings_focused && !self.host.input_active_pub() => {
                     consumed = self.host.apply_reorder(ReorderDirection::Down)
                 }
-                "]" if !settings_focused => {
+                "]" if !settings_focused && !self.host.input_active_pub() => {
                     consumed = self.host.apply_reorder(ReorderDirection::Up)
                 }
                 _ => {
@@ -373,7 +402,7 @@ impl DesktopApp {
     /// on macOS / Windows the menu accelerator owns Cmd+C and the
     /// winit keydown never reaches `handle_key_pressed`.
     pub(crate) fn handle_cmd_copy(&mut self) -> bool {
-        if self.host.editor_state().chat.focused {
+        if self.host.chat_input_owns_keyboard_pub() {
             let text = self.host.editor_state().chat.input.text();
             if !text.is_empty() {
                 crate::clipboard::set_text(text);
@@ -393,7 +422,7 @@ impl DesktopApp {
     /// clipboard (chat input via its own cut path), else cuts the
     /// document node selection. `pub(crate)` for the Edit-menu path.
     pub(crate) fn handle_cmd_cut(&mut self) -> bool {
-        if self.host.editor_state().chat.focused {
+        if self.host.chat_input_owns_keyboard_pub() {
             if let Some(text) = self.host.chat_input_cut() {
                 crate::clipboard::set_text(&text);
             }

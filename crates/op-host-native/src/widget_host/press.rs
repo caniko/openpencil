@@ -130,6 +130,7 @@ impl WidgetHostNative {
         // Codex stop-gate: right-click outside the variables panel
         // must commit any pending row focus first.
         self.commit_variable_row_focus_if_any();
+        self.close_image_popovers_for_higher_overlay();
         // Any top-most floating panel swallows a right-click on its
         // rect — no context menu opens under them.
         if self.over_topmost_panel(x, y, viewport_w, viewport_h) {
@@ -234,6 +235,7 @@ impl WidgetHostNative {
                 .map(|panel| panel.rect(viewport_width, viewport_height));
         if let Some(panel_rect) = missing_fonts_rect {
             if self.dispatch_missing_fonts_press(panel_rect, Point2D::new(x, y)) {
+                self.close_image_popovers_for_higher_overlay();
                 return true;
             }
         }
@@ -242,24 +244,29 @@ impl WidgetHostNative {
         // panel's before any lower layer can claim it (dispatch in
         // `design_md_press.rs`).
         if self.dispatch_design_md_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         if self.dispatch_icon_picker_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         // Floating Component-Browser panel — painted just under the
         // Design-MD panel; hit-tests right after it.
         if self.dispatch_component_browser_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         if self.editor_state.editor_ui.agent_settings_open
             && self.dispatch_agent_settings_press(x, y, viewport_width, viewport_height)
         {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         // 0-color. Color picker overlay — top-most when open
         //          (dispatch in `color_picker_press.rs`).
         if self.dispatch_color_picker_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
 
@@ -284,6 +291,7 @@ impl WidgetHostNative {
                 && (gp.branch_picker_open || gp.overflow_open)
                 && self.dispatch_git_panel_press(x, y, viewport_width, viewport_height)
             {
+                self.close_image_popovers_for_higher_overlay();
                 return true;
             }
         }
@@ -391,18 +399,22 @@ impl WidgetHostNative {
         }
 
         if self.editor_state.editor_ui.file_menu_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_file_menu_press(x, y, viewport_width);
             return true;
         }
         if self.editor_state.editor_ui.export_dialog_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_export_dialog_press(x, y, viewport_width, viewport_height);
             return true;
         }
         if self.editor_state.editor_ui.figma_import_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_figma_import_press(x, y, viewport_width, viewport_height);
             return true;
         }
         if self.editor_state.editor_ui.login_modal_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_login_modal_press(x, y, viewport_width, viewport_height);
             return true;
         }
@@ -411,6 +423,7 @@ impl WidgetHostNative {
         // button; must hit-test before the TopBar's own block so a
         // re-click on the avatar closes rather than re-toggling.
         if self.editor_state.editor_ui.account_menu_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_account_menu_press(x, y, viewport_width, viewport_height);
             return true;
         }
@@ -450,6 +463,7 @@ impl WidgetHostNative {
         let mut top_bar = TopBar::for_editor_ui(&self.editor_state.editor_ui);
         top_bar.chip_text_w = Some(self.topbar_chip_text_w(&top_bar));
         if let Some(hit) = top_bar.hit_test(top_bar_rect, Point2D::new(x, y)) {
+            self.close_image_popovers_for_higher_overlay();
             let pressed = op_editor_ui::widgets::editor_state_ext::topbar_button_hover(hit);
             self.editor_state.editor_ui.pressed_button =
                 Some(op_editor_core::ButtonPressTarget::TopBar(pressed));
@@ -551,8 +565,9 @@ impl WidgetHostNative {
         if (top_bar_rect).contains(Point2D::new(x, y)) {
             // Other top-bar gaps eat clicks but don't act — still a
             // blank press, so every text input blurs.
+            let image_closed = self.close_image_popovers_for_higher_overlay();
             let blurred = self.blur_text_inputs_on_blank_press();
-            return blurred || rename_committed || text_edit_committed;
+            return image_closed || blurred || rename_committed || text_edit_committed;
         }
 
         // 0b'. Preview (Play) mode — the canvas belongs to the live
@@ -886,6 +901,7 @@ impl WidgetHostNative {
         // 0.9. Floating Git panel — status + interactive actions
         //      (dispatch in `git_press.rs`).
         if self.dispatch_git_panel_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
 

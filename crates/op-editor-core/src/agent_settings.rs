@@ -823,6 +823,20 @@ impl AgentSettings {
         self.acp_agents.len() != before
     }
 
+    /// Active image-generation profile, matching the product fallback of the
+    /// configured id first and the first row second.
+    pub fn active_image_gen_profile(&self) -> Option<&ImageGenProfile> {
+        self.image_gen_profiles
+            .iter()
+            .find(|profile| Some(&profile.id) == self.active_image_gen_profile_id.as_ref())
+            .or_else(|| self.image_gen_profiles.first())
+    }
+
+    pub fn image_generation_configured(&self) -> bool {
+        self.active_image_gen_profile()
+            .is_some_and(|profile| !profile.api_key.trim().is_empty())
+    }
+
     pub fn add_image_gen_profile(&mut self) -> String {
         let n = self.next_image_gen_profile_id.max(1);
         let id = format!("igp-{n}");

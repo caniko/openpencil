@@ -4,6 +4,7 @@ use crate::keyboard_input::ClipboardPayload;
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::sizing::SizingBehavior;
 use op_editor_core::agent_settings::{AcpAgentField, SettingsFocus};
+use op_editor_core::PenNodeExt;
 
 const FIGMA_HTML: &str =
     "<html><!--(figmeta)-->eyJ2IjoxfQ==<!--(figmeta)--><!--(figma)-->T1A=<!--(figma)--></html>";
@@ -178,13 +179,155 @@ fn image_search_paste_owns_keyboard_over_stale_chat_focus() {
     )));
 
     let state = app.host.editor_state();
-    assert_eq!(state.editor_ui.image_panel.search_query, "sunset");
+    assert_eq!(state.editor_ui.image_panel.search_query.text(), "sunset");
     assert!(state.chat.input.text().is_empty());
     assert!(state.chat.pending_attachments.is_empty());
     assert_eq!(state.active_children().len(), 1);
     assert!(state.selection.is_empty());
     assert_eq!(state.clipboard.len(), 1);
     assert!(app.pending_figma_paste.is_none());
+}
+
+#[test]
+fn image_search_keyboard_does_not_leak_into_canvas_shortcuts() {
+    let mut app = DesktopApp::new(None);
+    let state = app.host.editor_state_mut();
+    let _ = state.insert_image_node_at_viewport("Hero photo", "https://x/y.png");
+    state.editor_ui.image_panel.search_open = true;
+    state.editor_ui.image_panel.search_query.set_text("abcd");
+    state.editor_ui.image_panel.search_query.set_caret(2, 0);
+
+    let tool_before = app.host.editor_state().tool;
+    let selected = app.host.editor_state().selection.anchor.clone();
+    let image_before = app
+        .host
+        .editor_state()
+        .selected_node()
+        .expect("selected image")
+        .base()
+        .clone();
+
+    app.handle_key_pressed(&Key::Character("p".into()), Some("p"));
+    assert_eq!(app.host.editor_state().tool, tool_before);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .text(),
+        "abpcd"
+    );
+
+    app.handle_key_pressed(&Key::Named(NamedKey::ArrowUp), None);
+    let image_after_arrow = app
+        .host
+        .editor_state()
+        .selected_node()
+        .expect("image survives arrow")
+        .base();
+    assert_eq!(image_after_arrow.x, image_before.x);
+    assert_eq!(image_after_arrow.y, image_before.y);
+
+    app.handle_key_pressed(&Key::Named(NamedKey::Delete), None);
+    assert_eq!(app.host.editor_state().selection.anchor, selected);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .text(),
+        "abpd"
+    );
+
+    app.handle_key_pressed(&Key::Character("[".into()), Some("["));
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .text(),
+        "abp[d"
+    );
+
+    app.zoom_modifier = true;
+    app.handle_key_pressed(&Key::Character("a".into()), Some("a"));
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .highlight_range(),
+        Some((0, 5))
+    );
+    assert_eq!(app.host.editor_state().selection.anchor, selected);
+
+    let chat_was_focused = app.host.editor_state().chat.focused;
+    app.handle_key_pressed(&Key::Character("j".into()), Some("j"));
+    assert_eq!(app.host.editor_state().chat.focused, chat_was_focused);
+
+    app.handle_key_pressed(&Key::Character(",".into()), Some(","));
+    assert!(app.host.editor_state().editor_ui.agent_settings_open);
+    assert!(!app.host.editor_state().editor_ui.image_panel.search_open);
+    assert!(!app.host.editor_state().editor_ui.image_panel.generate_open);
+}
+
+#[test]
+fn image_search_home_end_and_modified_arrows_move_or_extend_selection() {
+    let mut app = DesktopApp::new(None);
+    let panel = &mut app.host.editor_state_mut().editor_ui.image_panel;
+    panel.search_open = true;
+    panel.search_query.set_text("a你bc");
+    panel.search_query.set_caret(1, 0);
+
+    app.handle_key_pressed(&Key::Named(NamedKey::End), None);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .caret(),
+        "a你bc".len()
+    );
+
+    app.shift_modifier = true;
+    app.handle_key_pressed(&Key::Named(NamedKey::Home), None);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .highlight_range(),
+        Some((0, "a你bc".len()))
+    );
+
+    app.shift_modifier = false;
+    app.zoom_modifier = true;
+    app.handle_key_pressed(&Key::Named(NamedKey::ArrowRight), None);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .caret(),
+        "a你bc".len()
+    );
+    app.handle_key_pressed(&Key::Named(NamedKey::ArrowLeft), None);
+    assert_eq!(
+        app.host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .search_query
+            .caret(),
+        0
+    );
 }
 
 #[test]

@@ -115,6 +115,11 @@ impl DesktopApp {
             }
             A::Export => {
                 self.host.commit_variable_row_focus_if_any_pub();
+                self.host
+                    .editor_state_mut()
+                    .editor_ui
+                    .image_panel
+                    .close_popovers();
                 persistence::run_action(
                     op_editor_core::editor_ui_state::FileAction::ExportImage,
                     &mut self.host,
@@ -154,6 +159,11 @@ impl DesktopApp {
             A::ToggleGitPanel => {
                 let opening = !self.host.editor_state().editor_ui.git_panel.open;
                 if opening {
+                    self.host
+                        .editor_state_mut()
+                        .editor_ui
+                        .image_panel
+                        .close_popovers();
                     // Show "Loading…" until the first snapshot lands,
                     // then request the snapshot from the git session.
                     self.host.editor_state_mut().editor_ui.git_panel.loading = true;
@@ -185,6 +195,7 @@ impl DesktopApp {
                 let ui = &mut self.host.editor_state_mut().editor_ui;
                 let opening = !ui.design_md_panel_open;
                 if opening {
+                    ui.image_panel.close_popovers();
                     // Centre the floating panel on the viewport the
                     // first time it opens (and re-centre on reopen so
                     // it never strands off-screen after a resize).
@@ -203,6 +214,7 @@ impl DesktopApp {
                 let ui = &mut self.host.editor_state_mut().editor_ui;
                 let opening = !ui.component_browser_open;
                 if opening {
+                    ui.image_panel.close_popovers();
                     ui.component_browser_pos = Some((
                         ((self.viewport_width - op_editor_ui::widgets::COMPONENT_BROWSER_PANEL_W)
                             / 2.0)

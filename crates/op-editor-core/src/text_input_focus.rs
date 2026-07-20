@@ -10,6 +10,13 @@ use jian_core::text_input::TextInputState;
 
 impl EditorState {
     pub fn active_text_input(&self) -> Option<&TextInputState> {
+        // Image popovers paint above every editor surface. Resolve their
+        // visible field first so stale focus underneath cannot split keyboard,
+        // clipboard, and IME ownership across different inputs.
+        let generate_configured = self.editor_ui.agent_settings.image_generation_configured();
+        if self.editor_ui.image_panel.search_open || self.editor_ui.image_panel.generate_open {
+            return self.editor_ui.image_panel.active_input(generate_configured);
+        }
         if self.ui.text_editing.is_some() {
             return Some(&self.ui.text_edit_input);
         }
@@ -81,6 +88,13 @@ impl EditorState {
     }
 
     pub fn active_text_input_mut(&mut self) -> Option<&mut TextInputState> {
+        let generate_configured = self.editor_ui.agent_settings.image_generation_configured();
+        if self.editor_ui.image_panel.search_open || self.editor_ui.image_panel.generate_open {
+            return self
+                .editor_ui
+                .image_panel
+                .active_input_mut(generate_configured);
+        }
         if self.ui.text_editing.is_some() {
             return Some(&mut self.ui.text_edit_input);
         }

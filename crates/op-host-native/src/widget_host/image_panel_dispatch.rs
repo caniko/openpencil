@@ -35,13 +35,18 @@ impl WidgetHostNative {
     pub(in crate::widget_host) fn toggle_image_search_popover(&mut self) {
         let opening = !self.editor_state.editor_ui.image_panel.search_open;
         let seed = self.selected_image_seed(false);
+        self.clear_image_input_selection_drag();
+        if opening {
+            self.blur_text_inputs_on_blank_press();
+        }
         let panel = &mut self.editor_state.editor_ui.image_panel;
         // Opening either popover closes the other (TS popovers are
         // mutually exclusive portals).
         panel.close_popovers();
         if opening {
             panel.search_open = true;
-            panel.search_query = seed;
+            panel.search_query.set_text(seed);
+            panel.search_query.touch(self.now_ms);
         }
         self.close_other_property_popovers_for_image();
     }
@@ -49,12 +54,17 @@ impl WidgetHostNative {
     pub(in crate::widget_host) fn toggle_image_generate_popover(&mut self) {
         let opening = !self.editor_state.editor_ui.image_panel.generate_open;
         let seed = self.selected_image_seed(true);
+        self.clear_image_input_selection_drag();
+        if opening {
+            self.blur_text_inputs_on_blank_press();
+        }
         let panel = &mut self.editor_state.editor_ui.image_panel;
         panel.close_popovers();
         if opening {
             // TS handleOpenChange: reset prompt + state on open.
             panel.generate_open = true;
-            panel.generate_prompt = seed;
+            panel.generate_prompt.set_text(seed);
+            panel.generate_prompt.touch(self.now_ms);
             panel.generate_phase = ImageGeneratePhase::Idle;
             panel.generate_preview = None;
             panel.generate_error.clear();
@@ -79,7 +89,8 @@ impl WidgetHostNative {
     /// button on both).
     pub(in crate::widget_host) fn run_image_search(&mut self) {
         let panel = &mut self.editor_state.editor_ui.image_panel;
-        if !panel.search_open || panel.search_loading || panel.search_query.trim().is_empty() {
+        if !panel.search_open || panel.search_loading || panel.search_query.text().trim().is_empty()
+        {
             return;
         }
         panel.search_loading = true;
@@ -101,6 +112,7 @@ impl WidgetHostNative {
             return;
         };
         self.write_selected_image_src(&url);
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
     }
 
@@ -108,19 +120,15 @@ impl WidgetHostNative {
     /// not-configured gate lives in the popover view; this also
     /// guards so a stale press can't start a job with no profile.
     pub(in crate::widget_host) fn run_image_generate(&mut self) {
-        let configured = {
-            let settings = &self.editor_state.editor_ui.agent_settings;
-            settings
-                .image_gen_profiles
-                .iter()
-                .find(|p| Some(&p.id) == settings.active_image_gen_profile_id.as_ref())
-                .or_else(|| settings.image_gen_profiles.first())
-                .is_some_and(|p| !p.api_key.trim().is_empty())
-        };
+        let configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if !panel.generate_open
             || !configured
-            || panel.generate_prompt.trim().is_empty()
+            || panel.generate_prompt.text().trim().is_empty()
             || panel.generate_phase == ImageGeneratePhase::Loading
         {
             return;
@@ -143,6 +151,7 @@ impl WidgetHostNative {
             return;
         };
         self.write_selected_image_src(&url);
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
     }
 
@@ -156,6 +165,7 @@ impl WidgetHostNative {
     /// Open the settings modal on the Images tab (TS
     /// `setDialogOpen(true)` from the not-configured view).
     pub(in crate::widget_host) fn open_image_gen_settings(&mut self) {
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
         self.editor_state.editor_ui.agent_settings_open = true;
         self.editor_state.editor_ui.agent_settings.tab =
@@ -182,19 +192,28 @@ impl WidgetHostNative {
         if c.is_control() {
             return false;
         }
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if panel.search_open {
-            panel.search_query.push(c);
+            let mut text = [0u8; 4];
+            panel
+                .search_query
+                .insert_str(c.encode_utf8(&mut text), self.now_ms);
             self.mark_dirty();
             return true;
         }
         if panel.generate_open {
-            if panel.generate_phase == ImageGeneratePhase::Loading {
-                // Swallow typing during generation (no input painted).
-                return true;
+            if let Some(input) = panel.active_input_mut(generate_configured) {
+                let mut text = [0u8; 4];
+                input.insert_str(c.encode_utf8(&mut text), self.now_ms);
+                self.mark_dirty();
             }
-            panel.generate_prompt.push(c);
-            self.mark_dirty();
+            // Loading / preview do not paint an editor. Swallow printable
+            // input so it cannot mutate either the hidden prompt or canvas.
             return true;
         }
         false
@@ -203,22 +222,118 @@ impl WidgetHostNative {
     /// Backspace in the open popover's input. Swallows the key even
     /// on an empty draft so it can't fall through to node deletion.
     pub(in crate::widget_host) fn apply_image_panel_backspace(&mut self) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if panel.search_open {
-            if panel.search_query.pop().is_some() {
+            let before = panel.search_query.text().to_owned();
+            panel.search_query.backspace(self.now_ms);
+            if panel.search_query.text() != before {
                 self.mark_dirty();
             }
             return true;
         }
         if panel.generate_open {
-            if panel.generate_phase != ImageGeneratePhase::Loading
-                && panel.generate_prompt.pop().is_some()
-            {
-                self.mark_dirty();
+            if let Some(input) = panel.active_input_mut(generate_configured) {
+                let before = input.text().to_owned();
+                input.backspace(self.now_ms);
+                if input.text() != before {
+                    self.mark_dirty();
+                }
             }
             return true;
         }
         false
+    }
+
+    /// Forward Delete in the visible image-popover input. The popover still
+    /// consumes Delete when no glyph changes so the selected image node behind
+    /// it can never be removed accidentally.
+    pub(in crate::widget_host) fn apply_image_panel_delete(&mut self) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(generate_configured) {
+            let before = input.text().to_owned();
+            input.delete_forward(self.now_ms);
+            if input.text() != before {
+                self.mark_dirty();
+            }
+        }
+        true
+    }
+
+    /// Move the persistent image-popover caret. Consumes the arrow at text
+    /// boundaries so it never falls through to canvas nudge.
+    pub fn apply_image_panel_caret(&mut self, forward: bool, extend: bool) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(generate_configured) {
+            if forward {
+                input.move_right(extend, self.now_ms);
+            } else {
+                input.move_left(extend, self.now_ms);
+            }
+            self.mark_dirty();
+        }
+        true
+    }
+
+    /// Move the visible image-popover input to its start or end. The key is
+    /// still consumed when the generate view has no editable field.
+    pub fn apply_image_panel_edge(&mut self, end: bool, extend: bool) -> bool {
+        let configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(configured) {
+            if end {
+                input.move_end(extend, self.now_ms);
+            } else {
+                input.move_home(extend, self.now_ms);
+            }
+            self.mark_dirty();
+        }
+        true
+    }
+
+    pub(in crate::widget_host) fn apply_image_panel_select_all(&mut self) -> bool {
+        let configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(configured) {
+            input.select_all();
+            input.touch(self.now_ms);
+            self.mark_dirty();
+        }
+        true
     }
 
     /// Enter while the search popover is open submits the query (TS
@@ -235,6 +350,21 @@ impl WidgetHostNative {
             return true;
         }
         false
+    }
+
+    /// A higher-z overlay or a selection-changing secondary click is taking
+    /// over. Close the property image popover before that surface receives
+    /// focus so keyboard, clipboard, and IME ownership cannot remain hidden
+    /// underneath it.
+    pub(in crate::widget_host) fn close_image_popovers_for_higher_overlay(&mut self) -> bool {
+        self.clear_image_input_selection_drag();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        panel.close_popovers();
+        self.mark_dirty();
+        true
     }
 
     /// Outside-click dismiss for the Search / Generate popovers.
@@ -271,12 +401,17 @@ impl WidgetHostNative {
                     return true;
                 }
             }
+            if let Some((kind, offset)) = self.image_popover_input_at(&panel, rect, point) {
+                self.begin_image_input_selection_drag(kind, offset);
+                return true;
+            }
             if panel.image_popovers_contain(rect, point) {
                 // Inside the popup body (input / textarea / empty
                 // state) — swallow, keep open.
                 return true;
             }
         }
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
         self.mark_dirty();
         true
@@ -285,9 +420,10 @@ impl WidgetHostNative {
 
 #[cfg(test)]
 mod tests {
+    use crate::widget_host::CursorHint;
     use op_editor_core::image_panel_state::{ImageGeneratePhase, ImageSearchHit};
     use op_editor_core::EditorState;
-    use op_editor_ui::widgets::PropertyPanelAction as A;
+    use op_editor_ui::widgets::{PropertyPanel, PropertyPanelAction as A};
     use std::sync::Arc;
 
     fn host_with_image_selected() -> crate::widget_host::WidgetHostNative {
@@ -304,7 +440,7 @@ mod tests {
         host.apply_property_action(A::ToggleImageSearchPopover);
         let panel = &host.editor_state().editor_ui.image_panel;
         assert!(panel.search_open);
-        assert_eq!(panel.search_query, "Hero photo");
+        assert_eq!(panel.search_query.text(), "Hero photo");
         assert!(!panel.search_has_searched);
         // Toggle again closes + clears transients.
         host.apply_property_action(A::ToggleImageSearchPopover);
@@ -422,13 +558,229 @@ mod tests {
             .editor_ui
             .image_panel
             .search_query
-            .clear();
+            .set_text("");
         assert!(host.apply_image_panel_text('c'));
         assert!(host.apply_image_panel_text('a'));
         assert!(host.apply_image_panel_backspace());
-        assert_eq!(host.editor_state().editor_ui.image_panel.search_query, "c");
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "c"
+        );
         // Enter submits the search.
-        assert!(host.apply_image_panel_send());
+        host.editor_state_mut().ui.text_editing =
+            Some(op_editor_core::NodeId::new("independently-stale-text-edit"));
+        let epoch = host.editor_state().editor_ui.image_panel.search_epoch;
+        assert!(host.apply_send());
         assert!(host.editor_state().editor_ui.image_panel.search_loading);
+        assert_eq!(
+            host.editor_state().editor_ui.image_panel.search_epoch,
+            epoch + 1
+        );
+    }
+
+    #[test]
+    fn popover_input_supports_middle_edit_delete_and_select_all() {
+        let mut host = host_with_image_selected();
+        host.apply_property_action(A::ToggleImageSearchPopover);
+        let input = &mut host.editor_state_mut().editor_ui.image_panel.search_query;
+        input.set_text("abcd");
+        input.set_caret(2, 0);
+
+        assert!(host.apply_image_panel_text('你'));
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "ab你cd"
+        );
+        assert!(host.apply_image_panel_backspace());
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "abcd"
+        );
+        assert!(host.apply_image_panel_delete());
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "abd"
+        );
+
+        assert!(host.apply_select_all());
+        assert!(host.apply_image_panel_text('x'));
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "x"
+        );
+
+        let input = &mut host.editor_state_mut().editor_ui.image_panel.search_query;
+        input.set_text("a你b");
+        input.set_caret("a你b".len(), 0);
+        assert!(host.apply_image_panel_caret(false, true));
+        assert!(host.apply_image_panel_caret(false, true));
+        assert_eq!(host.input_copy_text().as_deref(), Some("你b"));
+        assert_eq!(host.input_cut_text().as_deref(), Some("你b"));
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "a"
+        );
+    }
+
+    #[test]
+    fn open_popover_owns_shortcuts_and_blurs_stale_chat_focus() {
+        let mut host = host_with_image_selected();
+        host.editor_state_mut().chat.focused = true;
+        host.apply_property_action(A::ToggleImageSearchPopover);
+        assert!(!host.editor_state().chat.focused);
+        assert!(host.input_active_pub());
+
+        let selected = host.editor_state().selection.anchor.clone();
+        assert!(host.apply_delete(), "Delete is consumed by the query");
+        assert_eq!(host.editor_state().selection.anchor, selected);
+        assert!(host.editor_state().selected_node().is_some());
+
+        // Native menu accelerators call these host methods directly instead
+        // of passing through DesktopApp's keydown guard. They must still not
+        // mutate history while the query owns the keyboard.
+        let snapshot = host.editor_state().snapshot_for_history();
+        host.editor_state_mut().history_push_past(snapshot);
+        let past_len = host.editor_state().history.past.len();
+        assert!(!host.apply_undo());
+        assert_eq!(host.editor_state().history.past.len(), past_len);
+    }
+
+    #[test]
+    fn hidden_generate_view_does_not_expose_stale_text_selection() {
+        let mut host = host_with_image_selected();
+        host.editor_state_mut().chat.focused = true;
+        host.editor_state_mut().chat.set_input_text("stale chat");
+        host.editor_state_mut().chat.input.select_all();
+        host.editor_state_mut().editor_ui.image_panel.generate_open = true;
+
+        assert!(host.input_active_pub());
+        assert!(host.input_copy_text().is_none());
+        assert_eq!(host.editor_state().chat.input.text(), "stale chat");
+    }
+
+    #[test]
+    fn image_popover_beats_and_clears_stale_git_focus() {
+        let mut host = host_with_image_selected();
+        {
+            let git = &mut host.editor_state_mut().editor_ui.git_panel;
+            git.open = true;
+            git.commit_focused = true;
+            git.commit_input.set_text("commit message");
+        }
+        host.apply_property_action(A::ToggleImageSearchPopover);
+        assert!(!host.editor_state().editor_ui.git_panel.commit_focused);
+
+        // Even an independently stale bit cannot split text routing from the
+        // clipboard/IME resolver: the painted image overlay wins.
+        host.editor_state_mut().editor_ui.git_panel.commit_focused = true;
+        assert!(host.apply_text('x'));
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .text(),
+            "Hero photox"
+        );
+        assert_eq!(
+            host.editor_state().editor_ui.git_panel.commit_input.text(),
+            "commit message"
+        );
+
+        host.editor_state_mut()
+            .editor_ui
+            .image_panel
+            .search_query
+            .set_text("query");
+        assert!(host.apply_select_all());
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .search_query
+                .highlight_range(),
+            Some((0, 5))
+        );
+        assert!(
+            host.editor_state()
+                .editor_ui
+                .git_panel
+                .commit_input
+                .highlight_range()
+                .is_none(),
+            "stale Git focus must not win Cmd+A"
+        );
+    }
+
+    #[test]
+    fn unconfigured_generate_view_swallows_keys_without_editing_hidden_prompt() {
+        let mut host = host_with_image_selected();
+        host.apply_property_action(A::ToggleImageGeneratePopover);
+        let before = host
+            .editor_state()
+            .editor_ui
+            .image_panel
+            .generate_prompt
+            .text()
+            .to_owned();
+
+        assert!(!host.text_input_focus_active());
+        assert!(host.apply_text('x'));
+        assert!(host.apply_backspace());
+        assert!(host.apply_delete());
+        assert_eq!(
+            host.editor_state()
+                .editor_ui
+                .image_panel
+                .generate_prompt
+                .text(),
+            before
+        );
+    }
+
+    #[test]
+    fn image_search_input_uses_text_cursor() {
+        let mut host = host_with_image_selected();
+        host.apply_property_action(A::ToggleImageSearchPopover);
+        let viewport_w = 1200.0;
+        let viewport_h = 800.0;
+        let property_rect = host.property_rect(viewport_w, viewport_h);
+        let panel = PropertyPanel::for_selection(host.editor_state()).expect("property panel");
+        let caret = panel
+            .image_popover_input_caret_rect(property_rect)
+            .expect("search caret");
+        assert_eq!(
+            host.cursor_hint(
+                caret.origin.x + 0.5,
+                caret.origin.y + caret.size.y / 2.0,
+                viewport_w,
+                viewport_h,
+            ),
+            CursorHint::Text
+        );
     }
 }

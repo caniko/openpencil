@@ -103,7 +103,7 @@ fn popover_hits_resolve_controls() {
         search_open: true,
         ..Default::default()
     };
-    ips.search_query = "cat".into();
+    ips.search_query.set_text("cat");
     ips.search_results.push(ImageSearchHit {
         id: "1".into(),
         thumb_data_url: Arc::new("data:image/png;base64,AA==".into()),
@@ -136,6 +136,40 @@ fn popover_hits_resolve_controls() {
         None,
         submit_centre
     ));
+
+    let input_point = Point2D::new(layout.input.origin.x + 8.0, layout.input.origin.y + 12.0);
+    let (kind, offset) =
+        image_popover_input_at(rect, visible, &ips, None, input_point).expect("input hit");
+    assert_eq!(kind, ImagePopoverInputKind::Search);
+    assert_eq!(offset, 0);
+
+    ips.search_query.set_caret(0, 0);
+    let start = image_popover_input_caret_rect(rect, visible, &ips, None).expect("caret");
+    ips.search_query.set_caret(3, 0);
+    let end = image_popover_input_caret_rect(rect, visible, &ips, None).expect("caret");
+    assert!(end.origin.x > start.origin.x);
+
+    let left = image_popover_input_drag_offset_at(
+        rect,
+        visible,
+        &ips,
+        None,
+        ImagePopoverInputKind::Search,
+        Point2D::new(layout.input.origin.x - 100.0, layout.input.origin.y - 100.0),
+    );
+    let right = image_popover_input_drag_offset_at(
+        rect,
+        visible,
+        &ips,
+        None,
+        ImagePopoverInputKind::Search,
+        Point2D::new(
+            layout.input.origin.x + layout.input.size.x + 100.0,
+            layout.input.origin.y + 100.0,
+        ),
+    );
+    assert_eq!(left, Some(0));
+    assert_eq!(right, Some(ips.search_query.text().len()));
 }
 
 #[test]

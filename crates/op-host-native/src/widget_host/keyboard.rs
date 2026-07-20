@@ -48,6 +48,11 @@ impl WidgetHostNative {
             let mut s = [0u8; 4];
             return self.preview_dispatch_text(c.encode_utf8(&mut s));
         }
+        // This popover is painted above every other editor input, so it wins
+        // even if a lower surface retained stale focus.
+        if self.apply_image_panel_text(c) {
+            return true;
+        }
         // Color-picker hex field owns the keyboard while focused.
         if self.editor_state.color_picker_hex_focused() {
             if c.is_control() {
@@ -368,10 +373,6 @@ impl WidgetHostNative {
         if self.apply_font_picker_text(c) {
             return true;
         }
-        // Image-node Search / Generate popover inputs.
-        if self.apply_image_panel_text(c) {
-            return true;
-        }
         if self.editor_state.editor_ui.icon_picker.open && !c.is_control() {
             if self.editor_state.editor_ui.icon_picker_select_all {
                 self.editor_state.editor_ui.icon_picker_search.clear();
@@ -511,6 +512,9 @@ impl WidgetHostNative {
         // the editor selection.
         if self.preview.is_some() {
             return self.preview_dispatch_key("Backspace", false);
+        }
+        if self.apply_image_panel_backspace() {
+            return true;
         }
         if self.editor_state.color_picker_hex_focused() {
             self.editor_state.color_picker_hex_backspace(self.now_ms);
@@ -727,10 +731,6 @@ impl WidgetHostNative {
         if self.apply_font_picker_backspace() {
             return true;
         }
-        // Image-node Search / Generate popover inputs.
-        if self.apply_image_panel_backspace() {
-            return true;
-        }
         if self.editor_state.editor_ui.icon_picker.open {
             if self.editor_state.editor_ui.icon_picker_select_all {
                 self.editor_state.editor_ui.icon_picker_search.clear();
@@ -810,6 +810,9 @@ impl WidgetHostNative {
         // the editor selection.
         if self.preview.is_some() {
             return self.preview_dispatch_key("Delete", false);
+        }
+        if self.apply_image_panel_delete() {
+            return true;
         }
         if self
             .editor_state
@@ -1252,6 +1255,11 @@ impl WidgetHostNative {
         if self.preview.is_some() {
             return self.preview_dispatch_key("Enter", false);
         }
+        // The image popover is painted above every editor input. Submit or
+        // swallow Enter before consulting any independently stale focus below.
+        if self.apply_image_panel_send() {
+            return true;
+        }
         if self.editor_state.color_picker_hex_focused() {
             self.editor_state.color_picker_blur_hex();
             self.mark_dirty();
@@ -1264,11 +1272,6 @@ impl WidgetHostNative {
         }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             self.commit_settings_focus_if_any();
-            return true;
-        }
-        // Image-search popover: Enter submits the query; the
-        // generate popover swallows Enter (TS textarea).
-        if self.apply_image_panel_send() {
             return true;
         }
         // Font-family picker: swallow Enter so it can't leak into
@@ -1706,6 +1709,7 @@ impl WidgetHostNative {
         if self.editor_state.editor_ui.image_panel.search_open
             || self.editor_state.editor_ui.image_panel.generate_open
         {
+            self.clear_image_input_selection_drag();
             self.editor_state.editor_ui.image_panel.close_popovers();
             self.mark_dirty();
             return true;

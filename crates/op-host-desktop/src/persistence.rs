@@ -275,7 +275,9 @@ pub fn run_action(
         FileAction::ExportImage => {
             // main.rs intercepts ExportImage to open the picker; this
             // fallback keeps external callers working.
-            host.editor_state_mut().editor_ui.export_dialog_open = true;
+            let ui = &mut host.editor_state_mut().editor_ui;
+            ui.image_panel.close_popovers();
+            ui.export_dialog_open = true;
             host.mark_editor_state_dirty();
             ActionOutcome::Noop
         }

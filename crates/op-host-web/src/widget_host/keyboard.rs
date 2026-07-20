@@ -13,6 +13,9 @@ impl WidgetHost {
     /// Push a typed character into the focused chat / settings input.
     /// Returns true if anything changed.
     pub fn apply_text(&mut self, c: char) -> bool {
+        if self.apply_image_panel_text(c) {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             return self.apply_settings_text(c);
         }
@@ -193,9 +196,6 @@ impl WidgetHost {
             self.mark_dirty();
             return true;
         }
-        if self.apply_image_panel_text(c) {
-            return true;
-        }
         // Icon-picker / component-browser search boxes own typing
         // while their panels are open (mirrors native routing order:
         // icon picker → chat model picker → component browser; see
@@ -224,6 +224,9 @@ impl WidgetHost {
     }
 
     pub fn apply_backspace(&mut self) -> bool {
+        if self.apply_image_panel_backspace() {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             return self.apply_settings_backspace();
         }
@@ -373,9 +376,6 @@ impl WidgetHost {
             }
             return true;
         }
-        if self.apply_image_panel_backspace() {
-            return true;
-        }
         if let Some(changed) = self.icon_picker_backspace() {
             return changed;
         }
@@ -405,6 +405,11 @@ impl WidgetHost {
     }
 
     pub fn apply_send(&mut self) -> bool {
+        // The image popover is painted above every editor input. Submit or
+        // swallow Enter before consulting any independently stale focus below.
+        if self.apply_image_panel_send() {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             self.commit_settings_focus();
             return true;
@@ -463,9 +468,6 @@ impl WidgetHost {
             self.commit_property_focus_if_any();
             return true;
         }
-        if self.apply_image_panel_send() {
-            return true;
-        }
         if self.editor_state.chat.available_models.is_empty() {
             return false;
         }
@@ -483,6 +485,9 @@ impl WidgetHost {
     /// drafts unless rename / text-edit owns the keyboard. Mirrors
     /// the native shell's `apply_delete`.
     pub fn apply_delete(&mut self) -> bool {
+        if self.apply_image_panel_delete() {
+            return true;
+        }
         if self.editor_state.ui.layer_rename.is_some() {
             let ok = self.editor_state.rename_backspace();
             if ok {

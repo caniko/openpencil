@@ -92,6 +92,11 @@ mod group_ops;
 mod history_guard;
 mod icon_picker_press;
 mod image_panel_dispatch;
+#[cfg(test)]
+mod image_panel_overlay_tests;
+mod image_panel_selection;
+#[cfg(test)]
+mod image_panel_selection_tests;
 #[cfg(all(test, feature = "canvaskit"))]
 mod io_tests;
 mod keyboard;
@@ -213,6 +218,11 @@ pub struct WidgetHost {
     code_selection_drag: Option<CodeSelectionDragState>,
     /// Active chat input text selection drag.
     chat_input_selection_drag: Option<ChatInputSelectionDragState>,
+    /// Active Search / Generate popover input selection drag.
+    image_input_selection_drag: Option<image_panel_selection::ImageInputSelectionDragState>,
+    /// Latest Search / Generate input geometry measured by the real painter.
+    image_input_geometry:
+        Option<op_editor_ui::widgets::property_panel_image_assets::ImagePopoverInputGeometry>,
     /// Active chat transcript text selection drag.
     chat_text_selection_drag: Option<ChatTextSelectionDragState>,
     /// Active shape-create drag — set when pressing empty canvas
@@ -281,6 +291,11 @@ pub struct WidgetHost {
     /// when its signature can't carry viewport dims (mirrors native).
     pub(in crate::widget_host) last_viewport_w: f32,
     pub(in crate::widget_host) last_viewport_h: f32,
+    /// Most recent pointer position in logical canvas coordinates. Older text
+    /// inputs that do not yet publish precise caret geometry use this as the
+    /// browser IME candidate-window fallback instead of viewport (0, 0).
+    pub(in crate::widget_host) last_cursor_x: f32,
+    pub(in crate::widget_host) last_cursor_y: f32,
     /// Stable, process-unique id scoping this host's chat-panel transcript
     /// cache (mirrors native `WidgetHostNative::chat_panel_owner`). Stamped onto
     /// every `AIChatPlaceholder` this host builds so the thread-local canonical
@@ -511,6 +526,8 @@ impl WidgetHost {
             effect_radius_drag: None,
             code_selection_drag: None,
             chat_input_selection_drag: None,
+            image_input_selection_drag: None,
+            image_input_geometry: None,
             chat_text_selection_drag: None,
             create_drag: None,
             path_anchor_drag: None,
@@ -530,6 +547,8 @@ impl WidgetHost {
             wall_now_secs: 0,
             last_viewport_w: 0.0,
             last_viewport_h: 0.0,
+            last_cursor_x: 0.0,
+            last_cursor_y: 0.0,
             chat_panel_owner: op_editor_ui::widgets::AIChatPlaceholder::next_owner(),
             layer_panel_owner: op_editor_ui::widgets::LayerPanel::next_layer_panel_owner(),
             last_chat_session_index,

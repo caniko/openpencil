@@ -28,6 +28,7 @@ impl WidgetHost {
             || self.component_browser_drag.is_some()
             || self.icon_picker_drag.is_some()
             || self.code_selection_drag.is_some()
+            || self.image_input_selection_drag.is_some()
             || self.chat_input_selection_drag.is_some()
             || self.chat_text_selection_drag.is_some()
             || self.create_drag.is_some()
@@ -363,6 +364,8 @@ impl WidgetHost {
     /// Cursor-move handler — drives canvas pan-drag, marquee /
     /// layer / chat / overlay drags, and the chrome hover washes.
     pub fn apply_cursor_move(&mut self, x: f32, y: f32) -> bool {
+        self.last_cursor_x = x;
+        self.last_cursor_y = y;
         // Session-switch owner rotation before the cursor_probe resolve stores
         // the canonical build (mirrors native).
         self.rotate_chat_owner_if_session_changed();
@@ -447,6 +450,9 @@ impl WidgetHost {
                     return true;
                 }
             }
+        }
+        if self.apply_image_input_selection_drag_cursor_move(x, y) {
+            return true;
         }
         if self.apply_chat_text_selection_drag_cursor_move(x, y) {
             return true;

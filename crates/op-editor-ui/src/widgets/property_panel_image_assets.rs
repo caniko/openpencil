@@ -25,7 +25,7 @@ use crate::widgets::property_panel_inputs::{
     INPUT_HEIGHT, PAD_X, SECTION_GAP, SECTION_HEADER_HEIGHT,
 };
 use crate::widgets::property_panel_layout::VisibleSections;
-use crate::{Point2D, Rect};
+use crate::{Point2D, Rect, RenderBackend};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::sizing::SizingBehavior;
 use op_editor_core::image_panel_state::{ImageAssetStatus, ImageGeneratePhase, ImagePanelState};
@@ -169,11 +169,7 @@ pub struct ImageGenProfileView {
 
 pub fn image_gen_profile_view(state: &EditorState) -> Option<ImageGenProfileView> {
     let settings = &state.editor_ui.agent_settings;
-    let profile = settings
-        .image_gen_profiles
-        .iter()
-        .find(|p| Some(&p.id) == settings.active_image_gen_profile_id.as_ref())
-        .or_else(|| settings.image_gen_profiles.first())?;
+    let profile = settings.active_image_gen_profile()?;
     Some(ImageGenProfileView {
         configured: !profile.api_key.trim().is_empty(),
         name: profile.name.clone(),
@@ -236,6 +232,41 @@ pub struct SearchPopoverLayout {
     pub footer: Option<Rect>,
     /// Empty / loading body rect (no results yet).
     pub body: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImagePopoverInputKind {
+    Search,
+    Generate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagePopoverInputGeometry {
+    pub kind: ImagePopoverInputKind,
+    pub line: crate::widgets::text_input::SingleLinePaintGeometry,
+}
+
+impl ImagePopoverInputGeometry {
+    fn input<'a>(&self, state: &'a ImagePanelState) -> &'a jian_core::text_input::TextInputState {
+        match self.kind {
+            ImagePopoverInputKind::Search => &state.search_query,
+            ImagePopoverInputKind::Generate => &state.generate_prompt,
+        }
+    }
+
+    pub fn byte_offset_at(
+        &self,
+        state: &ImagePanelState,
+        point: Point2D,
+        clamp_to_line: bool,
+    ) -> Option<usize> {
+        self.line
+            .byte_offset_at(self.input(state), point, clamp_to_line)
+    }
+
+    pub fn caret_rect(&self, state: &ImagePanelState) -> Option<Rect> {
+        self.line.caret_rect(self.input(state))
+    }
 }
 
 pub fn search_popover_layout(
@@ -474,6 +505,150 @@ pub fn image_popover_action_at(
                 return Some(PropertyPanelAction::RetryImageGenerate);
             }
         }
+    }
+    None
+}
+
+/// Text-input hit inside an image Search / Generate popover. The returned
+/// byte offset is resolved with the same `TextInputView` geometry as paint.
+pub fn image_popover_input_at(
+    panel_rect: Rect,
+    visible: VisibleSections,
+    state: &ImagePanelState,
+    profile: Option<&ImageGenProfileView>,
+    point: Point2D,
+) -> Option<(ImagePopoverInputKind, usize)> {
+    if state.search_open {
+        let layout = search_popover_layout(panel_rect, visible, state)?;
+        if layout.input.contains(point) {
+            let offset = crate::widgets::text_input::single_line_byte_offset_at(
+                &state.search_query,
+                layout.input,
+                point,
+                11.0,
+                8.0,
+            )?;
+            return Some((ImagePopoverInputKind::Search, offset));
+        }
+    }
+    if state.generate_open {
+        let layout = generate_popover_layout(panel_rect, visible, state, profile)?;
+        if let Some(textarea) = layout.textarea.filter(|rect| rect.contains(point)) {
+            let line = Rect::xywh(textarea.origin.x, textarea.origin.y, textarea.size.x, 26.0);
+            let point = Point2D::new(point.x, line.origin.y + line.size.y / 2.0);
+            let offset = crate::widgets::text_input::single_line_byte_offset_at(
+                &state.generate_prompt,
+                line,
+                point,
+                11.0,
+                10.0,
+            )?;
+            return Some((ImagePopoverInputKind::Generate, offset));
+        }
+    }
+    None
+}
+
+/// Resolve a pointer during an active image-input selection drag. Unlike the
+/// initial press hit, horizontal positions are clamped to the input so dragging
+/// past either edge selects to byte 0 or the UTF-8 end of the draft.
+pub fn image_popover_input_drag_offset_at(
+    panel_rect: Rect,
+    visible: VisibleSections,
+    state: &ImagePanelState,
+    profile: Option<&ImageGenProfileView>,
+    kind: ImagePopoverInputKind,
+    point: Point2D,
+) -> Option<usize> {
+    let (input, rect, font_size, pad_x) = match kind {
+        ImagePopoverInputKind::Search if state.search_open => {
+            let layout = search_popover_layout(panel_rect, visible, state)?;
+            (&state.search_query, layout.input, 11.0, 8.0)
+        }
+        ImagePopoverInputKind::Generate if state.generate_open => {
+            let layout = generate_popover_layout(panel_rect, visible, state, profile)?;
+            let textarea = layout.textarea?;
+            (
+                &state.generate_prompt,
+                Rect::xywh(textarea.origin.x, textarea.origin.y, textarea.size.x, 26.0),
+                11.0,
+                10.0,
+            )
+        }
+        _ => return None,
+    };
+    let right = rect.origin.x + rect.size.x;
+    let point = Point2D::new(
+        point.x.clamp(rect.origin.x, right),
+        rect.origin.y + rect.size.y / 2.0,
+    );
+    crate::widgets::text_input::single_line_byte_offset_at(input, rect, point, font_size, pad_x)
+}
+
+/// Capture the visible image input with the same backend that paints it.
+pub fn image_popover_input_geometry(
+    panel_rect: Rect,
+    visible: VisibleSections,
+    state: &ImagePanelState,
+    profile: Option<&ImageGenProfileView>,
+    backend: &mut dyn RenderBackend,
+) -> Option<ImagePopoverInputGeometry> {
+    let (kind, input, rect, font_size, pad_x) = if state.search_open {
+        let layout = search_popover_layout(panel_rect, visible, state)?;
+        (
+            ImagePopoverInputKind::Search,
+            &state.search_query,
+            layout.input,
+            11.0,
+            8.0,
+        )
+    } else if state.generate_open {
+        let layout = generate_popover_layout(panel_rect, visible, state, profile)?;
+        let textarea = layout.textarea?;
+        (
+            ImagePopoverInputKind::Generate,
+            &state.generate_prompt,
+            Rect::xywh(textarea.origin.x, textarea.origin.y, textarea.size.x, 26.0),
+            11.0,
+            10.0,
+        )
+    } else {
+        return None;
+    };
+    Some(ImagePopoverInputGeometry {
+        kind,
+        line: crate::widgets::text_input::SingleLinePaintGeometry::measure(
+            input, rect, font_size, pad_x, backend,
+        ),
+    })
+}
+
+/// Precise caret rect for the visible image-popover input.
+pub fn image_popover_input_caret_rect(
+    panel_rect: Rect,
+    visible: VisibleSections,
+    state: &ImagePanelState,
+    profile: Option<&ImageGenProfileView>,
+) -> Option<Rect> {
+    if state.search_open {
+        let layout = search_popover_layout(panel_rect, visible, state)?;
+        return Some(crate::widgets::text_input::single_line_caret_rect(
+            &state.search_query,
+            layout.input,
+            11.0,
+            8.0,
+        ));
+    }
+    if state.generate_open {
+        let layout = generate_popover_layout(panel_rect, visible, state, profile)?;
+        let textarea = layout.textarea?;
+        let line = Rect::xywh(textarea.origin.x, textarea.origin.y, textarea.size.x, 26.0);
+        return Some(crate::widgets::text_input::single_line_caret_rect(
+            &state.generate_prompt,
+            line,
+            11.0,
+            10.0,
+        ));
     }
     None
 }

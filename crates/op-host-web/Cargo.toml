@@ -90,6 +90,7 @@ features = [
   "console",
   "DataTransfer",
   "Document",
+  "DomRect",
   "DragEvent",
   "Element",
   "Event",

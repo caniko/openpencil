@@ -662,7 +662,11 @@ impl EditorState {
                 if resolved.is_empty() {
                     self.clear_selection();
                 } else {
-                    self.selection.anchor = resolved.last().cloned().unwrap();
+                    let anchor = resolved.last().cloned().unwrap();
+                    if self.selection.anchor != anchor || self.selection.set != resolved {
+                        self.editor_ui.image_panel.close_popovers();
+                    }
+                    self.selection.anchor = anchor;
                     self.selection.set = resolved;
                 }
                 true

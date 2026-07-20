@@ -34,11 +34,16 @@ impl WidgetHost {
     pub(in crate::widget_host) fn toggle_image_search_popover(&mut self) {
         let opening = !self.editor_state.editor_ui.image_panel.search_open;
         let seed = self.selected_image_seed(false);
+        self.clear_image_input_selection_drag();
+        if opening {
+            self.blur_text_inputs_on_blank_press();
+        }
         let panel = &mut self.editor_state.editor_ui.image_panel;
         panel.close_popovers();
         if opening {
             panel.search_open = true;
-            panel.search_query = seed;
+            panel.search_query.set_text(seed);
+            panel.search_query.touch(self.now_ms);
         }
         self.close_other_property_popovers_for_image();
     }
@@ -46,11 +51,16 @@ impl WidgetHost {
     pub(in crate::widget_host) fn toggle_image_generate_popover(&mut self) {
         let opening = !self.editor_state.editor_ui.image_panel.generate_open;
         let seed = self.selected_image_seed(true);
+        self.clear_image_input_selection_drag();
+        if opening {
+            self.blur_text_inputs_on_blank_press();
+        }
         let panel = &mut self.editor_state.editor_ui.image_panel;
         panel.close_popovers();
         if opening {
             panel.generate_open = true;
-            panel.generate_prompt = seed;
+            panel.generate_prompt.set_text(seed);
+            panel.generate_prompt.touch(self.now_ms);
             panel.generate_phase = ImageGeneratePhase::Idle;
             panel.generate_preview = None;
             panel.generate_error.clear();
@@ -71,7 +81,8 @@ impl WidgetHost {
 
     pub(in crate::widget_host) fn run_image_search(&mut self) {
         let panel = &mut self.editor_state.editor_ui.image_panel;
-        if !panel.search_open || panel.search_loading || panel.search_query.trim().is_empty() {
+        if !panel.search_open || panel.search_loading || panel.search_query.text().trim().is_empty()
+        {
             return;
         }
         panel.search_loading = true;
@@ -91,6 +102,7 @@ impl WidgetHost {
             return;
         };
         self.write_selected_image_src(&url);
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
     }
 
@@ -107,7 +119,7 @@ impl WidgetHost {
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if !panel.generate_open
             || !configured
-            || panel.generate_prompt.trim().is_empty()
+            || panel.generate_prompt.text().trim().is_empty()
             || panel.generate_phase == ImageGeneratePhase::Loading
         {
             return;
@@ -130,6 +142,7 @@ impl WidgetHost {
             return;
         };
         self.write_selected_image_src(&url);
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
     }
 
@@ -141,6 +154,7 @@ impl WidgetHost {
     }
 
     pub(in crate::widget_host) fn open_image_gen_settings(&mut self) {
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
         self.editor_state.editor_ui.agent_settings_open = true;
         self.editor_state.editor_ui.agent_settings.tab =
@@ -165,40 +179,137 @@ impl WidgetHost {
         if c.is_control() {
             return false;
         }
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if panel.search_open {
-            panel.search_query.push(c);
+            let mut text = [0u8; 4];
+            panel
+                .search_query
+                .insert_str(c.encode_utf8(&mut text), self.now_ms);
             self.mark_dirty();
             return true;
         }
         if panel.generate_open {
-            if panel.generate_phase == ImageGeneratePhase::Loading {
-                return true;
+            if let Some(input) = panel.active_input_mut(generate_configured) {
+                let mut text = [0u8; 4];
+                input.insert_str(c.encode_utf8(&mut text), self.now_ms);
+                self.mark_dirty();
             }
-            panel.generate_prompt.push(c);
-            self.mark_dirty();
             return true;
         }
         false
     }
 
     pub(in crate::widget_host) fn apply_image_panel_backspace(&mut self) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
         let panel = &mut self.editor_state.editor_ui.image_panel;
         if panel.search_open {
-            if panel.search_query.pop().is_some() {
+            let before = panel.search_query.text().to_owned();
+            panel.search_query.backspace(self.now_ms);
+            if panel.search_query.text() != before {
                 self.mark_dirty();
             }
             return true;
         }
         if panel.generate_open {
-            if panel.generate_phase != ImageGeneratePhase::Loading
-                && panel.generate_prompt.pop().is_some()
-            {
-                self.mark_dirty();
+            if let Some(input) = panel.active_input_mut(generate_configured) {
+                let before = input.text().to_owned();
+                input.backspace(self.now_ms);
+                if input.text() != before {
+                    self.mark_dirty();
+                }
             }
             return true;
         }
         false
+    }
+
+    pub(in crate::widget_host) fn apply_image_panel_delete(&mut self) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(generate_configured) {
+            let before = input.text().to_owned();
+            input.delete_forward(self.now_ms);
+            if input.text() != before {
+                self.mark_dirty();
+            }
+        }
+        true
+    }
+
+    pub fn apply_image_panel_caret(&mut self, forward: bool, extend: bool) -> bool {
+        let generate_configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(generate_configured) {
+            if forward {
+                input.move_right(extend, self.now_ms);
+            } else {
+                input.move_left(extend, self.now_ms);
+            }
+            self.mark_dirty();
+        }
+        true
+    }
+
+    pub fn apply_image_panel_edge(&mut self, end: bool, extend: bool) -> bool {
+        let configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(configured) {
+            if end {
+                input.move_end(extend, self.now_ms);
+            } else {
+                input.move_home(extend, self.now_ms);
+            }
+            self.mark_dirty();
+        }
+        true
+    }
+
+    pub(in crate::widget_host) fn apply_image_panel_select_all(&mut self) -> bool {
+        let configured = self
+            .editor_state
+            .editor_ui
+            .agent_settings
+            .image_generation_configured();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        if let Some(input) = panel.active_input_mut(configured) {
+            input.select_all();
+            input.touch(self.now_ms);
+            self.mark_dirty();
+        }
+        true
     }
 
     pub(in crate::widget_host) fn apply_image_panel_send(&mut self) -> bool {
@@ -211,6 +322,17 @@ impl WidgetHost {
             return true;
         }
         false
+    }
+
+    pub(in crate::widget_host) fn close_image_popovers_for_higher_overlay(&mut self) -> bool {
+        self.clear_image_input_selection_drag();
+        let panel = &mut self.editor_state.editor_ui.image_panel;
+        if !panel.search_open && !panel.generate_open {
+            return false;
+        }
+        panel.close_popovers();
+        self.mark_dirty();
+        true
     }
 
     pub(in crate::widget_host) fn dismiss_image_popovers_on_press(
@@ -254,10 +376,15 @@ impl WidgetHost {
                     return true;
                 }
             }
+            if let Some((kind, offset)) = self.image_popover_input_at(&panel, rect, point) {
+                self.begin_image_input_selection_drag(kind, offset);
+                return true;
+            }
             if panel.image_popovers_contain(rect, point) {
                 return true;
             }
         }
+        self.clear_image_input_selection_drag();
         self.editor_state.editor_ui.image_panel.close_popovers();
         self.mark_dirty();
         true

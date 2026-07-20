@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+use jian_core::text_input::TextInputState;
+
 /// Which catalogue served the current search results (TS
 /// `ImageSearchResponse.source`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,13 +75,13 @@ pub struct ImageAssetCheck {
 }
 
 /// All image-node panel popover state. Lives on `EditorUiState`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ImagePanelState {
     /// Whether the Search popover is open.
     pub search_open: bool,
     /// Live search-box draft (seeded from `imageSearchQuery ?? name`
     /// on open, mirrors TS `initialQuery`).
-    pub search_query: String,
+    pub search_query: TextInputState,
     /// True while a search request is in flight.
     pub search_loading: bool,
     /// Bumped on every search submit; the host spawns a job when it
@@ -95,7 +97,7 @@ pub struct ImagePanelState {
     /// Whether the Generate popover is open.
     pub generate_open: bool,
     /// Prompt draft (seeded from `imagePrompt ?? name` on open).
-    pub generate_prompt: String,
+    pub generate_prompt: TextInputState,
     pub generate_phase: ImageGeneratePhase,
     /// Bumped on every generate submit (same epoch contract as
     /// `search_epoch`).
@@ -123,6 +125,44 @@ impl ImagePanelState {
         self.generate_phase = ImageGeneratePhase::Idle;
         self.generate_preview = None;
         self.generate_error.clear();
+        self.search_query.reset_transient();
+        self.generate_prompt.reset_transient();
+    }
+
+    /// The currently visible image-popover text input, if any.
+    ///
+    /// Search wins over Generate to mirror the popovers' mutually-exclusive
+    /// open contract. Generate only exposes an input in its idle/error view;
+    /// loading and preview keep owning the keyboard at the host level but do
+    /// not advertise a hidden caret to clipboard/IME code.
+    pub fn active_input(&self, generate_configured: bool) -> Option<&TextInputState> {
+        if self.search_open {
+            return Some(&self.search_query);
+        }
+        if self.generate_open
+            && generate_configured
+            && self.generate_phase != ImageGeneratePhase::Loading
+            && !(self.generate_phase == ImageGeneratePhase::Preview
+                && self.generate_preview.is_some())
+        {
+            return Some(&self.generate_prompt);
+        }
+        None
+    }
+
+    pub fn active_input_mut(&mut self, generate_configured: bool) -> Option<&mut TextInputState> {
+        if self.search_open {
+            return Some(&mut self.search_query);
+        }
+        if self.generate_open
+            && generate_configured
+            && self.generate_phase != ImageGeneratePhase::Loading
+            && !(self.generate_phase == ImageGeneratePhase::Preview
+                && self.generate_preview.is_some())
+        {
+            return Some(&mut self.generate_prompt);
+        }
+        None
     }
 
     /// The asset status for `(node_id, src)` if the host already

@@ -28,6 +28,9 @@ impl WidgetHost {
             // instead of typing into the preset name).
             || self.editor_state.editor_ui.preset_name_input_active()
             || self.variables_search_active()
+            || self.editor_state.editor_ui.font_picker.open
+            || self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
             || (self.editor_state.editor_ui.agent_settings_open
                 && self.editor_state.editor_ui.agent_settings.focus.is_some())
             || self.editor_state.editor_ui.icon_picker.open
@@ -40,6 +43,36 @@ impl WidgetHost {
             || self.git_branch_create_focus_active()
             || self.git_author_focus_active()
             || self.git_clone_input_active()
+    }
+
+    /// Visible non-chat input ownership for clipboard routing. This mirrors
+    /// native: stale chat focus must not win over a modal, picker, or image
+    /// popover layered above it.
+    pub(crate) fn non_chat_input_owns_keyboard(&self) -> bool {
+        let editor_ui = &self.editor_state.editor_ui;
+        if editor_ui.font_picker.open
+            || editor_ui.image_panel.search_open
+            || editor_ui.image_panel.generate_open
+            || self.variables_search_active()
+            || editor_ui.preset_name_input_active()
+            || editor_ui.icon_picker.open
+            || editor_ui.component_browser_open
+            || self.git_commit_focus_active()
+            || self.git_remote_focus_active()
+            || self.git_https_focus_active()
+            || self.git_branch_create_focus_active()
+            || self.git_author_focus_active()
+            || self.git_clone_input_active()
+        {
+            return true;
+        }
+        if self.editor_state.chat.focused {
+            self.editor_state
+                .active_text_input()
+                .is_some_and(|active| !std::ptr::eq(active, &self.editor_state.chat.input))
+        } else {
+            self.input_active()
+        }
     }
 
     pub(in crate::widget_host) fn git_commit_focus_active(&self) -> bool {
@@ -105,6 +138,16 @@ impl WidgetHost {
         }
         let ui = &self.editor_state.ui;
         let eui = &self.editor_state.editor_ui;
+        // The painted image popover is topmost. Resolve it before any stale
+        // focus bit left on an obscured settings/Git/property field so copy
+        // and cut cannot split from typing and IME routing.
+        let generate_configured = eui.agent_settings.image_generation_configured();
+        if eui.image_panel.search_open || eui.image_panel.generate_open {
+            return eui
+                .image_panel
+                .active_input(generate_configured)
+                .and_then(slice);
+        }
         if eui.agent_settings.focus.is_some() {
             return slice(&eui.settings_input);
         }

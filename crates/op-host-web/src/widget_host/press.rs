@@ -21,6 +21,7 @@ impl WidgetHost {
     /// a layer or page row.
     pub fn apply_right_press(&mut self, x: f32, y: f32, viewport_w: f32, viewport_h: f32) -> bool {
         self.commit_variable_row_focus_if_any();
+        self.close_image_popovers_for_higher_overlay();
         if self.over_topmost_panel(x, y, viewport_w, viewport_h) {
             return true;
         }
@@ -181,6 +182,8 @@ impl WidgetHost {
         // native host's `last_viewport_w` / `_h` cache.
         self.last_viewport_w = viewport_width;
         self.last_viewport_h = viewport_height;
+        self.last_cursor_x = x;
+        self.last_cursor_y = y;
         // Refresh the derived paint doc once up front — every hit-test
         // below reads `&self.layout_scene`, so it must be current.
         self.refresh_layout_scene();
@@ -199,6 +202,7 @@ impl WidgetHost {
                 .map(|panel| panel.rect(viewport_width, viewport_height));
         if let Some(panel_rect) = missing_fonts_rect {
             if self.dispatch_missing_fonts_press(panel_rect, Point2D::new(x, y)) {
+                self.close_image_popovers_for_higher_overlay();
                 return true;
             }
         }
@@ -206,9 +210,11 @@ impl WidgetHost {
         // hit-tests first: a click on its rect is the panel's before
         // any lower layer can claim it (mirrors native press order).
         if self.dispatch_design_md_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         if self.dispatch_icon_picker_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         // Floating Component-Browser panel — painted just under the
@@ -216,17 +222,20 @@ impl WidgetHost {
         // may queue an insert — drain it against this viewport (web
         // has no per-frame runner drain like the desktop loop).
         if self.dispatch_component_browser_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             let _ = self.drain_component_browser_insert(viewport_width, viewport_height);
             return true;
         }
         if self.editor_state.editor_ui.agent_settings_open
             && self.dispatch_agent_settings_press(x, y, viewport_width, viewport_height)
         {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         // Colour-picker overlay — top-most when open. Falls through
         // on an outside click (the picker closes as a side effect).
         if self.dispatch_color_picker_press(x, y, viewport_width, viewport_height) {
+            self.close_image_popovers_for_higher_overlay();
             return true;
         }
         // StatusBar controls — Search frames content, `[-]` / `[+]`
@@ -326,14 +335,17 @@ impl WidgetHost {
             return true;
         }
         if self.editor_state.editor_ui.file_menu_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_file_menu_press(x, y, viewport_width);
             return true;
         }
         if self.editor_state.editor_ui.export_dialog_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_export_dialog_press(x, y, viewport_width, viewport_height);
             return true;
         }
         if self.editor_state.editor_ui.figma_import_open {
+            self.close_image_popovers_for_higher_overlay();
             self.dispatch_figma_import_press(x, y, viewport_width, viewport_height);
             return true;
         }
@@ -343,6 +355,7 @@ impl WidgetHost {
         let top_bar_rect = self.top_bar_rect(viewport_width);
         let top_bar = self.top_bar();
         if let Some(hit) = top_bar.hit_test(top_bar_rect, Point2D::new(x, y)) {
+            self.close_image_popovers_for_higher_overlay();
             self.commit_property_family_focus_if_any();
             let pressed = op_editor_ui::widgets::editor_state_ext::topbar_button_hover(hit);
             self.editor_state.editor_ui.pressed_button =
@@ -408,8 +421,9 @@ impl WidgetHost {
         if (top_bar_rect).contains(Point2D::new(x, y)) {
             // Top-bar gaps eat clicks but don't act — still a blank
             // press, so every text input blurs.
+            let image_closed = self.close_image_popovers_for_higher_overlay();
             let blurred = self.blur_text_inputs_on_blank_press();
-            return blurred || rename_committed || text_edit_committed;
+            return image_closed || blurred || rename_committed || text_edit_committed;
         }
 
         // 0c0a. Image-fill popover — outside-click dismiss.

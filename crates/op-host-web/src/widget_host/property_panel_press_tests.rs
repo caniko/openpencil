@@ -650,7 +650,7 @@ fn web_property_panel_image_actions_match_native_state_intents() {
     assert!(host.apply_press(search.x, search.y, VIEWPORT_W, VIEWPORT_H));
     assert!(host.editor_state.editor_ui.image_panel.search_open);
     assert_eq!(
-        host.editor_state.editor_ui.image_panel.search_query,
+        host.editor_state.editor_ui.image_panel.search_query.text(),
         "Hero photo"
     );
     assert!(!host.editor_state.editor_ui.image_panel.generate_open);
@@ -661,7 +661,11 @@ fn web_property_panel_image_actions_match_native_state_intents() {
     assert!(host.apply_press(generate.x, generate.y, VIEWPORT_W, VIEWPORT_H));
     assert!(host.editor_state.editor_ui.image_panel.generate_open);
     assert_eq!(
-        host.editor_state.editor_ui.image_panel.generate_prompt,
+        host.editor_state
+            .editor_ui
+            .image_panel
+            .generate_prompt
+            .text(),
         "Hero photo"
     );
     assert!(!host.editor_state.editor_ui.image_panel.search_open);
@@ -693,17 +697,52 @@ fn web_image_popover_keyboard_and_outside_press_match_native() {
         matches!(action, PropertyPanelAction::ToggleImageSearchPopover)
     });
     assert!(host.apply_press(search.x, search.y, VIEWPORT_W, VIEWPORT_H));
-    host.editor_state.editor_ui.image_panel.search_query.clear();
+    host.editor_state
+        .editor_ui
+        .image_panel
+        .search_query
+        .set_text("");
 
     assert!(host.apply_text('c'));
     assert!(host.apply_text('a'));
     assert!(host.apply_backspace());
-    assert_eq!(host.editor_state.editor_ui.image_panel.search_query, "c");
+    assert_eq!(
+        host.editor_state.editor_ui.image_panel.search_query.text(),
+        "c"
+    );
 
+    let input = &mut host.editor_state.editor_ui.image_panel.search_query;
+    input.set_text("a你b");
+    input.set_caret("a你b".len(), 0);
+    assert!(host.apply_image_panel_caret(false, true));
+    assert!(host.apply_image_panel_caret(false, true));
+    assert_eq!(
+        host.editor_state
+            .editor_ui
+            .image_panel
+            .search_query
+            .highlight_range(),
+        Some((1, "a你b".len()))
+    );
+
+    let selected = host.editor_state.selection.anchor.clone();
+    assert!(host.apply_escape());
+    assert!(!host.editor_state.editor_ui.image_panel.search_open);
+    assert_eq!(host.editor_state.selection.anchor, selected);
+    assert!(!host.input_active());
+
+    host.editor_state.editor_ui.image_panel.search_open = true;
+    host.editor_state.ui.text_editing = Some(NodeId::new("independently-stale-text-edit"));
+    let epoch = host.editor_state.editor_ui.image_panel.search_epoch;
     assert!(host.apply_send());
     assert!(host.editor_state.editor_ui.image_panel.search_loading);
     assert!(host.editor_state.editor_ui.image_panel.search_has_searched);
+    assert_eq!(
+        host.editor_state.editor_ui.image_panel.search_epoch,
+        epoch + 1
+    );
 
+    host.editor_state.ui.text_editing = None;
     host.editor_state.editor_ui.image_panel.search_loading = false;
     assert!(host.apply_press(360.0, 120.0, VIEWPORT_W, VIEWPORT_H));
     assert!(!host.editor_state.editor_ui.image_panel.search_open);

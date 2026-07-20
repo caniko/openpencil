@@ -129,6 +129,9 @@ impl WidgetHostNative {
     }
 
     fn apply_input_select_all(&mut self) -> bool {
+        if self.apply_image_panel_select_all() {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             let ui = &mut self.editor_state.editor_ui;
             ui.settings_input.select_all();
@@ -277,6 +280,11 @@ impl WidgetHostNative {
     /// exiting edit mode (each pause-bounded burst is its own
     /// history entry).
     pub fn apply_undo(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            return false;
+        }
         self.commit_variable_row_focus_if_any();
         if self.editor_state.ui.layer_rename.is_some() || self.editor_state.chat.focused {
             return false;
@@ -289,6 +297,11 @@ impl WidgetHostNative {
     }
 
     pub fn apply_redo(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            return false;
+        }
         self.commit_variable_row_focus_if_any();
         if self.editor_state.ui.layer_rename.is_some() || self.editor_state.chat.focused {
             return false;
@@ -302,6 +315,11 @@ impl WidgetHostNative {
 
     /// Cmd+G — wrap the current selection in a new Group node.
     pub fn apply_group(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            return false;
+        }
         self.commit_variable_row_focus_if_any();
         if self.editor_state.ui.layer_rename.is_some() || self.editor_state.chat.focused {
             return false;
@@ -324,6 +342,11 @@ impl WidgetHostNative {
 
     /// Cmd+Shift+G — unwrap a Group selection (children replace it).
     pub fn apply_ungroup(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            return false;
+        }
         self.commit_variable_row_focus_if_any();
         if self.editor_state.ui.layer_rename.is_some() || self.editor_state.chat.focused {
             return false;
@@ -378,12 +401,14 @@ impl WidgetHostNative {
     /// Cmd+Shift+D — toggle the floating Design-MD panel.
     pub fn apply_toggle_design_md_panel(&mut self) -> bool {
         self.commit_variable_row_focus_if_any();
+        self.close_image_popovers_for_higher_overlay();
         self.dispatch_toolbar_action(op_editor_ui::widgets::ToolbarAction::ToggleDesignPanel)
     }
 
     /// Cmd+Shift+K — toggle the component (UIKit) browser panel.
     pub fn apply_toggle_component_browser(&mut self) -> bool {
         self.commit_variable_row_focus_if_any();
+        self.close_image_popovers_for_higher_overlay();
         let ui = &mut self.editor_state.editor_ui;
         ui.component_browser_open = !ui.component_browser_open;
         self.mark_dirty();
@@ -393,6 +418,7 @@ impl WidgetHostNative {
     /// Cmd+Shift+F — open the Figma import modal.
     pub fn apply_open_figma_import(&mut self) -> bool {
         self.commit_variable_row_focus_if_any();
+        self.close_image_popovers_for_higher_overlay();
         self.editor_state.editor_ui.figma_import_open = true;
         self.mark_dirty();
         true
@@ -422,6 +448,10 @@ impl WidgetHostNative {
         self.editor_state.editor_ui.agent_settings_open =
             !self.editor_state.editor_ui.agent_settings_open;
         if self.editor_state.editor_ui.agent_settings_open {
+            // The settings modal is now topmost. Do not leave a property-panel
+            // image input alive underneath it or text/IME would keep routing
+            // to an invisible query field.
+            self.close_image_popovers_for_higher_overlay();
             self.editor_state.chat.blur_input(self.now_ms);
         } else {
             self.editor_state.editor_ui.agent_settings_drag = None;

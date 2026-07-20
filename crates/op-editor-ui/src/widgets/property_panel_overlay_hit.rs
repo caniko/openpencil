@@ -131,6 +131,71 @@ impl PropertyPanel {
         )
     }
 
+    pub fn image_popover_input_at(
+        &self,
+        panel_rect: Rect,
+        point: Point2D,
+    ) -> Option<(property_panel_image_assets::ImagePopoverInputKind, usize)> {
+        if self.is_multi {
+            return None;
+        }
+        property_panel_image_assets::image_popover_input_at(
+            self.scrolled_rect(panel_rect),
+            self.visible_sections(),
+            &self.image_panel,
+            self.image_gen_profile.as_ref(),
+            point,
+        )
+    }
+
+    pub fn image_popover_input_drag_offset_at(
+        &self,
+        panel_rect: Rect,
+        kind: property_panel_image_assets::ImagePopoverInputKind,
+        point: Point2D,
+    ) -> Option<usize> {
+        if self.is_multi {
+            return None;
+        }
+        property_panel_image_assets::image_popover_input_drag_offset_at(
+            self.scrolled_rect(panel_rect),
+            self.visible_sections(),
+            &self.image_panel,
+            self.image_gen_profile.as_ref(),
+            kind,
+            point,
+        )
+    }
+
+    pub fn image_popover_input_caret_rect(&self, panel_rect: Rect) -> Option<Rect> {
+        if self.is_multi {
+            return None;
+        }
+        property_panel_image_assets::image_popover_input_caret_rect(
+            self.scrolled_rect(panel_rect),
+            self.visible_sections(),
+            &self.image_panel,
+            self.image_gen_profile.as_ref(),
+        )
+    }
+
+    pub fn image_popover_input_geometry(
+        &self,
+        panel_rect: Rect,
+        backend: &mut dyn crate::RenderBackend,
+    ) -> Option<property_panel_image_assets::ImagePopoverInputGeometry> {
+        if self.is_multi {
+            return None;
+        }
+        property_panel_image_assets::image_popover_input_geometry(
+            self.scrolled_rect(panel_rect),
+            self.visible_sections(),
+            &self.image_panel,
+            self.image_gen_profile.as_ref(),
+            backend,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn visible_sections_for_test(
         &self,

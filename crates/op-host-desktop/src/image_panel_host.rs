@@ -110,7 +110,7 @@ impl ImagePanelJobs {
             return false;
         }
         self.search_spawned = panel.search_epoch;
-        let query = panel.search_query.clone();
+        let query = panel.search_query.text().to_owned();
         let credentials = OpenverseCredentials::from_state(state);
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -156,7 +156,7 @@ impl ImagePanelJobs {
             return false;
         }
         self.generate_spawned = panel.generate_epoch;
-        let prompt = panel.generate_prompt.clone();
+        let prompt = panel.generate_prompt.text().to_owned();
         let Some(profile) = active_image_gen_profile(state).cloned() else {
             let panel = &mut host.editor_state_mut().editor_ui.image_panel;
             panel.generate_phase = ImageGeneratePhase::Error;
@@ -225,12 +225,10 @@ fn selected_image_dimensions(host: &WidgetHostNative) -> (Option<f64>, Option<f6
 pub(crate) fn active_image_gen_profile(
     state: &op_editor_core::EditorState,
 ) -> Option<&ImageGenProfile> {
-    let settings = &state.editor_ui.agent_settings;
-    settings
-        .image_gen_profiles
-        .iter()
-        .find(|p| Some(&p.id) == settings.active_image_gen_profile_id.as_ref())
-        .or_else(|| settings.image_gen_profiles.first())
+    state
+        .editor_ui
+        .agent_settings
+        .active_image_gen_profile()
         .filter(|p| !p.api_key.trim().is_empty())
 }
 

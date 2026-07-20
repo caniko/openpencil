@@ -58,7 +58,7 @@ fn drain_search<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>) {
             None
         } else {
             let settings = &state.editor_ui.agent_settings;
-            let mut body = serde_json::json!({ "query": panel.search_query });
+            let mut body = serde_json::json!({ "query": panel.search_query.text() });
             let client_id = settings.openverse_client_id.trim();
             let client_secret = settings.openverse_client_secret.trim();
             if !client_id.is_empty() && !client_secret.is_empty() {
@@ -187,7 +187,7 @@ fn drain_generate<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>) {
         } else {
             Some((
                 panel.generate_epoch,
-                generate_body(state, &panel.generate_prompt),
+                generate_body(state, panel.generate_prompt.text()),
             ))
         }
     };
@@ -224,10 +224,7 @@ fn drain_generate<C: RepaintContext + 'static>(inner: &Rc<RefCell<C>>) {
 fn generate_body(state: &op_editor_core::EditorState, prompt: &str) -> Option<String> {
     let settings = &state.editor_ui.agent_settings;
     let profile = settings
-        .image_gen_profiles
-        .iter()
-        .find(|p| Some(&p.id) == settings.active_image_gen_profile_id.as_ref())
-        .or_else(|| settings.image_gen_profiles.first())
+        .active_image_gen_profile()
         .filter(|p| !p.api_key.trim().is_empty())?;
     let (width, height) = selected_image_dimensions(state);
     let mut body = serde_json::json!({

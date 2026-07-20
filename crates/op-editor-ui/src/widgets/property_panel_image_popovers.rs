@@ -96,19 +96,16 @@ pub fn paint_search_popover(
 
     // Search input — bordered box; value + placeholder + caret render through
     // the unified jian TextInputView (family-aware caret, no hand-rolled drift).
-    // The buffer is rebuilt from the query String each frame; the open popover
-    // owns the keyboard, so it reads as focused.
+    // The popover owns a persistent TextInputState, so paint, hit-testing,
+    // clipboard selection, keyboard editing, and IME all see one caret.
     cx.backend.fill_round_rect(layout.input, 5.0, theme.card);
     cx.backend
         .stroke_round_rect(layout.input, 5.0, theme.border, 1.0);
     let baseline = layout.input.origin.y + layout.input.size.y / 2.0 + 4.0;
-    let mut search_input =
-        jian_core::text_input::TextInputState::with_text(state.search_query.clone());
-    search_input.touch(now_ms); // keep the caret visible while the popover is open
     crate::widgets::property_panel_text_input::paint_text_input_view(
         cx,
         theme,
-        &search_input,
+        &state.search_query,
         layout.input,
         11.0,
         8.0,
@@ -119,7 +116,7 @@ pub fn paint_search_popover(
     );
 
     // Submit icon-button (disabled wash while loading / empty query).
-    let disabled = state.search_loading || state.search_query.trim().is_empty();
+    let disabled = state.search_loading || state.search_query.text().trim().is_empty();
     cx.backend.fill_round_rect(layout.submit, 5.0, theme.card);
     cx.backend
         .stroke_round_rect(layout.submit, 5.0, theme.border, 1.0);
@@ -312,17 +309,13 @@ pub fn paint_generate_popover(
                 cx.backend.stroke_round_rect(ta, 6.0, theme.border, 1.0);
                 // Prompt + placeholder + caret render through the unified jian
                 // TextInputView, top-aligned in the textarea box (family-aware
-                // caret; multi-line wrapping remains a follow-up). The buffer is
-                // rebuilt from the prompt String each frame; the open popover
-                // owns the keyboard, so it reads as focused.
+                // caret; multi-line wrapping remains a follow-up). The persistent
+                // state is shared with host keyboard/clipboard/IME routing.
                 let line = Rect::xywh(ta.origin.x, ta.origin.y, ta.size.x, 26.0);
-                let mut generate_input =
-                    jian_core::text_input::TextInputState::with_text(state.generate_prompt.clone());
-                generate_input.touch(now_ms); // keep the caret visible while open
                 crate::widgets::property_panel_text_input::paint_text_input_view(
                     cx,
                     theme,
-                    &generate_input,
+                    &state.generate_prompt,
                     line,
                     11.0,
                     10.0,
@@ -349,7 +342,7 @@ pub fn paint_generate_popover(
                 );
             }
             if let Some(btn) = layout.primary {
-                let enabled = !state.generate_prompt.trim().is_empty();
+                let enabled = !state.generate_prompt.text().trim().is_empty();
                 cx.backend.fill_round_rect(
                     btn,
                     6.0,

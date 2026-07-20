@@ -981,6 +981,10 @@ impl RenderBackend for CanvasKitBackend {
         self.ck
             .measure_text_styled(text, font_size, weight as i32, italic)
     }
+    fn measure_text_family(&mut self, text: &str, font_size: f32, family: &str) -> f32 {
+        self.ck
+            .measure_text_family_styled(text, family, font_size, 400, false)
+    }
     /// Family-aware measure so an editable field's caret / selection geometry
     /// lines up with the glyphs `draw_text` paints for a named imported family.
     /// Forwards to the JS `measureTextFamilyStyled`, which shares the exact
@@ -1124,8 +1128,29 @@ impl CkInner {
         // #54: focus the hidden IME input only while a text field owns the
         // keyboard, so CJK composition works when editing and no soft keyboard
         // appears otherwise. Cheap — toggles only on a focus transition.
+        let ime_focus = self.host.text_input_focus_active();
+        let ime_anchor = self.host.ime_anchor_rect().map(|anchor| {
+            let bounds = self.canvas.get_bounding_client_rect();
+            let scale_x = if w == 0.0 {
+                1.0
+            } else {
+                bounds.width() / f64::from(w)
+            };
+            let scale_y = if h == 0.0 {
+                1.0
+            } else {
+                bounds.height() / f64::from(h)
+            };
+            (
+                bounds.left() + f64::from(anchor.origin.x) * scale_x,
+                bounds.top() + f64::from(anchor.origin.y + anchor.size.y) * scale_y,
+            )
+        });
         if let Some(ime) = self.ime.as_mut() {
-            ime.sync_focus(self.host.input_active());
+            if let Some((left, top)) = ime_anchor {
+                ime.sync_position(left, top);
+            }
+            ime.sync_focus(ime_focus);
         }
         if !crate::web_settings::credential_migration_pending(&self.credential_fingerprint) {
             if let Some(settings_fingerprint) = self.settings_fingerprint.as_mut() {
@@ -1683,10 +1708,12 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
             },
         )?;
     }
-    // mouseup → release
+    // Window-level mouseup → release. A text selection or canvas drag can
+    // leave the canvas before the button is released; listening only on the
+    // canvas would strand the drag state until a later in-canvas mouseup.
     {
         let inner = inner.clone();
-        add_listener::<MouseEvent, _, _>(&canvas_target, "mouseup", &mut listeners, move |evt| {
+        add_listener::<MouseEvent, _, _>(&win_target, "mouseup", &mut listeners, move |evt| {
             if evt.button() != 0 && evt.button() != 1 {
                 return;
             }
@@ -1811,6 +1838,10 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
             let is_mod = evt.meta_key() || evt.ctrl_key();
             let shift = evt.shift_key();
             let nudge = if shift { 10.0 } else { 1.0 };
+            let image_popover_open = {
+                let panel = &b.host.editor_state().editor_ui.image_panel;
+                panel.search_open || panel.generate_open
+            };
             let mut consumed = false;
             if starts_space_pan && !b.host.input_active() {
                 b.host.set_space_pan(true);
@@ -1821,6 +1852,8 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 "Delete" if !is_mod => consumed = b.host.apply_delete(),
                 "Enter" if !is_mod => consumed = b.host.apply_send(),
                 "Escape" if !is_mod => consumed = b.host.apply_escape(),
+                "ArrowUp" if !is_mod && image_popover_open => consumed = true,
+                "ArrowDown" if !is_mod && image_popover_open => consumed = true,
                 "ArrowUp" if !is_mod => {
                     consumed =
                         b.host.apply_text_edit_vertical(false) || b.host.apply_nudge(0.0, -nudge)
@@ -1829,10 +1862,23 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                     consumed =
                         b.host.apply_text_edit_vertical(true) || b.host.apply_nudge(0.0, nudge)
                 }
+                "ArrowLeft" if is_mod && image_popover_open => {
+                    consumed = b.host.apply_image_panel_edge(false, shift)
+                }
+                "ArrowRight" if is_mod && image_popover_open => {
+                    consumed = b.host.apply_image_panel_edge(true, shift)
+                }
+                "Home" if image_popover_open => {
+                    consumed = b.host.apply_image_panel_edge(false, shift)
+                }
+                "End" if image_popover_open => {
+                    consumed = b.host.apply_image_panel_edge(true, shift)
+                }
                 "ArrowLeft" if is_mod => consumed = b.host.apply_text_edit_line_edge(false),
                 "ArrowRight" if is_mod => consumed = b.host.apply_text_edit_line_edge(true),
                 "ArrowLeft" if !is_mod => {
-                    consumed = b.host.apply_settings_caret(false)
+                    consumed = b.host.apply_image_panel_caret(false, shift)
+                        || b.host.apply_settings_caret(false)
                         || b.host.apply_chat_model_picker_caret(false)
                         || b.host.apply_chat_input_caret(false)
                         || b.host.apply_rename_caret(false)
@@ -1841,7 +1887,8 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                         || b.host.apply_nudge(-nudge, 0.0);
                 }
                 "ArrowRight" if !is_mod => {
-                    consumed = b.host.apply_settings_caret(true)
+                    consumed = b.host.apply_image_panel_caret(true, shift)
+                        || b.host.apply_settings_caret(true)
                         || b.host.apply_chat_model_picker_caret(true)
                         || b.host.apply_chat_input_caret(true)
                         || b.host.apply_rename_caret(true)
@@ -1849,19 +1896,27 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                         || b.host.apply_property_caret(true)
                         || b.host.apply_nudge(nudge, 0.0);
                 }
-                "[" if !is_mod => consumed = b.host.apply_reorder(ReorderDirection::Down),
-                "]" if !is_mod => consumed = b.host.apply_reorder(ReorderDirection::Up),
-                "K" | "k" if is_mod && shift && !evt.alt_key() => {
+                "[" if !is_mod && !b.host.input_active() => {
+                    consumed = b.host.apply_reorder(ReorderDirection::Down)
+                }
+                "]" if !is_mod && !b.host.input_active() => {
+                    consumed = b.host.apply_reorder(ReorderDirection::Up)
+                }
+                "K" | "k" if is_mod && shift && !evt.alt_key() && !image_popover_open => {
                     consumed =
                         b.host
                             .apply_keydown_shortcut(key.as_str(), is_mod, shift, evt.alt_key())
                 }
-                "d" if is_mod && !shift => consumed = b.host.apply_duplicate(),
+                "d" | "D" if is_mod && !shift && !image_popover_open => {
+                    consumed = b.host.apply_duplicate()
+                }
                 // Cmd/Ctrl+T — open a fresh chat tab (MT.3).
-                "t" if is_mod && !shift => consumed = b.host.apply_new_chat_tab(),
-                "a" if is_mod && !shift => consumed = b.host.apply_select_all(),
-                "c" if is_mod && !shift => consumed = b.host.apply_copy(),
-                "x" if is_mod && !shift => consumed = b.host.apply_cut(),
+                "t" | "T" if is_mod && !shift && !image_popover_open => {
+                    consumed = b.host.apply_new_chat_tab()
+                }
+                "a" | "A" if is_mod && !shift => consumed = b.host.apply_select_all(),
+                "c" | "C" if is_mod && !shift => consumed = b.host.apply_copy(),
+                "x" | "X" if is_mod && !shift => consumed = b.host.apply_cut(),
                 // Cmd/Ctrl+V is owned by the DOM `paste` listener
                 // (`dom_io::register_io_listeners` → `handle_paste_event`): it
                 // routes the system clipboard first (Figma HTML / image / text),
@@ -1870,18 +1925,20 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                 // clipboard + double-paste, so leave Cmd+V unconsumed → the
                 // browser's native paste fires the `paste` event. (Mirrors the
                 // skia codegen build, lib.rs.)
-                "v" if is_mod && !shift => {}
+                "v" | "V" if is_mod && !shift => {}
                 // Case-insensitive: with Shift held, `key` is layout/IME
                 // dependent — macOS Chromium can report either "z" or "Z"
                 // for Cmd+Shift+Z, so branch on the shift flag alone.
-                "z" | "Z" if is_mod => {
+                "z" | "Z" if is_mod && !image_popover_open => {
                     consumed = if shift {
                         b.host.apply_redo()
                     } else {
                         b.host.apply_undo()
                     };
                 }
-                "y" | "Y" if is_mod && !shift => consumed = b.host.apply_redo(),
+                "y" | "Y" if is_mod && !shift && !image_popover_open => {
+                    consumed = b.host.apply_redo()
+                }
                 "s" | "S" if is_mod && !shift => {
                     // VS Code embed: the workbench cannot observe keystrokes
                     // inside this cross-origin iframe, so Cmd/Ctrl+S must be
@@ -1893,6 +1950,7 @@ pub async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
                     }
                     consumed = true;
                 }
+                _ if is_mod && image_popover_open => consumed = true,
                 _ => {
                     // No Cmd/Ctrl held: a bare letter is first offered to the
                     // single-key tool router (V/R/O/L/T/F/P/Y/H), which self-

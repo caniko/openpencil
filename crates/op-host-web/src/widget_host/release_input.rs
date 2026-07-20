@@ -104,6 +104,9 @@ impl WidgetHost {
         if self.code_selection_drag.take().is_some() {
             return true;
         }
+        if self.image_input_selection_drag.take().is_some() {
+            return true;
+        }
         if self.chat_input_selection_drag.take().is_some() {
             return true;
         }
@@ -170,6 +173,9 @@ impl WidgetHost {
             return true;
         }
         if self.code_selection_drag.take().is_some() {
+            return true;
+        }
+        if self.image_input_selection_drag.take().is_some() {
             return true;
         }
         if self.chat_input_selection_drag.take().is_some() {

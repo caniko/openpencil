@@ -200,6 +200,9 @@ impl WidgetHost {
     }
 
     fn apply_input_select_all(&mut self) -> bool {
+        if self.apply_image_panel_select_all() {
+            return true;
+        }
         if self.editor_state.editor_ui.agent_settings.focus.is_some() {
             let ui = &mut self.editor_state.editor_ui;
             ui.settings_input.select_all();
@@ -381,6 +384,17 @@ impl WidgetHost {
 
     /// Cmd/Ctrl+C — copy the selection into the clipboard.
     pub fn apply_copy(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            if let Some(text) = self.focused_input_selected_text() {
+                #[cfg(feature = "canvaskit")]
+                self.host_copy_text(&text);
+                #[cfg(not(feature = "canvaskit"))]
+                let _ = text;
+            }
+            return true;
+        }
         if self.editor_state.chat.focused {
             if let Some(text) = self
                 .editor_state
@@ -438,6 +452,18 @@ impl WidgetHost {
     /// system clipboard (mirrors `apply_copy`'s input priority), else
     /// copy then delete the selected canvas nodes.
     pub fn apply_cut(&mut self) -> bool {
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            if let Some(text) = self.focused_input_selected_text() {
+                #[cfg(feature = "canvaskit")]
+                self.host_copy_text(&text);
+                #[cfg(not(feature = "canvaskit"))]
+                let _ = &text;
+                self.apply_backspace();
+            }
+            return true;
+        }
         // Chat input cut — its own selection model.
         if self.editor_state.chat.focused {
             if let Some(text) = self

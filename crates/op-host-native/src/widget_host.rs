@@ -95,6 +95,11 @@ mod icon_picker_press;
 #[cfg(test)]
 mod icon_picker_press_tests;
 mod image_panel_dispatch;
+#[cfg(test)]
+mod image_panel_overlay_tests;
+mod image_panel_selection;
+#[cfg(test)]
+mod image_panel_selection_tests;
 mod ime;
 mod input;
 #[cfg(test)]
@@ -266,6 +271,12 @@ pub struct WidgetHostNative {
     pub(in crate::widget_host) code_selection_drag: Option<CodeSelectionDragState>,
     /// Active chat input text selection drag.
     pub(in crate::widget_host) chat_input_selection_drag: Option<ChatInputSelectionDragState>,
+    /// Active Search / Generate popover input selection drag.
+    pub(in crate::widget_host) image_input_selection_drag:
+        Option<image_panel_selection::ImageInputSelectionDragState>,
+    /// Latest Search / Generate input geometry measured by the real painter.
+    pub(in crate::widget_host) image_input_geometry:
+        Option<op_editor_ui::widgets::property_panel_image_assets::ImagePopoverInputGeometry>,
     /// Active chat transcript text selection drag.
     pub(in crate::widget_host) chat_text_selection_drag: Option<ChatTextSelectionDragState>,
     /// Active inline canvas text-edit selection drag — press inside
@@ -693,6 +704,8 @@ impl WidgetHostNative {
             effect_radius_drag: None,
             code_selection_drag: None,
             chat_input_selection_drag: None,
+            image_input_selection_drag: None,
+            image_input_geometry: None,
             chat_text_selection_drag: None,
             text_edit_selection_drag: None,
             text_measure: None,

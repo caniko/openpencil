@@ -45,6 +45,9 @@ impl WidgetHostNative {
             || self.editor_state.editor_ui.effect_param_focus.is_some()
             || self.editor_state.color_picker_hex_focused()
             || self.editor_state.color_picker_rgb_focused()
+            || self.editor_state.editor_ui.font_picker.open
+            || self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
             || (self.editor_state.editor_ui.agent_settings_open
                 && self.editor_state.editor_ui.agent_settings.focus.is_some())
             || self.editor_state.editor_ui.icon_picker.open
@@ -837,6 +840,9 @@ impl WidgetHostNative {
                 }
             }
         }
+        if self.apply_image_input_selection_drag_cursor_move(x, y) {
+            return true;
+        }
         if self.apply_chat_text_selection_drag_cursor_move(x, y) {
             return true;
         }
@@ -1595,6 +1601,9 @@ impl WidgetHostNative {
         if self.code_selection_drag.take().is_some() {
             return true;
         }
+        if self.image_input_selection_drag.take().is_some() {
+            return true;
+        }
         if self.chat_input_selection_drag.take().is_some() {
             return true;
         }
@@ -1735,6 +1744,9 @@ impl WidgetHostNative {
             return true;
         }
         if self.code_selection_drag.take().is_some() {
+            return true;
+        }
+        if self.image_input_selection_drag.take().is_some() {
             return true;
         }
         if self.chat_input_selection_drag.take().is_some() {

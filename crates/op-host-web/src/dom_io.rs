@@ -75,7 +75,9 @@ pub(crate) fn drain_pending_file_action<C: RepaintContext + 'static>(inner: &Inn
             // format/scale picker dialog; Export raises
             // `ExportImageConfirm` which lands below.
             let mut b = inner.borrow_mut();
-            b.host_mut().editor_state_mut().editor_ui.export_dialog_open = true;
+            let ui = &mut b.host_mut().editor_state_mut().editor_ui;
+            ui.image_panel.close_popovers();
+            ui.export_dialog_open = true;
             b.host_mut().mark_editor_state_dirty();
             let _ = b.repaint();
         }
@@ -816,6 +818,21 @@ fn handle_paste_event<C: RepaintContext + 'static>(
     let Some(dt) = evt.clipboard_data() else {
         return;
     };
+    // Native parity: a visible non-chat text surface owns Cmd/Ctrl+V before
+    // rich HTML, Figma metadata, images, or the internal node clipboard. Rich
+    // clipboard payloads normally include text/plain; insert that into the
+    // field and never import nodes behind a popover/modal.
+    if inner.borrow().host().non_chat_input_owns_keyboard() {
+        evt.prevent_default();
+        let text = dt.get_data("text/plain").unwrap_or_default();
+        if !text.is_empty() {
+            let mut b = inner.borrow_mut();
+            if b.host_mut().apply_paste_text(&text) {
+                let _ = b.repaint();
+            }
+        }
+        return;
+    }
     let html = dt.get_data("text/html").unwrap_or_default();
     if !html.is_empty() && op_figma::is_figma_clipboard_html(&html) {
         evt.prevent_default();

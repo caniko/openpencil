@@ -144,10 +144,10 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 return;
             }
         };
-        // Enable IME so macOS / X11 / Wayland route Chinese / Japanese /
-        // Korean composition through `WindowEvent::Ime` instead of
-        // dropping the keystrokes.
-        window.set_ime_allowed(true);
+        // IME starts disabled. Once a logical text input takes focus,
+        // `sync_native_ime` publishes its caret area before enabling IME so
+        // the first macOS candidate window never observes the zero anchor.
+        window.set_ime_allowed(false);
 
         let dpi = window.scale_factor() as f32;
         self.dpi = dpi;
@@ -922,6 +922,9 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                             self.dpi,
                         );
                     }
+                    // Paint publishes exact input geometry. Refresh the OS
+                    // candidate anchor now, before any future Preedit event.
+                    self.sync_native_ime();
                     // Republish the accessibility tree alongside the
                     // painted frame so the screen reader's view tracks
                     // the visible editor state (#67). The tree build
@@ -1184,6 +1187,9 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     self.viewport_width,
                     self.viewport_height,
                 );
+                // Press may focus/blur an input or reposition its caret.
+                // Publish the anchor before enabling composition.
+                self.sync_native_ime();
                 // TopBar fullscreen button raised an intent — toggle the
                 // real window through the shared menu-action path.
                 if self.host.editor_state().editor_ui.pending_fullscreen_toggle {
@@ -1252,6 +1258,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                         let eui = &mut self.host.editor_state_mut().editor_ui;
                         eui.file_menu_open = false;
                         eui.file_menu.hover = None;
+                        eui.image_panel.close_popovers();
                         eui.export_dialog_open = true;
                         self.host.mark_editor_state_dirty();
                         self.request_redraw(true);
@@ -1306,6 +1313,8 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                         }
                     }
                 }
+                // Deferred press actions above can also close an input.
+                self.sync_native_ime();
                 if consumed {
                     self.request_redraw(true);
                 }
@@ -1324,6 +1333,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     self.viewport_width,
                     self.viewport_height,
                 );
+                self.sync_native_ime();
                 if consumed {
                     self.request_redraw(true);
                 }
@@ -1369,6 +1379,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 let consumed = self
                     .host
                     .apply_release_with_viewport(self.viewport_width, self.viewport_height);
+                self.sync_native_ime();
                 if consumed {
                     self.request_redraw(true);
                 }
@@ -1430,30 +1441,15 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
             // through apply_ime_commit -> apply_text.
             WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
                 let changed = self.host.apply_ime_preedit(&text, cursor);
-                if let Some(rect) = self
-                    .host
-                    .ime_anchor_rect(self.viewport_width, self.viewport_height)
-                {
-                    if let Some(window) = self.window.as_ref() {
-                        let dpi = window.scale_factor();
-                        window.set_ime_cursor_area(
-                            winit::dpi::PhysicalPosition::new(
-                                (rect.origin.x as f64) * dpi,
-                                ((rect.origin.y + rect.size.y) as f64) * dpi,
-                            ),
-                            winit::dpi::PhysicalSize::new(
-                                (rect.size.x as f64) * dpi,
-                                (rect.size.y as f64) * dpi,
-                            ),
-                        );
-                    }
-                }
+                self.sync_native_ime();
                 if changed {
                     self.request_redraw(true);
                 }
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                if self.host.apply_ime_commit(&text) {
+                let changed = self.host.apply_ime_commit(&text);
+                self.sync_native_ime();
+                if changed {
                     self.request_redraw(true);
                 }
             }
@@ -1499,6 +1495,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                 ..
             } => {
                 self.handle_key_pressed(&logical_key, text.as_deref());
+                self.sync_native_ime();
             }
             _ => {}
         }

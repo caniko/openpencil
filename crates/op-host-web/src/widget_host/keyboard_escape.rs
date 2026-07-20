@@ -8,6 +8,16 @@ impl WidgetHost {
     /// Escape — handles one layer per press, matching the native
     /// host's priority order.
     pub fn apply_escape(&mut self) -> bool {
+        // The property-panel image popover owns Escape before any stale input
+        // underneath. Keep the image selected; only dismiss the top layer.
+        if self.editor_state.editor_ui.image_panel.search_open
+            || self.editor_state.editor_ui.image_panel.generate_open
+        {
+            self.clear_image_input_selection_drag();
+            self.editor_state.editor_ui.image_panel.close_popovers();
+            self.mark_dirty();
+            return true;
+        }
         if self
             .editor_state
             .editor_ui

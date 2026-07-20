@@ -29,6 +29,24 @@ fn canvaskit_mount_listens_for_window_resize() {
 }
 
 #[test]
+fn canvaskit_mount_releases_drags_from_the_window() {
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/canvaskit.rs"))
+        .expect("canvaskit source is readable");
+    let release = source
+        .split("Window-level mouseup")
+        .nth(1)
+        .and_then(|body| body.split("// wheel").next())
+        .expect("window-level release listener");
+
+    assert!(release.contains("&win_target, \"mouseup\""));
+    assert!(release.contains("apply_release_with_viewport"));
+    assert!(
+        !release.contains("&canvas_target, \"mouseup\""),
+        "canvas-only mouseup strands a drag released outside the canvas"
+    );
+}
+
+#[test]
 fn canvaskit_mount_syncs_window_size_before_first_repaint() {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/canvaskit.rs"))
         .expect("canvaskit source is readable");

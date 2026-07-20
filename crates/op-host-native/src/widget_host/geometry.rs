@@ -469,6 +469,24 @@ impl WidgetHostNative {
                 return CursorHint::Text;
             }
         }
+        // Image popovers extend outside the property rail. Their editor gets
+        // an I-beam; the rest of the popup stays neutral so a canvas cursor
+        // cannot bleed through from the selected node underneath.
+        let image_panel = &self.editor_state.editor_ui.image_panel;
+        if image_panel.search_open || image_panel.generate_open {
+            if let Some(panel) =
+                op_editor_ui::widgets::PropertyPanel::for_selection(&self.editor_state)
+            {
+                let property_rect = self.property_rect(viewport_w, viewport_h);
+                let point = Point2D::new(x, y);
+                if panel.image_popover_input_at(property_rect, point).is_some() {
+                    return CursorHint::Text;
+                }
+                if panel.image_popovers_contain(property_rect, point) {
+                    return CursorHint::Default;
+                }
+            }
+        }
         // Any floating overlay (panels, Git popover, Toolbar /
         // StatusBar / chat, open dropdowns) — a neutral cursor over
         // them, never a canvas action cursor (Move / Crosshair)

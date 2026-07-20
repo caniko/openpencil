@@ -202,13 +202,17 @@ impl EditorState {
     /// Replace the selection with `id` + anchor on it. A NONE id
     /// clears the selection. Idempotent.
     pub fn set_single_selection(&mut self, id: NodeId) {
-        if id.is_real() {
-            self.selection = SelectionState {
+        let next = if id.is_real() {
+            SelectionState {
                 anchor: id.clone(),
                 set: vec![id],
-            };
+            }
         } else {
-            self.clear_selection();
+            SelectionState::empty()
+        };
+        if self.selection != next {
+            self.editor_ui.image_panel.close_popovers();
+            self.selection = next;
         }
     }
 
@@ -218,6 +222,7 @@ impl EditorState {
         if !id.is_real() {
             return;
         }
+        self.editor_ui.image_panel.close_popovers();
         if let Some(pos) = self.selection.set.iter().position(|n| *n == id) {
             self.selection.set.remove(pos);
             self.selection.anchor = self.selection.set.last().cloned().unwrap_or(NodeId::NONE);
@@ -229,6 +234,9 @@ impl EditorState {
 
     /// Clear both anchor + set. Idempotent.
     pub fn clear_selection(&mut self) {
+        if !self.selection.is_empty() {
+            self.editor_ui.image_panel.close_popovers();
+        }
         self.selection = SelectionState::empty();
     }
 
@@ -249,7 +257,11 @@ impl EditorState {
         if ids.is_empty() {
             return false;
         }
-        self.selection.anchor = ids.last().cloned().unwrap_or(NodeId::NONE);
+        let next_anchor = ids.last().cloned().unwrap_or(NodeId::NONE);
+        if self.selection.anchor != next_anchor || self.selection.set != ids {
+            self.editor_ui.image_panel.close_popovers();
+        }
+        self.selection.anchor = next_anchor;
         self.selection.set = ids;
         true
     }

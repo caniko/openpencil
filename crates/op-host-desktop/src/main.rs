@@ -44,6 +44,7 @@ mod image_downscale;
 mod image_generate_host;
 mod image_panel_host;
 mod image_search_session;
+mod ime_window;
 mod keyboard_input;
 mod kit_io;
 mod kit_persistence;
@@ -78,6 +79,9 @@ use winit::window::Window;
 
 const INITIAL_VIEWPORT_W: f32 = 1440.0;
 const INITIAL_VIEWPORT_H: f32 = 900.0;
+
+type HtmlPastePayload = (Vec<jian_ops_schema::node::PenNode>, Vec<String>);
+type PendingHtmlPaste = (u64, std::sync::mpsc::Receiver<HtmlPastePayload>);
 
 #[derive(Clone, Copy, Debug)]
 enum DesktopEvent {
@@ -117,6 +121,9 @@ struct DesktopApp {
     cursor_y: f32,
     /// Cached scale factor (refreshed on Resumed + ScaleFactorChanged).
     dpi: f32,
+    /// Last IME capability + caret area published to the native window.
+    /// Keeps Windows from rebuilding its input context on every frame.
+    ime_window_sync: ime_window::ImeWindowSync,
     /// Cmd / Ctrl held — promotes scroll to zoom + gates editor shortcuts.
     zoom_modifier: bool,
     alt_modifier: bool,
@@ -213,10 +220,7 @@ struct DesktopApp {
     )>,
     /// In-flight clipboard HTML decode (non-Figma `text/html` paste):
     /// worker thread sends `(nodes, warnings)`.
-    pending_html_paste: Option<(
-        u64,
-        std::sync::mpsc::Receiver<(Vec<jian_ops_schema::node::PenNode>, Vec<String>)>,
-    )>,
+    pending_html_paste: Option<PendingHtmlPaste>,
     /// Background AI-model discovery — probes the installed CLIs
     /// on a worker thread; its result is drained into
     /// `chat.available_models` on a later frame.
@@ -404,6 +408,7 @@ impl DesktopApp {
             cursor_x: 0.0,
             cursor_y: 0.0,
             dpi: 1.0,
+            ime_window_sync: ime_window::ImeWindowSync::default(),
             zoom_modifier: false,
             alt_modifier: false,
             shift_modifier: false,

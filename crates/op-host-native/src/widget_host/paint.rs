@@ -24,6 +24,7 @@ impl WidgetHostNative {
         viewport_width: f32,
         viewport_height: f32,
     ) {
+        self.image_input_geometry = None;
         // Rotate the transcript-cache owner if the active chat session changed
         // since the last frame, BEFORE any resolve stores under it — the new
         // tab's build is then stamped with the fresh owner.
@@ -392,6 +393,8 @@ impl WidgetHostNative {
                 backend: &mut *frame,
             };
             panel.paint_overlays(&mut cx, property_rect);
+            self.image_input_geometry =
+                panel.image_popover_input_geometry(property_rect, &mut *frame);
         }
 
         // 8.7. Floating Git panel — a popover hanging off the TopBar

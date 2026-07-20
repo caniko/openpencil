@@ -54,6 +54,7 @@ impl WidgetHost {
         viewport_width: f32,
         viewport_height: f32,
     ) {
+        self.image_input_geometry = None;
         // Rotate the transcript-cache owner if the active chat session changed,
         // BEFORE any resolve stores under it (mirrors native paint).
         self.rotate_chat_owner_if_session_changed();
@@ -328,6 +329,8 @@ impl WidgetHost {
                 backend: &mut *backend,
             };
             panel.paint_overlays(&mut cx, property_rect);
+            self.image_input_geometry =
+                panel.image_popover_input_geometry(property_rect, &mut *backend);
         }
 
         // ShapePicker — anchored to the right of the toolbar shape
