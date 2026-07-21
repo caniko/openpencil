@@ -3447,11 +3447,13 @@ name = "op-html"
 version = "0.8.1"
 dependencies = [
  "base64",
+ "flate2",
  "html5ever",
  "jian-ops-schema",
  "markup5ever_rcdom",
  "serde_json",
  "url",
+ "zip",
 ]
 
 [[package]]

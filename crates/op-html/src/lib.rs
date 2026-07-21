@@ -11,11 +11,25 @@ pub mod css;
 pub mod dom;
 pub mod length;
 pub mod mapper;
+mod project;
+mod project_zip;
 pub mod resources;
 pub mod snapshot;
 pub mod special;
 pub mod text;
 
+pub use project::{
+    import_html_project, import_html_project_document, import_html_project_document_with_transform,
+    import_html_project_with_transform, select_html_entry, HtmlProjectError, HtmlProjectFile,
+    MAX_PROJECT_FILES, VIRTUAL_PROJECT_ORIGIN,
+};
+pub use project_zip::{
+    extract_html_zip, extract_html_zip_reader, import_html_zip, import_html_zip_document,
+    import_html_zip_document_reader, import_html_zip_document_reader_with_transform,
+    import_html_zip_document_with_transform, import_html_zip_reader,
+    import_html_zip_reader_document, import_html_zip_reader_document_with_transform,
+    import_html_zip_reader_with_transform, import_html_zip_with_transform, MAX_ZIP_ENTRIES,
+};
 pub use snapshot::{import_snapshot, import_snapshot_document};
 
 #[cfg(test)]
@@ -70,7 +84,6 @@ pub fn import_html_with_resources(
             warnings,
         };
     }
-    let source = truncate_source(source, &mut warnings);
     let mut parsed = dom::parse_dom(source);
     if parsed.depth_truncated {
         warnings.push(format!(
@@ -307,20 +320,7 @@ pub(crate) fn wrap_imported_document(imported: HtmlImportResult) -> HtmlDocument
     }
 }
 
-const MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAX_OUTPUT_NODES: usize = 20_000;
-
-fn truncate_source<'a>(source: &'a str, warnings: &mut Vec<String>) -> &'a str {
-    if source.len() <= MAX_INPUT_BYTES {
-        return source;
-    }
-    let mut end = MAX_INPUT_BYTES;
-    while !source.is_char_boundary(end) {
-        end -= 1;
-    }
-    warnings.push("input HTML exceeded 10MB and was truncated".to_string());
-    &source[..end]
-}
 
 fn truncate_dom_nodes(nodes: &mut Vec<dom::DomNode>, remaining: &mut usize) -> bool {
     let original_len = nodes.len();
