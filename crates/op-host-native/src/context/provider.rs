@@ -158,6 +158,41 @@ impl GlutinProvider {
     /// matches the window's pixel format and stencil bits.
     #[tracing::instrument(skip_all)]
     pub fn from_window(window: &winit::window::Window) -> ProviderResult<Self> {
+        Self::from_window_impl(window, None)
+    }
+
+    /// Windows-only fallback constructor: force glutin onto the EGL
+    /// display path so it loads ANGLE's `libEGL.dll` (GL ES backed by
+    /// D3D11) instead of the native WGL ICD.
+    ///
+    /// `SharedSkiaContext::new_desktop` calls this ONLY after the primary
+    /// WGL attempt produced a context Skia's GL backend can't drive —
+    /// i.e. machines whose WGL exposes just the Microsoft GDI-generic
+    /// OpenGL 1.1 software renderer (no / stale GPU driver, VMs, RDP).
+    /// On those machines the earlier `WglThenEgl` preference never fell
+    /// through to EGL because WGL *did* create a (1.1) context
+    /// successfully; the failure only surfaces downstream in
+    /// `skia::direct_contexts::make_gl`. Forcing EGL here routes through
+    /// ANGLE instead, which reports a usable GL ES 3.0 context.
+    ///
+    /// Requires `libEGL.dll` + `libGLESv2.dll` shipped next to the
+    /// executable (glutin `LoadLibrary`s them from the exe directory);
+    /// if they are absent EGL display creation fails and this returns
+    /// `Err`, leaving the caller to surface the original WGL failure.
+    #[cfg(target_os = "windows")]
+    #[tracing::instrument(skip_all)]
+    pub fn from_window_forcing_egl(window: &winit::window::Window) -> ProviderResult<Self> {
+        Self::from_window_impl(window, Some(glutin::display::DisplayApiPreference::Egl))
+    }
+
+    /// Shared builder for [`from_window`] and (Windows) the EGL/ANGLE
+    /// fallback. `preference_override` bypasses [`pick_display_api`] so
+    /// the fallback can pin the display API.
+    #[tracing::instrument(skip_all)]
+    fn from_window_impl(
+        window: &winit::window::Window,
+        preference_override: Option<glutin::display::DisplayApiPreference>,
+    ) -> ProviderResult<Self> {
         use glutin::config::ConfigTemplateBuilder;
         use glutin::context::ContextAttributesBuilder;
         use glutin::display::{Display, GetGlDisplay};
@@ -176,7 +211,9 @@ impl GlutinProvider {
 
         // Per-platform display preference (glutin-winit applies the same
         // matrix internally, but we go direct to avoid the sealed trait).
-        let preference = pick_display_api(raw_window_handle);
+        // A caller-supplied override wins so the Windows ANGLE fallback
+        // can pin EGL.
+        let preference = preference_override.unwrap_or_else(|| pick_display_api(raw_window_handle));
 
         let gl_display = unsafe {
             Display::new(raw_display_handle, preference).map_err(ProviderError::from_error)?

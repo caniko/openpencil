@@ -121,8 +121,60 @@ impl SharedSkiaContext {
     /// matches the window's framebuffer dimensions.
     #[tracing::instrument(skip_all)]
     pub fn new_desktop(window: &winit::window::Window) -> SharedSkiaResult<Self> {
+        // Primary path: the per-platform default display API (native WGL
+        // on Windows). Machines with a real GPU driver keep this exact
+        // render path — no behaviour change.
         let provider = GlutinProvider::from_window(window)?;
-        Self::new(provider)
+        match Self::new(provider) {
+            Ok(ctx) => Ok(ctx),
+            Err(err) => {
+                // On Windows a "successful" WGL context can still be the
+                // GDI-generic OpenGL 1.1 software renderer, which Skia's
+                // GL backend rejects (`make_gl` → None). The old
+                // `WglThenEgl` preference never caught this because WGL
+                // *did* create a context; the failure is downstream in
+                // Skia. Retry once forcing EGL so glutin routes through
+                // ANGLE (GL ES / D3D11), which those machines can drive.
+                //
+                // NOTE (unverified on Windows from this workstation): the
+                // HWND pixel format is set once by the first WGL surface;
+                // ANGLE's D3D11 backend does not consume the GL pixel
+                // format, so reusing the same window is expected to work,
+                // but must be smoke-tested on an affected machine. If it
+                // proves flaky the fallback is window re-creation.
+                #[cfg(target_os = "windows")]
+                {
+                    if Self::gl_backend_unavailable(&err) {
+                        tracing::warn!(
+                            ?err,
+                            "native WGL context cannot drive Skia; retrying via EGL/ANGLE"
+                        );
+                        if let Ok(egl_provider) = GlutinProvider::from_window_forcing_egl(window) {
+                            return Self::new(egl_provider);
+                        }
+                        tracing::warn!(
+                            "EGL/ANGLE fallback unavailable (libEGL.dll missing?); \
+                             surfacing original WGL failure"
+                        );
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Whether a context-construction error stems from the GL backend
+    /// being unusable (as opposed to a transient not-ready surface),
+    /// making an EGL/ANGLE retry worthwhile. Windows-only — the retry
+    /// site is `#[cfg(target_os = "windows")]`.
+    #[cfg(target_os = "windows")]
+    fn gl_backend_unavailable(err: &SharedSkiaError) -> bool {
+        matches!(
+            err,
+            SharedSkiaError::GlInterface
+                | SharedSkiaError::DirectContext
+                | SharedSkiaError::Surface
+        )
     }
 
     /// Begin a frame. Pure marker hook for now — chrome / canvas viewport

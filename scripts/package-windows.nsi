@@ -97,6 +97,21 @@ Section "OpenPencil" SecMain
   File "${BIN_DIR}\${CLI_NAME}"
   File "/oname=openpencil.ico" "${ICON_FILE}"
 
+  ; ANGLE fallback DLLs (libEGL.dll + libGLESv2.dll, optionally
+  ; d3dcompiler_47.dll). Installed next to the exe so glutin's EGL path
+  ; loads them when the native WGL OpenGL context can't drive Skia — the
+  ; machines that were flash-exiting on startup (no/old GPU driver,
+  ; software-only OpenGL, VMs, RDP). See
+  ; `SharedSkiaContext::new_desktop` for the fallback wiring.
+  ;
+  ; `/nonfatal`: the release/CI build must stage these DLLs into
+  ; ${BIN_DIR} (matching the target arch) before running makensis. Until
+  ; that step exists the installer still builds (just without the
+  ; fallback), so packaging never hard-breaks on a missing DLL.
+  File /nonfatal "${BIN_DIR}\libEGL.dll"
+  File /nonfatal "${BIN_DIR}\libGLESv2.dll"
+  File /nonfatal "${BIN_DIR}\d3dcompiler_47.dll"
+
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "${REG_APP_KEY}" "InstallDir" "$INSTDIR"
 

@@ -545,7 +545,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                     }
                 } else {
                     eprintln!(
-                        "openpencil-desktop: ignored dropped file (not .op / .pen / .fig / .html): {}",
+                        "openpencil-desktop: ignored dropped file (not .op / .pen / .fig / .html / .zip): {}",
                         path.display()
                     );
                 }
@@ -1020,12 +1020,14 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_x = position.x as f32 / self.dpi;
                 self.cursor_y = position.y as f32 / self.dpi;
-                let over_layer_panel = self.host.cursor_over_layer_panel(
-                    self.cursor_x,
-                    self.cursor_y,
-                    self.viewport_width,
-                    self.viewport_height,
-                );
+                let model_picker_open = self.host.editor_state().editor_ui.chat_model_picker.open;
+                let over_layer_panel = !model_picker_open
+                    && self.host.cursor_over_layer_panel(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.viewport_width,
+                        self.viewport_height,
+                    );
                 if let Some(window) = self.window.as_ref() {
                     // Borderless (Windows / Linux) windows have no OS-provided
                     // edge-resize band — synthesize a resize cursor over the
@@ -1316,8 +1318,8 @@ impl ApplicationHandler<DesktopEvent> for DesktopApp {
                                     Some(figma_import_session::spawn(&mut self.host, path));
                                 self.request_redraw(true);
                             }
-                            // User picked a saved page; same background
-                            // session discipline as the Figma branch.
+                            // User picked a saved page or ZIP project; same
+                            // background session discipline as the Figma branch.
                             op_host_services::doc_io::ActionOutcome::HtmlImportStarted(path) => {
                                 figma_import_session::cancel(
                                     &mut self.host,
@@ -1589,6 +1591,34 @@ fn render_surface_not_ready(err: &SharedSkiaError) -> bool {
     )
 }
 
+/// Pop a native error dialog when the GL/Skia render context can't be
+/// built, so a fatal graphics-init failure is visible instead of a
+/// silent flash-exit. This matters most on Windows: the binary is a GUI
+/// subsystem app (`windows_subsystem = "windows"`) with no attached
+/// console, so `eprintln!` / tracing-to-stderr produce no output on a
+/// double-click launch. Bilingual EN/中文 body — the failure happens
+/// before the editor locale is meaningfully in play, and it must read
+/// for the affected users (typically machines with a missing/old GPU
+/// driver or a software-only OpenGL renderer).
+fn show_gpu_init_error_dialog(err: &SharedSkiaError) {
+    let body = format!(
+        "OpenPencil could not initialize the graphics (OpenGL) backend and has to close.\n\
+         无法初始化图形 (OpenGL) 渲染引擎，程序即将退出。\n\n\
+         This usually means the GPU driver is missing or too old, or the machine only \
+         has a software renderer (common on virtual machines / remote desktop).\n\
+         通常是显卡驱动缺失或过旧，或运行在只有软件渲染的环境（虚拟机 / 远程桌面）。\n\n\
+         Please update your graphics driver and try again.\n\
+         请更新显卡驱动后重试。\n\n\
+         Details: {err}"
+    );
+    rfd::MessageDialog::new()
+        .set_title("OpenPencil — Graphics initialization failed / 图形初始化失败")
+        .set_description(&body)
+        .set_level(rfd::MessageLevel::Error)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
 impl DesktopApp {
     fn refresh_host_clock(&mut self) {
         let now_ms = self.clock_start.elapsed().as_millis() as u64;
@@ -1675,6 +1705,13 @@ impl DesktopApp {
             }
             Err(err) => {
                 eprintln!("openpencil-desktop: SharedSkiaContext::new_desktop failed: {err}");
+                // The GUI subsystem has no console (`windows_subsystem =
+                // "windows"`), so the `eprintln!` above goes nowhere on a
+                // double-click launch — the app would just flash and
+                // vanish. Surface the failure in a native dialog so the
+                // user sees a real reason (GPU driver / OpenGL) instead of
+                // a mystery crash.
+                show_gpu_init_error_dialog(&err);
                 self.error = Some(err);
                 event_loop.exit();
                 false

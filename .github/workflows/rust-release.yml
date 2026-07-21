@@ -119,6 +119,17 @@ jobs:
       HAS_APPLE_CERTIFICATE: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && 'true' || 'false' }}
       HAS_WINDOWS_CERTIFICATE: ${{ secrets.WIN_CSC_LINK != '' && secrets.WIN_CSC_KEY_PASSWORD != '' && 'true' || 'false' }}
       TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+      # ANGLE runtime DLLs (libEGL / libGLESv2 / d3dcompiler_47) shipped
+      # in the Windows installer so glutin's EGL fallback can drive Skia
+      # on machines whose native WGL OpenGL is the GDI-generic 1.1
+      # software renderer (no/old GPU driver, VMs, RDP) — those were the
+      # startup flash-exits. We don't build ANGLE from source (heavy,
+      # brittle); we lift the prebuilt, arch-matched DLLs out of an
+      # Electron release zip (BSD-licensed ANGLE + MS-redistributable
+      # d3dcompiler, published at the zip root for x64 + arm64).
+      # Bump freely; verify the tag exists at
+      # https://github.com/electron/electron/releases before changing.
+      ANGLE_ELECTRON_VERSION: v33.0.0
     strategy:
       fail-fast: false
       matrix:
@@ -396,6 +407,32 @@ jobs:
           }
           Split-Path $makensis | Out-File -FilePath $env:GITHUB_PATH -Append
           & $makensis /VERSION
+      - name: Stage ANGLE DLLs (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Electron's win32 arch token matches our matrix arch (x64 / arm64).
+          $arch = "${{ matrix.arch }}"
+          $ver = "$env:ANGLE_ELECTRON_VERSION"
+          $url = "https://github.com/electron/electron/releases/download/$ver/electron-$ver-win32-$arch.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "electron-$arch.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "electron-$arch"
+          Write-Host "Fetching ANGLE DLLs from $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $dest = "$env:GITHUB_WORKSPACE\target\${{ matrix.target }}\release"
+          # d3dcompiler_47.dll ships in Win10/11 System32, but bundling it
+          # keeps ANGLE self-contained across all environments.
+          $dlls = @("libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll")
+          foreach ($dll in $dlls) {
+            $src = Join-Path $extract $dll
+            if (-not (Test-Path $src)) {
+              throw "ANGLE DLL '$dll' not found in $url — the fallback would ship broken; failing the release."
+            }
+            Copy-Item -Path $src -Destination $dest -Force
+            Write-Host "Staged $dll -> $dest"
+          }
       - name: Package NSIS installer (windows)
         if: runner.os == 'Windows'
         shell: pwsh
