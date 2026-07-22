@@ -29,6 +29,11 @@
 
     nix-appimage.url = "github:ralismark/nix-appimage";
 
+    nix-pklx = {
+      url = "git+https://codeberg.org/caniko/nix-pklx.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     agent = {
       url = "github:ZSeven-W/agent-rs/5c0f9506e27be5b4f29cd2c1093e2858ad0fa20c";
       flake = false;
@@ -53,6 +58,7 @@
     py-harbor,
     js-harbor,
     nix-appimage,
+    nix-pklx,
     agent,
     casement,
     jian,
@@ -60,6 +66,10 @@
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
       systems = ["x86_64-linux"];
+
+      flake = {
+        lib.integrationManifest = import ./nix/integration/openpencil.nix;
+      };
 
       perSystem = {system, ...}: let
         lib = pkgs.lib;
@@ -103,6 +113,13 @@
           libxcb-wm
         ];
         runtimeLibraries = nativeLibraries;
+        prebuiltDesktopRuntimeLibraries =
+          runtimeLibraries
+          ++ [
+            pkgs.zlib
+            pkgs.stdenv.cc.cc.lib
+          ];
+        prebuiltCliRuntimeLibraries = [pkgs.stdenv.cc.cc.lib];
 
         source = pkgs.runCommand "openpencil-source-${version}" {} ''
           mkdir -p $out/vendor/agent $out/vendor/casement $out/vendor/jian
@@ -199,6 +216,14 @@
             '';
           });
 
+        runtimePackage = pkgs.symlinkJoin {
+          name = "openpencil-runtime-${version}";
+          paths = [nativePackage];
+          postBuild = ''
+            install -Dm644 ${defaultDocument} "$out/share/openpencil/default.op"
+          '';
+        };
+
         # Upstream publishes matching Linux archives for tagged releases. These
         # outputs are deliberately separate from the source-built packages: the
         # source build remains the default, while users with a matching release
@@ -211,7 +236,8 @@
             hash = "sha256-pcJ4l4e7UYQcI2jNCJ3lxoc7o5h3vKCGzj3hl1O42NU=";
           };
           dontUnpack = true;
-          nativeBuildInputs = [pkgs.makeWrapper];
+          nativeBuildInputs = [pkgs.autoPatchelfHook pkgs.makeWrapper];
+          buildInputs = prebuiltDesktopRuntimeLibraries;
           installPhase = ''
             runHook preInstall
             tar -xzf "$src" -C "$TMPDIR"
@@ -232,7 +258,7 @@
           '';
           postFixup = ''
             wrapProgram $out/bin/openpencil-desktop \
-              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibraries}
+              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath prebuiltDesktopRuntimeLibraries}
           '';
         };
 
@@ -244,6 +270,8 @@
             hash = "sha256-lWxl3h93gOwXnKGtSxL9VneaR1pbdr78pNpxQ6ZaUYg=";
           };
           dontUnpack = true;
+          nativeBuildInputs = [pkgs.autoPatchelfHook];
+          buildInputs = prebuiltCliRuntimeLibraries;
           installPhase = ''
             runHook preInstall
             tar -xzf "$src" -C "$TMPDIR"
@@ -325,6 +353,14 @@
           '';
         };
 
+        defaultDocument = pkgs.writeText "openpencil-default-${version}.op" ''
+          {
+            "version": "${version}",
+            "name": "OpenPencil Nix Session",
+            "children": []
+          }
+        '';
+
         bunToolchain = js-harbor.lib.mkBunToolchain {
           inherit pkgs;
           packageJson = ./packages/package.json;
@@ -394,6 +430,76 @@
             touch $out
           '';
 
+        prebuiltTestFlake = pkgs.writeTextDir "flake.nix" ''
+          {
+            outputs = {self}: {
+              apps.x86_64-linux.prebuilt = {
+                type = "app";
+                program = "${prebuiltDesktopPackage}/bin/openpencil-desktop";
+              };
+              apps.x86_64-linux.prebuilt-cli = {
+                type = "app";
+                program = "${prebuiltCliPackage}/bin/op";
+              };
+            };
+          }
+        '';
+
+        prebuiltRuntimeTest = pkgs.testers.runNixOSTest ({...}: {
+          name = "openpencil-prebuilt-runtime";
+          nodes.machine = {pkgs, ...}: {
+            system.stateVersion = "25.11";
+            virtualisation.memorySize = 2048;
+            nix.settings.experimental-features = ["nix-command" "flakes"];
+            environment.etc."openpencil-test-flake".source = prebuiltTestFlake;
+            environment.systemPackages = [
+              prebuiltDesktopPackage
+              prebuiltCliPackage
+              pkgs.xvfb-run
+            ];
+          };
+          testScript = ''
+            machine.succeed("nix run --offline /etc/openpencil-test-flake#prebuilt-cli -- --version | grep -F ${version}")
+            machine.succeed("set +e; timeout 15s xvfb-run -a nix run --offline /etc/openpencil-test-flake#prebuilt >/tmp/openpencil.log 2>&1; rc=$?; test $rc -eq 0 -o $rc -eq 124; ! grep -E 'error while loading|cannot open shared object|No such file' /tmp/openpencil.log")
+          '';
+        });
+
+        runtimePrebuiltPackage = pkgs.symlinkJoin {
+          name = "openpencil-runtime-prebuilt-${version}";
+          paths = [prebuiltDesktopPackage prebuiltCliPackage];
+          nativeBuildInputs = [pkgs.makeWrapper];
+          postBuild = ''
+            rm -f "$out/bin/op"
+            makeWrapper ${prebuiltCliPackage}/bin/op "$out/bin/op" \
+              --set-default OPENPENCIL_DESKTOP_BIN "$out/bin/openpencil-desktop"
+            install -Dm644 ${defaultDocument} "$out/share/openpencil/default.op"
+          '';
+        };
+
+        skillBundle = builtins.fromJSON (
+          builtins.replaceStrings
+          ["__OPENPENCIL_VERSION__"]
+          [version]
+          (builtins.readFile ./crates/op-cli/assets/skill-bundle.json)
+        );
+        skillBundleFiles =
+          builtins.mapAttrs
+          (relativePath: contents:
+            pkgs.writeText
+            "openpencil-skill-${builtins.replaceStrings ["/"] ["-"] relativePath}"
+            contents)
+          skillBundle.files;
+        skillsPackage = pkgs.runCommand "openpencil-skills-${version}" {} ''
+          mkdir -p "$out/share/skillnet/openpencil"
+          install -Dm644 ${./nix/integration/Skillnet.pkl} \
+            "$out/share/skillnet/openpencil/Skillnet.pkl"
+          ${lib.concatStringsSep "\n" (
+            lib.mapAttrsToList
+            (relativePath: source: "install -Dm644 ${source} \"$out/share/skillnet/openpencil/${relativePath}\"")
+            skillBundleFiles
+          )}
+        '';
+
         appimage = rs-harbor.lib.mkAppImage {
           inherit nix-appimage system version;
           pname = "openpencil";
@@ -404,8 +510,11 @@
           default = webServerPackage;
           openpencil = webServerPackage;
           op-cli = opCliPackage;
+          runtime = runtimePackage;
+          runtime-prebuilt = runtimePrebuiltPackage;
           prebuilt = prebuiltDesktopPackage;
           prebuilt-cli = prebuiltCliPackage;
+          skills = skillsPackage;
           web-server = webServerPackage;
           web-bundle = webHostBundle;
           web-sdk-wasm = webSdkWasm;
@@ -435,6 +544,22 @@
             type = "app";
             program = "${webServerPackage}/bin/op-host-web-server";
           };
+          integration-export = {
+            type = "app";
+            program = "${pkgs.writeShellApplication {
+              name = "openpencil-integration-export";
+              runtimeInputs = [nix-pklx.packages.${system}.pklx pkgs.coreutils];
+              text = ''
+                export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                output="''${1:-nix/integration/openpencil.nix}"
+                tmp="$(mktemp)"
+                trap 'rm -f "$tmp"' EXIT
+                pklx eval nix/integration/OpenPencil.pkl -o "$tmp"
+                mv "$tmp" "$output"
+                echo "Wrote $output from nix/integration/OpenPencil.pkl"
+              '';
+            }}/bin/openpencil-integration-export";
+          };
         };
 
         devShells.default = pkgs.mkShell {
@@ -463,6 +588,16 @@
           web-sdk-wasm = webSdkWasm;
           web-sdk-packages = webSdkPackages;
           python = pythonCheck;
+          prebuilt = prebuiltDesktopPackage;
+          prebuilt-cli = prebuiltCliPackage;
+          prebuilt-runtime = prebuiltRuntimeTest;
+          integration-manifest =
+            pkgs.runCommand "openpencil-integration-manifest" {
+              nativeBuildInputs = [nix-pklx.packages.${system}.pklx];
+              SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            } ''
+              pklx eval ${./nix/integration/OpenPencil.pkl} -o "$out"
+            '';
           flake-format = pkgs.runCommand "openpencil-flake-format" {} ''
             ${pkgs.alejandra}/bin/alejandra --check ${./flake.nix}
             touch $out
