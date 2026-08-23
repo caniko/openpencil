@@ -200,7 +200,7 @@ jobs:
             sleep "$delay"
           done
       - name: Build (host)
-        run: cargo build -p op-host-desktop -p op-cli --target ${{ matrix.target }} --release
+        run: cargo build -p op-host-desktop -p op-cli --features op-cli/opui-raster --target ${{ matrix.target }} --release
       - name: Package archives (unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
