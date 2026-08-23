@@ -26,7 +26,7 @@ crates/
 ├── op-host-desktop/      Desktop binary `openpencil-desktop` (winit + skia-safe GL); also the `--serve-web` daemon
 ├── op-cli/               `op` command-line tool
 └── …                     op-mcp / op-ai / op-ai-skills / op-codegen / op-orchestrator / op-figma /
-                          op-git / op-opmerge / op-pen-loader / op-design-lint / op-config-store /
+                          op-git / op-opmerge / op-pen-loader / op-runtime-ui / op-design-lint / op-config-store /
                           op-process-io / op-acp / op-i18n / op-rpc-transport / op-smoke
 ```
 

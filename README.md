@@ -334,6 +334,7 @@ op design @landing.txt       # Batch design from file
 op design @ui.js             # Sandboxed JavaScript with loops
 op insert '{"type":"rectangle"}' # Insert a node
 op import:figma design.fig   # Import Figma file
+op export --file design.op --format opui --output design.opui [--raster-native]
 cat design.dsl | op design - # Pipe from stdin
 ```
 
