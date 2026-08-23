@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use jian_ops_schema::node::{
-    AlignItems, CornerRadius, FontWeight, ImageFitMode, JustifyContent, LayoutMode,
-    NumberOrExpression, Padding, PenNode, PenNodeBase, TextAlign, TextAlignVertical, TextContent,
-    TextFontStyle, TextGrowth, TextNode,
+    CornerRadius, FontWeight, ImageFitMode, JustifyContent, LayoutMode, NumberOrExpression,
+    Padding, PenNode, PenNodeBase, TextAlign, TextAlignVertical, TextContent, TextFontStyle,
+    TextGrowth, TextNode,
 };
 use jian_ops_schema::sizing::{SizingBehavior, SizingKeyword};
 use jian_ops_schema::style::{
@@ -39,6 +39,7 @@ struct Cx<'a> {
     diags: Vec<Diag>,
     rasters: Vec<RasterCandidate>,
     page_index: usize,
+    ref_stack: HashSet<String>,
 }
 
 pub(crate) fn export_document(
@@ -65,7 +66,8 @@ pub(crate) fn export_document(
         assets: BTreeMap::new(),
         diags: Vec::new(),
         rasters: Vec::new(),
-        page_index: page_index_of(doc, node_id(root)),
+        page_index: page_index_of(doc, node_id(root))?,
+        ref_stack: HashSet::new(),
     };
     let root_id = cx.emit(root, None, None, false)?;
     cx.diags.sort_by(|a, b| {
@@ -170,7 +172,7 @@ impl Cx<'_> {
         );
         obj.insert("children".into(), json!(child_ids));
         obj.insert("layout".into(), self.layout_of(node, parent_flex));
-        obj.insert("style".into(), self.style_of(node, &id));
+        obj.insert("style".into(), self.style_of(node, &id)?);
         obj.insert("extensions".into(), json!({}));
         if let Some(p) = payload {
             obj.insert(payload_key.into(), p);
@@ -191,18 +193,29 @@ impl Cx<'_> {
         let target = self.index.get(&r.target).copied().ok_or_else(|| {
             ExportError::msg(format!("ref {} target {} not found", r.base.id, r.target))
         })?;
+        if !self.ref_stack.insert(r.target.clone()) {
+            return Err(ExportError::msg(format!(
+                "cyclic ref {} -> {}",
+                r.base.id, r.target
+            )));
+        }
         if r.descendants.as_ref().is_some_and(|d| !d.is_empty()) {
             self.unsupported(&id, "ref descendants")?;
         }
         self.record_raster(target, &id, &scene_id);
         let child_prefix = Some(id.as_str());
         let child_scene = Some(scene_id.as_str());
-        // Flatten: emit the target tree under the instance id, remapping children.
+        let kids = r
+            .children
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| children_of(target));
         let flex = is_flex(target);
         let mut child_ids = Vec::new();
-        for child in children_of(target) {
+        for child in kids {
             child_ids.push(self.emit(child, child_prefix, child_scene, flex)?);
         }
+        self.ref_stack.remove(&r.target);
         let (typ, payload_key, payload) = match target {
             PenNode::Text(t) => ("text", "text", Some(self.text_payload(t)?)),
             PenNode::Image(img) => ("image", "image", Some(self.image_payload(&id, img)?)),
@@ -238,7 +251,7 @@ impl Cx<'_> {
                 self.position_layout(&r.base, parent_flex),
             ),
         );
-        obj.insert("style".into(), self.style_of(target, &id));
+        obj.insert("style".into(), self.style_of(target, &id)?);
         obj.insert("extensions".into(), json!({}));
         if let Some(p) = payload {
             obj.insert(payload_key.into(), p);
@@ -362,9 +375,7 @@ impl Cx<'_> {
                 }
             }
             if let Some(a) = c.align_items.as_ref() {
-                if !matches!(a, AlignItems::Start) {
-                    layout.insert("align_items".into(), json!(align(a)));
-                }
+                layout.insert("align_items".into(), json!(align(a)));
             }
             if let Some(NumberOrExpression::Number(g)) = &c.gap {
                 if g.is_finite() && *g > 0.0 {
@@ -415,7 +426,7 @@ impl Cx<'_> {
         })
     }
 
-    fn style_of(&mut self, node: &PenNode, id: &str) -> Value {
+    fn style_of(&mut self, node: &PenNode, id: &str) -> Result<Value, ExportError> {
         let mut style = Map::new();
         if let Some(NumberOrExpression::Number(o)) = &node_base(node).opacity {
             if o.is_finite() && *o != 1.0 {
@@ -441,25 +452,27 @@ impl Cx<'_> {
         if container_of(node).and_then(|c| c.clip_content) == Some(true) {
             style.insert("clipping".into(), json!(true));
         }
-        if let Some(fills) = fills_of(node) {
-            match first_solid_color(Some(fills)) {
-                Some(c) => {
-                    style.insert(
-                        "fill".into(),
-                        json!({ "type": "solid", "color": color_json(c) }),
-                    );
+        if !matches!(node, PenNode::Text(_)) {
+            if let Some(fills) = fills_of(node) {
+                match first_solid_color(Some(fills)) {
+                    Some(c) => {
+                        style.insert(
+                            "fill".into(),
+                            json!({ "type": "solid", "color": color_json(c) }),
+                        );
+                    }
+                    None if !fills.is_empty() => {
+                        self.unsupported(id, "non-solid fill")?;
+                    }
+                    None => {}
                 }
-                None if !fills.is_empty() => {
-                    let _ = self.unsupported(id, "non-solid fill");
-                }
-                None => {}
             }
         }
         if let Some(stroke) = stroke_of(node) {
             if let Some(border) = border_of(stroke) {
                 style.insert("border".into(), border);
             } else {
-                let _ = self.unsupported(id, "stroke");
+                self.unsupported(id, "stroke")?;
             }
         }
         if let Some(radius) = corner_of(node) {
@@ -481,7 +494,7 @@ impl Cx<'_> {
                         }
                     }
                     _ => {
-                        let _ = self.unsupported(id, "effect");
+                        self.unsupported(id, "effect")?;
                     }
                 }
             }
@@ -489,7 +502,7 @@ impl Cx<'_> {
                 style.insert("outer_shadows".into(), Value::Array(shadows));
             }
         }
-        Value::Object(style)
+        Ok(Value::Object(style))
     }
 
     fn unsupported(&mut self, id: &str, kind: &str) -> Result<(), ExportError> {
@@ -509,7 +522,7 @@ impl Cx<'_> {
     }
 
     fn record_raster(&mut self, node: &PenNode, source_id: &str, scene_id: &str) {
-        if is_raster_leaf(node) {
+        if node_base(node).visible.unwrap_or(true) && is_raster_leaf(node) {
             self.rasters.push(RasterCandidate {
                 source_id: source_id.to_string(),
                 scene_id: scene_id.to_string(),

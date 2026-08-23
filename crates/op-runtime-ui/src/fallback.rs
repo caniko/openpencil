@@ -3,14 +3,7 @@ use serde_json::{json, Value};
 use crate::assets::raster_fallback_from_png;
 use crate::{ExportError, ExportResult};
 
-const PAINTED_STYLE: &[&str] = &[
-    "fill",
-    "border",
-    "clipping",
-    "corner_radius",
-    "opacity",
-    "outer_shadows",
-];
+const PAINTED_STYLE: &[&str] = &["fill", "border", "clipping", "corner_radius", "opacity"];
 
 pub fn apply_raster_fallbacks(
     result: &mut ExportResult,

@@ -95,28 +95,24 @@ pub(crate) fn is_raster_leaf(n: &PenNode) -> bool {
                 | PenNode::Polygon(_)
                 | PenNode::Path(_)
                 | PenNode::IconFont(_)
-                | PenNode::TextInput(_)
-                | PenNode::TextArea(_)
-                | PenNode::Select(_)
-                | PenNode::Switch(_)
-                | PenNode::Checkbox(_)
-                | PenNode::Slider(_)
-                | PenNode::RadioGroup(_)
-                | PenNode::NumberInput(_)
-                | PenNode::Progress(_)
         )
 }
 
-pub(crate) fn page_index_of(doc: &jian_ops_schema::PenDocument, root_id: &str) -> usize {
+pub(crate) fn page_index_of(
+    doc: &jian_ops_schema::PenDocument,
+    root_id: &str,
+) -> Result<usize, crate::ExportError> {
     let Some(pages) = &doc.pages else {
-        return 0;
+        return Ok(0);
     };
     for (i, page) in pages.iter().enumerate() {
         if page.children.iter().any(|c| contains_id(c, root_id)) {
-            return i;
+            return Ok(i);
         }
     }
-    0
+    Err(crate::ExportError::msg(format!(
+        "root {root_id} is not under pages"
+    )))
 }
 
 fn contains_id(n: &PenNode, id: &str) -> bool {

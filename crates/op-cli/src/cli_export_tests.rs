@@ -222,6 +222,36 @@ fn export_opui_raster_native_feature_gate() {
     );
 }
 
+#[cfg(feature = "opui-raster")]
+#[test]
+fn export_opui_raster_native_writes_fallback_png() {
+    let dir = std::env::temp_dir().join(format!("op-cli-opui-e2e-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let input = dir.join("e.op");
+    let output = dir.join("e.opui");
+    std::fs::write(
+        &input,
+        r##"{"version":"0.8.0","children":[{"type":"ellipse","id":"e","width":40,"height":40,"fill":[{"type":"solid","color":"#ff0000"}]}]}"##,
+    )
+    .unwrap();
+    export_cli::run_export_opui(
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+        None,
+        false,
+        true,
+    )
+    .expect("raster export");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(v["nodes"]["e"]["type"], "fallback");
+    let pngs = std::fs::read_dir(dir.join("e.opui.assets/fallback"))
+        .unwrap()
+        .count();
+    assert_eq!(pngs, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn write_export_response_rejects_invalid_payloads() {
     let path = std::env::temp_dir().join("op-cli-export-invalid.png");
