@@ -100,6 +100,7 @@ jobs:
       - name: Run CanvasKit web host tests
         run: cargo test -p op-host-web --features canvaskit -- --test-threads=1
       - run: cargo clippy --workspace --all-targets --features op-cli/opui-raster -- -D warnings
+      - run: cargo test -p op-cli export_opui
       # Step 1a Phase C Task 4: spec v19 §11 + §12.3 boundary invariants.
       # Linux runner has the full mobile target stdlib (`rustup target add`
       # in subsequent steps would handle ios/android cargo metadata too,

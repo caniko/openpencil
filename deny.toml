@@ -90,4 +90,4 @@ unknown-registry = "deny"
 unknown-git = "deny"
 # agent-rs is now pulled in as a path dependency via the vendor/agent
 # submodule, no longer a git dependency.
-allow-git = []
+allow-git = ["https://github.com/caniko/opui.git"]
