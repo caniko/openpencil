@@ -21,6 +21,33 @@ pub(crate) fn map_export(flags: &Flags) -> Result<Command, String> {
         }
     }
     let format = format_flag.or(formats_flag).unwrap_or_else(|| "png".into());
+    if format == "opui" {
+        if selection {
+            return Err("--selection is not supported for --format opui".into());
+        }
+        if flag_value(flags, "scale").is_some() {
+            return Err("--scale is not supported for --format opui".into());
+        }
+        let file = flag_value(flags, "file").ok_or("--file is required for --format opui")?;
+        let output = flag_value(flags, "output").ok_or("--output is required")?;
+        if !output.ends_with(".opui") {
+            return Err("--output must end with .opui".into());
+        }
+        if flags.contains_key("raster-native") && flags.contains_key("strict") {
+            return Err("--strict and --raster-native cannot be used together".into());
+        }
+        let raster_native = flags.contains_key("raster-native");
+        if raster_native && !cfg!(feature = "opui-raster") {
+            return Err("rebuild op with --features opui-raster".into());
+        }
+        return Ok(Command::ExportOpui {
+            file,
+            item_id,
+            output,
+            strict: flags.contains_key("strict"),
+            raster_native,
+        });
+    }
     if !matches!(format.as_str(), "png" | "jpeg" | "jpg" | "webp" | "pdf") {
         return Err(format!("unsupported export format {format:?}"));
     }
@@ -38,6 +65,32 @@ pub(crate) fn map_export(flags: &Flags) -> Result<Command, String> {
         format,
         scale,
     })
+}
+
+pub(crate) fn run_export_opui(
+    file: &str,
+    output: &str,
+    item_id: Option<&str>,
+    strict: bool,
+    raster_native: bool,
+) -> Result<String, String> {
+    let output_path = Path::new(output);
+    #[allow(unused_mut)]
+    let mut result = op_runtime_ui::prepare_export(Path::new(file), output_path, item_id, strict)
+        .map_err(|e| e.to_string())?;
+    if raster_native {
+        #[cfg(feature = "opui-raster")]
+        crate::opui_raster::apply(file, &mut result)?;
+        #[cfg(not(feature = "opui-raster"))]
+        return Err("rebuild op with --features opui-raster".into());
+    }
+    op_runtime_ui::write_package(output_path, &result).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "output": output,
+        "format": "opui",
+        "itemId": item_id.unwrap_or(""),
+    })
+    .to_string())
 }
 
 pub(crate) fn run_export(

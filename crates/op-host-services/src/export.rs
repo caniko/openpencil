@@ -225,6 +225,30 @@ pub fn render_node_on_page_raster_bytes(
     })
 }
 
+/// Paint an unsupported leaf for OPUI `raster_fallback`.
+/// Strips rotation / flips / effects so the runtime can still apply them.
+pub fn render_fallback_leaf_png(page: &ScenePage, node_id: &str) -> Result<Vec<u8>, String> {
+    let node = page
+        .find(node_id)
+        .ok_or_else(|| format!("node {node_id} not found on page {}", page.id))?;
+    if node.hidden {
+        return Err(format!("node {node_id} is hidden and cannot be exported"));
+    }
+    let mut leaf = node.clone();
+    leaf.rotation = 0.0;
+    leaf.flip_x = false;
+    leaf.flip_y = false;
+    leaf.effects.clear();
+    let mut acc = BoundsAcc::new();
+    collect_bounds(&leaf, glam::Affine2::IDENTITY, &mut acc);
+    let bounds = acc
+        .into_rect()
+        .ok_or_else(|| format!("node {node_id} paints nothing"))?;
+    render_raster_bytes(bounds, RasterFormat::Png, 1.0, MARGIN, |canvas| {
+        paint_node(canvas, &leaf);
+    })
+}
+
 /// Clamp a caller-supplied export scale to the @0.5x..@8x range,
 /// defaulting a non-finite value to @2x (TS export-dialog parity).
 fn clamp_scale(scale: f32) -> f32 {

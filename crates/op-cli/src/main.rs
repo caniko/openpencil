@@ -13,6 +13,8 @@ mod command_helpers;
 mod export_cli;
 mod figma_cli;
 mod mcp_http_cli;
+#[cfg(feature = "opui-raster")]
+mod opui_raster;
 mod page_theme_cli;
 mod path_args;
 mod skill_export_cli;
@@ -58,9 +60,7 @@ fn run(args: &[String]) -> Result<String, String> {
         pretty,
         command,
     } = parse_args(args)?;
-    // For commands that talk to a running server, resolve the live
-    // editor's published port (`~/.openpencil/.op-mcp-port`) unless the user
-    // pinned `--port` explicitly. `op start` keeps the requested port.
+    // Server commands use ~/.openpencil/.op-mcp-port unless `--port` is set.
     let needs_server = matches!(
         command,
         Command::Status
@@ -119,6 +119,15 @@ fn run(args: &[String]) -> Result<String, String> {
             &format,
             scale.as_deref(),
         )?,
+        Command::ExportOpui {
+            file,
+            item_id,
+            output,
+            strict,
+            raster_native,
+        } => {
+            export_cli::run_export_opui(&file, &output, item_id.as_deref(), strict, raster_native)?
+        }
     };
     Ok(if pretty { pretty_json(&out) } else { out })
 }
@@ -126,9 +135,7 @@ fn run(args: &[String]) -> Result<String, String> {
 #[derive(Debug, PartialEq, Eq)]
 struct Parsed {
     port: u16,
-    /// Whether `--port` was passed explicitly. When false, server-bound
-    /// commands resolve the running editor's port via discovery instead
-    /// of assuming the default.
+    /// True when the user passed `--port` (skip live-port discovery).
     port_explicit: bool,
     pretty: bool,
     command: Command,
@@ -142,10 +149,8 @@ enum Command {
     StartMcp {
         document_path: Option<String>,
         headless: bool,
-        /// `--web`: serve the browser editor (wasm bundle) instead of the
-        /// desktop GUI / windowless file server.
+        /// `--web`: serve the browser editor instead of the desktop GUI.
         web: bool,
-        /// `--host` bind address for `--web` (e.g. `0.0.0.0` for LAN/Docker).
         host: Option<String>,
     },
     StopMcp,
@@ -178,6 +183,13 @@ enum Command {
         output: String,
         format: String,
         scale: Option<String>,
+    },
+    ExportOpui {
+        file: String,
+        item_id: Option<String>,
+        output: String,
+        strict: bool,
+        raster_native: bool,
     },
 }
 

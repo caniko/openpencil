@@ -1,0 +1,15 @@
+[package]
+name = "op-runtime-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Authored PenDocument → OPUI v1 package"
+
+[dependencies]
+base64 = "0.22"
+jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
+opui = { git = "https://github.com/caniko/opui.git", rev = "04fdda1c8a2dabd4fad3ee66dd9043f44ed8509c" }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }

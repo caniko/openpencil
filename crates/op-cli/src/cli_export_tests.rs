@@ -132,6 +132,97 @@ fn write_export_response_decodes_png_to_exact_path() {
 }
 
 #[test]
+fn export_opui_maps_without_server() {
+    let parsed = parse_args(&args(&[
+        "export", "--file", "doc.op", "--format", "opui", "--output", "doc.opui", "--item", "root",
+        "--strict",
+    ]))
+    .expect("parse opui export");
+    assert_eq!(
+        parsed.command,
+        Command::ExportOpui {
+            file: "doc.op".into(),
+            item_id: Some("root".into()),
+            output: "doc.opui".into(),
+            strict: true,
+            raster_native: false,
+        }
+    );
+}
+
+#[test]
+fn export_opui_requires_file_and_opui_suffix() {
+    let missing = parse_args(&args(&[
+        "export", "--format", "opui", "--output", "doc.opui",
+    ]));
+    assert!(missing.unwrap_err().contains("--file"), "need --file");
+
+    let suffix = parse_args(&args(&[
+        "export", "--file", "doc.op", "--format", "opui", "--output", "doc.png",
+    ]));
+    assert!(suffix.unwrap_err().contains(".opui"), "need .opui");
+
+    let selection = parse_args(&args(&[
+        "export",
+        "--file",
+        "doc.op",
+        "--format",
+        "opui",
+        "--output",
+        "doc.opui",
+        "--selection",
+    ]));
+    assert!(selection.unwrap_err().contains("--selection"));
+}
+
+#[test]
+fn export_opui_rejects_strict_with_raster() {
+    let err = parse_args(&args(&[
+        "export",
+        "--file",
+        "doc.op",
+        "--format",
+        "opui",
+        "--output",
+        "doc.opui",
+        "--strict",
+        "--raster-native",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--strict"), "{err}");
+}
+
+#[test]
+fn export_opui_raster_native_feature_gate() {
+    let parsed = parse_args(&args(&[
+        "export",
+        "--file",
+        "doc.op",
+        "--format",
+        "opui",
+        "--output",
+        "doc.opui",
+        "--raster-native",
+    ]));
+    #[cfg(not(feature = "opui-raster"))]
+    assert!(
+        parsed.unwrap_err().contains("opui-raster"),
+        "feature-off must fail closed"
+    );
+    #[cfg(feature = "opui-raster")]
+    assert_eq!(
+        parsed.expect("parse raster opui").command,
+        Command::ExportOpui {
+            file: "doc.op".into(),
+            item_id: None,
+            output: "doc.opui".into(),
+            strict: false,
+            raster_native: true,
+        }
+    );
+}
+
+#[test]
 fn write_export_response_rejects_invalid_payloads() {
     let path = std::env::temp_dir().join("op-cli-export-invalid.png");
     assert!(export_cli::write_export_response("not-json", &path).is_err());

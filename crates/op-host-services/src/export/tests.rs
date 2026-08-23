@@ -698,3 +698,36 @@ fn export_paints_styled_text_runs_with_decorations() {
     );
     let _ = std::fs::remove_file(&tmp);
 }
+
+fn png_ihdr(bytes: &[u8]) -> (u32, u32) {
+    (
+        u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+        u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+    )
+}
+
+#[test]
+fn fallback_leaf_png_strips_rotation() {
+    let mut ellipse = SceneNode::leaf("e", NodeKind::Ellipse);
+    ellipse.bounds = Rect::xywh(0.0, 0.0, 40.0, 40.0);
+    ellipse.rotation = std::f32::consts::FRAC_PI_4;
+    ellipse.fill = Some(Color {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    });
+    let page = ScenePage {
+        id: "p1".into(),
+        name: "Page 1".into(),
+        children: vec![ellipse],
+    };
+    let raw = render_node_on_page_raster_bytes(&page, "e", RasterFormat::Png, 1.0).unwrap();
+    let fallback = render_fallback_leaf_png(&page, "e").unwrap();
+    assert_eq!(png_ihdr(&fallback), (40, 40));
+    let (rw, rh) = png_ihdr(&raw);
+    assert!(
+        rw > 40 || rh > 40,
+        "rotated AABB should expand, got {rw}x{rh}"
+    );
+}

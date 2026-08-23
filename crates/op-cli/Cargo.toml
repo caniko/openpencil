@@ -16,7 +16,13 @@ base64 = "0.22"
 op-ai-skills = { path = "../op-ai-skills" }
 op-config-store = { path = "../op-config-store" }
 op-figma = { path = "../op-figma" }
+op-host-services = { path = "../op-host-services", optional = true }
 op-pen-loader = { path = "../op-pen-loader", default-features = false }
+op-runtime-ui = { path = "../op-runtime-ui" }
 op-process-io = { path = "../op-process-io" }
 op-rpc-transport = { path = "../op-rpc-transport" }
 serde_json = { workspace = true }
+
+[features]
+default = []
+opui-raster = ["dep:op-host-services"]
