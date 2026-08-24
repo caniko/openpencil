@@ -40,6 +40,7 @@ fn apply_one(
         .get_mut(source_id)
         .and_then(Value::as_object_mut)
         .ok_or_else(|| ExportError::msg(format!("raster node {source_id} not in manifest")))?;
+    let runtime_id = node.get("runtime_id").cloned().unwrap_or(Value::Null);
     node.insert("type".into(), json!("fallback"));
     node.remove("container");
     node.remove("text");
@@ -79,7 +80,7 @@ fn apply_one(
         "code": "opui.rasterization",
         "severity": "warning",
         "node_id": source_id,
-        "runtime_id": null,
+        "runtime_id": runtime_id,
         "message": "rasterized unsupported native node",
         "strategy": "raster_fallback",
         "details": {},

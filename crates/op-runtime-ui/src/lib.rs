@@ -354,9 +354,278 @@ mod tests {
     }
 
     #[test]
-    fn strict_rejects_non_solid_fill() {
+    fn linear_gradient_is_native() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","angle":0,"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.manifest["nodes"]["r"]["style"]["fill"]["type"], "linear");
+        assert_eq!(result.manifest["nodes"]["r"]["runtime_id"], "r");
+    }
+
+    fn linear_ends(src: &str) -> (f64, f64, f64, f64) {
+        let fill = &export_src(src, None, false).unwrap().manifest["nodes"]["r"]["style"]["fill"];
+        (
+            fill["start"]["x"].as_f64().unwrap(),
+            fill["start"]["y"].as_f64().unwrap(),
+            fill["end"]["x"].as_f64().unwrap(),
+            fill["end"]["y"].as_f64().unwrap(),
+        )
+    }
+
+    #[test]
+    fn linear_gradient_angles_are_css_zero_up() {
+        let g = |angle| {
+            format!(
+                r##"{{"version":"0.8.0","children":[{{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{{"type":"linear_gradient","angle":{angle},"stops":[{{"offset":0,"color":"#000000"}},{{"offset":1,"color":"#ffffff"}}]}}]}}]}}"##
+            )
+        };
+        let (sx, sy, ex, ey) = linear_ends(&g(0));
+        assert!((sx - 0.5).abs() < 1e-9 && (ex - 0.5).abs() < 1e-9);
+        assert!(sy > 1.0 && ey < 0.0);
+        let (sx, sy, ex, ey) = linear_ends(&g(90));
+        assert!(sx < 0.0 && ex > 1.0);
+        assert!((sy - 0.5).abs() < 1e-9 && (ey - 0.5).abs() < 1e-9);
+        let (sx, sy, ex, ey) = linear_ends(&g(180));
+        assert!((sx - 0.5).abs() < 1e-9 && (ex - 0.5).abs() < 1e-9);
+        assert!(sy < 0.0 && ey > 1.0);
+        let (sx, sy, ex, ey) = linear_ends(&g(270));
+        assert!(sx > 1.0 && ex < 0.0);
+        assert!((sy - 0.5).abs() < 1e-9 && (ey - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn first_fill_wins_and_layered_fill_is_diagnosed() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"solid","color":"#ff0000"},{"type":"solid","color":"#00ff00"}]}]}"##,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result.manifest["nodes"]["r"]["style"]["fill"]["color"]["r"], 1.0);
+        assert!(
+            result.manifest["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["message"].as_str().unwrap().contains("layered fill")),
+            "{}",
+            result.manifest["diagnostics"]
+        );
+    }
+
+    #[test]
+    fn decreasing_gradient_stops_are_unsupported() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","angle":0,"stops":[{"offset":1,"color":"#000000"},{"offset":0,"color":"#ffffff"}]}]}]}"##,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(result.manifest["nodes"]["r"]["style"].get("fill").is_none());
+    }
+
+    #[test]
+    fn duplicate_offsets_keep_source_order() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","angle":0,"stops":[{"offset":0.5,"color":"#000000"},{"offset":0.5,"color":"#ffffff"}]}]}]}"##,
+            None,
+            false,
+        )
+        .unwrap();
+        let stops = result.manifest["nodes"]["r"]["style"]["fill"]["stops"].as_array().unwrap();
+        assert_eq!(stops[0]["color"]["r"], 0.0);
+        assert_eq!(stops[1]["color"]["r"], 1.0);
+    }
+
+    #[test]
+    fn fill_opacity_multiplies_stop_alpha() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","angle":0,"opacity":0.5,"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            result.manifest["nodes"]["r"]["style"]["fill"]["stops"][0]["color"]["a"],
+            0.5
+        );
+    }
+
+    #[test]
+    fn radial_invalid_radius_is_unsupported() {
+        let result = export_src(
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"radial_gradient","radius":0,"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(result.manifest["nodes"]["r"]["style"].get("fill").is_none());
+    }
+
+    #[test]
+    fn duplicate_semantic_names_are_hard_errors() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"root","width":40,"height":40,"children":[{"type":"frame","id":"a","name":"play","width":10,"height":10},{"type":"frame","id":"b","name":"play","width":10,"height":10}]}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            result.manifest["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "opui.duplicate_runtime_id" && d["severity"] == "error"),
+            "{}",
+            result.manifest["diagnostics"]
+        );
+    }
+
+    #[test]
+    fn source_id_collides_with_semantic_name() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"root","width":40,"height":40,"children":[{"type":"frame","id":"play","width":10,"height":10},{"type":"frame","id":"other","name":"play","width":10,"height":10}]}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            result.manifest["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "opui.duplicate_runtime_id"),
+            "{}",
+            result.manifest["diagnostics"]
+        );
+    }
+
+    #[test]
+    fn invalid_identifier_is_not_a_runtime_id() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"1root","width":40,"height":20,"name":"1bad"}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(result.manifest["nodes"]["1root"].get("runtime_id").is_none());
+        assert_eq!(result.manifest["nodes"]["1root"]["name"], "1bad");
+    }
+
+    #[test]
+    fn instance_runtime_ids_collide() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"proto","name":"btn","width":20,"height":20},{"type":"frame","id":"root","width":40,"height":40,"children":[{"type":"ref","id":"a","name":"cta","ref":"proto"},{"type":"ref","id":"b","name":"cta","ref":"proto"}]}]}"#,
+            Some("root"),
+            false,
+        )
+        .unwrap();
+        assert!(
+            result.manifest["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "opui.duplicate_runtime_id"),
+            "{}",
+            result.manifest["diagnostics"]
+        );
+    }
+
+    #[test]
+    fn runtime_ids_are_deterministic() {
+        let src = r#"{"version":"0.8.0","children":[{"type":"frame","id":"uuid-1","name":"main_menu.play","width":40,"height":20}]}"#;
+        let a = export_src(src, None, false).unwrap();
+        let b = export_src(src, None, false).unwrap();
+        assert_eq!(a.manifest["nodes"]["uuid-1"]["runtime_id"], b.manifest["nodes"]["uuid-1"]["runtime_id"]);
+        assert_eq!(a.manifest["nodes"]["uuid-1"]["runtime_id"], "main_menu.play");
+    }
+
+    #[test]
+    fn raster_fallback_keeps_runtime_id() {
+        let mut result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"ellipse","id":"badge_orb","width":40,"height":40}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result.manifest["nodes"]["badge_orb"]["runtime_id"], "badge_orb");
+        apply_raster_fallbacks(&mut result, &[("badge_orb".into(), tiny_png())]).unwrap();
+        assert_eq!(result.manifest["nodes"]["badge_orb"]["runtime_id"], "badge_orb");
+        assert_eq!(
+            result.manifest["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["code"] == "opui.rasterization")
+                .unwrap()["runtime_id"],
+            "badge_orb"
+        );
+    }
+
+    #[test]
+    fn semantic_name_becomes_runtime_id() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"uuid-1","name":"main_menu.play","width":40,"height":20}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            result.manifest["nodes"]["uuid-1"]["runtime_id"],
+            "main_menu.play"
+        );
+    }
+
+    #[test]
+    fn percent_expression_maps() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"root","width":200,"height":80,"children":[{"type":"frame","id":"r","width":"50%","height":40}]}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["type"], "percent");
+        assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["value"], 50.0);
+    }
+
+    #[test]
+    fn percent_boundaries_and_invalid() {
+        let ok = |raw: &str, expect: f64| {
+            let src = format!(
+                r#"{{"version":"0.8.0","children":[{{"type":"frame","id":"root","width":200,"height":80,"children":[{{"type":"frame","id":"r","width":"{raw}","height":40}}]}}]}}"#
+            );
+            let result = export_src(&src, None, false).unwrap();
+            assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["type"], "percent");
+            assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["value"], expect);
+        };
+        ok("0%", 0.0);
+        ok("100%", 100.0);
+        ok("200%", 200.0);
+        ok("-10%", -10.0);
+        let bad = |raw: &str| {
+            let src = format!(
+                r#"{{"version":"0.8.0","children":[{{"type":"frame","id":"root","width":200,"height":80,"children":[{{"type":"frame","id":"r","width":"{raw}","height":40}}]}}]}}"#
+            );
+            let result = export_src(&src, None, false).unwrap();
+            assert!(
+                result.manifest["nodes"]["r"]["layout"].get("width").is_none(),
+                "{raw}: {}",
+                result.manifest["nodes"]["r"]["layout"]
+            );
+        };
+        bad("foo");
+        bad("%");
+        bad("nan%");
+        bad("inf%");
+    }
+
+    #[test]
+    fn strict_rejects_image_fill() {
         let err = export_src(
-            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##,
+            r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"image","url":"x.png"}]}]}"##,
             None,
             true,
         )

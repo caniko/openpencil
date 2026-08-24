@@ -25,6 +25,7 @@ struct Diag {
     code: &'static str,
     severity: &'static str,
     node_id: String,
+    runtime_id: Option<String>,
     message: String,
     strategy: &'static str,
 }
@@ -70,11 +71,18 @@ pub(crate) fn export_document(
         ref_stack: HashSet::new(),
     };
     let root_id = cx.emit(root, None, None, false)?;
+    cx.record_duplicate_runtime_ids();
     cx.diags.sort_by(|a, b| {
         sev_rank(a.severity)
             .cmp(&sev_rank(b.severity))
             .then(a.code.cmp(b.code))
             .then(a.node_id.cmp(&b.node_id))
+            .then(
+                a.runtime_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.runtime_id.as_deref().unwrap_or("")),
+            )
             .then(a.strategy.cmp(b.strategy))
             .then(a.message.cmp(&b.message))
     });
@@ -161,10 +169,12 @@ impl Cx<'_> {
         let mut obj = Map::new();
         obj.insert("type".into(), json!(typ));
         obj.insert("source_id".into(), json!(id));
-        if let Some(name) = node_base(node).name.as_deref() {
-            if !name.is_empty() {
-                obj.insert("name".into(), json!(name));
-            }
+        let name = node_base(node).name.as_deref();
+        if let Some(rid) = runtime_id_of(&id, name) {
+            obj.insert("runtime_id".into(), json!(rid));
+        }
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            obj.insert("name".into(), json!(name));
         }
         obj.insert(
             "visible".into(),
@@ -229,6 +239,9 @@ impl Cx<'_> {
             .name
             .clone()
             .or_else(|| node_base(target).name.clone());
+        if let Some(rid) = runtime_id_of(&id, name.as_deref()) {
+            obj.insert("runtime_id".into(), json!(rid));
+        }
         if let Some(name) = name.filter(|n| !n.is_empty()) {
             obj.insert("name".into(), json!(name));
         }
@@ -454,17 +467,8 @@ impl Cx<'_> {
         }
         if !matches!(node, PenNode::Text(_)) {
             if let Some(fills) = fills_of(node) {
-                match first_solid_color(Some(fills)) {
-                    Some(c) => {
-                        style.insert(
-                            "fill".into(),
-                            json!({ "type": "solid", "color": color_json(c) }),
-                        );
-                    }
-                    None if !fills.is_empty() => {
-                        self.unsupported(id, "non-solid fill")?;
-                    }
-                    None => {}
+                if let Some(fill) = self.first_fill_json(id, fills)? {
+                    style.insert("fill".into(), fill);
                 }
             }
         }
@@ -515,10 +519,51 @@ impl Cx<'_> {
             code: "opui.unsupported_native",
             severity: "warning",
             node_id: id.to_string(),
+            runtime_id: runtime_id_of(id, None),
             message: format!("{kind} approximated as container"),
             strategy: "native",
         });
         Ok(())
+    }
+
+    fn first_fill_json(
+        &mut self,
+        id: &str,
+        fills: &[PenFill],
+    ) -> Result<Option<Value>, ExportError> {
+        // ponytail: v1 has exactly one fill; extra layers are a warning, first fill still emits
+        let Some(first) = fills.first() else {
+            return Ok(None);
+        };
+        let converted = one_fill_json(first);
+        if converted.is_none() {
+            self.unsupported(id, "unsupported fill")?;
+        }
+        if fills.len() > 1 {
+            self.unsupported(id, "layered fill")?;
+        }
+        Ok(converted)
+    }
+
+    fn record_duplicate_runtime_ids(&mut self) {
+        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut dupes = Vec::new();
+        for (id, node) in &self.nodes {
+            let Some(rid) = node.get("runtime_id").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(prev) = seen.insert(rid, id.as_str()) {
+                dupes.push(Diag {
+                    code: "opui.duplicate_runtime_id",
+                    severity: "error",
+                    node_id: id.clone(),
+                    runtime_id: Some(rid.to_string()),
+                    message: format!("runtime_id `{rid}` already used by `{prev}`"),
+                    strategy: "error",
+                });
+            }
+        }
+        self.diags.extend(dupes);
     }
 
     fn record_raster(&mut self, node: &PenNode, source_id: &str, scene_id: &str) {
@@ -552,6 +597,7 @@ fn sizing(s: Option<&SizingBehavior>) -> Option<Value> {
         Some(SizingBehavior::Keyword(SizingKeyword::FillContainer)) => {
             Some(json!({ "type": "fill", "weight": 1 }))
         }
+        Some(SizingBehavior::Expression(raw)) => percent_length(raw),
         _ => None,
     }
 }
@@ -678,6 +724,98 @@ fn first_solid_color(fills: Option<&[PenFill]>) -> Option<[f64; 4]> {
     None
 }
 
+fn one_fill_json(fill: &PenFill) -> Option<Value> {
+    match fill {
+        PenFill::Solid(body) => {
+            let mut c = parse_hex(&body.color)?;
+            if let Some(o) = body.opacity {
+                c[3] = (c[3] * o as f64).clamp(0.0, 1.0);
+            }
+            Some(json!({ "type": "solid", "color": color_json(c) }))
+        }
+        PenFill::LinearGradient(body) => {
+            let stops = gradient_stops(&body.stops, body.opacity)?;
+            let angle = body.angle.unwrap_or(0.0) as f64;
+            if !angle.is_finite() {
+                return None;
+            }
+            // CSS / OPUI: 0deg is up, clockwise, y-down border box
+            let rad = angle.to_radians();
+            let (dx, dy) = (rad.sin(), -rad.cos());
+            Some(json!({
+                "type": "linear",
+                "start": { "x": num(0.5 - dx), "y": num(0.5 - dy) },
+                "end": { "x": num(0.5 + dx), "y": num(0.5 + dy) },
+                "stops": stops,
+            }))
+        }
+        PenFill::RadialGradient(body) => {
+            let stops = gradient_stops(&body.stops, body.opacity)?;
+            let cx = body.cx.unwrap_or(0.5) as f64;
+            let cy = body.cy.unwrap_or(0.5) as f64;
+            let r = body.radius.unwrap_or(0.5) as f64;
+            if !(cx.is_finite() && cy.is_finite() && r.is_finite() && r > 0.0) {
+                return None;
+            }
+            Some(json!({
+                "type": "radial",
+                "center": { "x": num(cx), "y": num(cy) },
+                "radius": { "x": num(r), "y": num(r) },
+                "stops": stops,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn gradient_stops(
+    stops: &[jian_ops_schema::style::GradientStop],
+    opacity: Option<f32>,
+) -> Option<Vec<Value>> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let mul = opacity.unwrap_or(1.0) as f64;
+    if !mul.is_finite() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut last = f64::NEG_INFINITY;
+    for stop in stops {
+        let offset = f64::from(stop.offset);
+        if !offset.is_finite() || !(0.0..=1.0).contains(&offset) || offset < last {
+            return None;
+        }
+        last = offset;
+        let mut c = parse_hex(&stop.color)?;
+        c[3] = (c[3] * mul).clamp(0.0, 1.0);
+        out.push(json!({ "offset": num(offset), "color": color_json(c) }));
+    }
+    Some(out)
+}
+
+fn percent_length(raw: &str) -> Option<Value> {
+    let s = raw.trim();
+    let digits = s.strip_suffix('%')?.trim();
+    let value: f64 = digits.parse().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some(json!({ "type": "percent", "value": num(value) }))
+}
+
+fn runtime_id_of(id: &str, name: Option<&str>) -> Option<String> {
+    name.filter(|n| is_runtime_id(n))
+        .map(str::to_string)
+        .or_else(|| is_runtime_id(id).then(|| id.to_string()))
+}
+
+fn is_runtime_id(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some('A'..='Z' | 'a'..='z'))
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+}
+
 fn border_of(stroke: &PenStroke) -> Option<Value> {
     let width = match &stroke.thickness {
         StrokeThickness::Uniform(n) if n.is_finite() && *n >= 0.0 => f64::from(*n),
@@ -790,7 +928,7 @@ fn diag_json(d: &Diag) -> Value {
         "code": d.code,
         "severity": d.severity,
         "node_id": d.node_id,
-        "runtime_id": null,
+        "runtime_id": d.runtime_id,
         "message": d.message,
         "strategy": d.strategy,
         "details": {},
