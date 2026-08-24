@@ -354,6 +354,50 @@ mod tests {
     }
 
     #[test]
+    fn text_emits_inter_font_asset() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"r","width":80,"height":20,"children":[{"type":"text","id":"t","width":80,"height":20,"content":"hi","fontFamily":"Inter"}]}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        let font = result.manifest["nodes"]["t"]["text"]["defaults"]["font"]
+            .as_str()
+            .unwrap();
+        assert!(font.starts_with("font-"), "{font}");
+        assert!(result.manifest["assets"]
+            .as_object()
+            .unwrap()
+            .contains_key(font));
+    }
+
+    #[test]
+    fn root_fills_host_mount() {
+        let result = export_src(
+            r#"{"version":"0.8.0","children":[{"type":"frame","id":"r","width":1280,"height":720}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            result.manifest["nodes"]["r"]["layout"]["width"]["type"],
+            "percent"
+        );
+        assert_eq!(
+            result.manifest["nodes"]["r"]["layout"]["width"]["value"],
+            100.0
+        );
+        assert_eq!(
+            result.manifest["nodes"]["r"]["layout"]["height"]["value"],
+            100.0
+        );
+        assert_eq!(
+            result.manifest["document"]["reference_viewport"]["width"],
+            1280.0
+        );
+    }
+
+    #[test]
     fn linear_gradient_is_native() {
         let result = export_src(
             r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":10,"height":10,"fill":[{"type":"linear_gradient","angle":0,"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##,
@@ -361,7 +405,10 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(result.manifest["nodes"]["r"]["style"]["fill"]["type"], "linear");
+        assert_eq!(
+            result.manifest["nodes"]["r"]["style"]["fill"]["type"],
+            "linear"
+        );
         assert_eq!(result.manifest["nodes"]["r"]["runtime_id"], "r");
     }
 
@@ -404,7 +451,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(result.manifest["nodes"]["r"]["style"]["fill"]["color"]["r"], 1.0);
+        assert_eq!(
+            result.manifest["nodes"]["r"]["style"]["fill"]["color"]["r"],
+            1.0
+        );
         assert!(
             result.manifest["diagnostics"]
                 .as_array()
@@ -435,7 +485,9 @@ mod tests {
             false,
         )
         .unwrap();
-        let stops = result.manifest["nodes"]["r"]["style"]["fill"]["stops"].as_array().unwrap();
+        let stops = result.manifest["nodes"]["r"]["style"]["fill"]["stops"]
+            .as_array()
+            .unwrap();
         assert_eq!(stops[0]["color"]["r"], 0.0);
         assert_eq!(stops[1]["color"]["r"], 1.0);
     }
@@ -511,7 +563,9 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(result.manifest["nodes"]["1root"].get("runtime_id").is_none());
+        assert!(result.manifest["nodes"]["1root"]
+            .get("runtime_id")
+            .is_none());
         assert_eq!(result.manifest["nodes"]["1root"]["name"], "1bad");
     }
 
@@ -539,8 +593,14 @@ mod tests {
         let src = r#"{"version":"0.8.0","children":[{"type":"frame","id":"uuid-1","name":"main_menu.play","width":40,"height":20}]}"#;
         let a = export_src(src, None, false).unwrap();
         let b = export_src(src, None, false).unwrap();
-        assert_eq!(a.manifest["nodes"]["uuid-1"]["runtime_id"], b.manifest["nodes"]["uuid-1"]["runtime_id"]);
-        assert_eq!(a.manifest["nodes"]["uuid-1"]["runtime_id"], "main_menu.play");
+        assert_eq!(
+            a.manifest["nodes"]["uuid-1"]["runtime_id"],
+            b.manifest["nodes"]["uuid-1"]["runtime_id"]
+        );
+        assert_eq!(
+            a.manifest["nodes"]["uuid-1"]["runtime_id"],
+            "main_menu.play"
+        );
     }
 
     #[test]
@@ -551,9 +611,15 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(result.manifest["nodes"]["badge_orb"]["runtime_id"], "badge_orb");
+        assert_eq!(
+            result.manifest["nodes"]["badge_orb"]["runtime_id"],
+            "badge_orb"
+        );
         apply_raster_fallbacks(&mut result, &[("badge_orb".into(), tiny_png())]).unwrap();
-        assert_eq!(result.manifest["nodes"]["badge_orb"]["runtime_id"], "badge_orb");
+        assert_eq!(
+            result.manifest["nodes"]["badge_orb"]["runtime_id"],
+            "badge_orb"
+        );
         assert_eq!(
             result.manifest["diagnostics"]
                 .as_array()
@@ -587,8 +653,14 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["type"], "percent");
-        assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["value"], 50.0);
+        assert_eq!(
+            result.manifest["nodes"]["r"]["layout"]["width"]["type"],
+            "percent"
+        );
+        assert_eq!(
+            result.manifest["nodes"]["r"]["layout"]["width"]["value"],
+            50.0
+        );
     }
 
     #[test]
@@ -598,8 +670,14 @@ mod tests {
                 r#"{{"version":"0.8.0","children":[{{"type":"frame","id":"root","width":200,"height":80,"children":[{{"type":"frame","id":"r","width":"{raw}","height":40}}]}}]}}"#
             );
             let result = export_src(&src, None, false).unwrap();
-            assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["type"], "percent");
-            assert_eq!(result.manifest["nodes"]["r"]["layout"]["width"]["value"], expect);
+            assert_eq!(
+                result.manifest["nodes"]["r"]["layout"]["width"]["type"],
+                "percent"
+            );
+            assert_eq!(
+                result.manifest["nodes"]["r"]["layout"]["width"]["value"],
+                expect
+            );
         };
         ok("0%", 0.0);
         ok("100%", 100.0);
@@ -611,7 +689,9 @@ mod tests {
             );
             let result = export_src(&src, None, false).unwrap();
             assert!(
-                result.manifest["nodes"]["r"]["layout"].get("width").is_none(),
+                result.manifest["nodes"]["r"]["layout"]
+                    .get("width")
+                    .is_none(),
                 "{raw}: {}",
                 result.manifest["nodes"]["r"]["layout"]
             );

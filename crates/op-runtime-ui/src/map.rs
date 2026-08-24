@@ -18,7 +18,7 @@ use crate::access::{
     is_raster_leaf, justify, node_base, node_id, node_kind, node_size, page_index_of, select_root,
     stroke_of,
 };
-use crate::assets::{image_from_src, png_size, Sidecar};
+use crate::assets::{font_from_bytes, image_from_src, png_size, Sidecar};
 use crate::{ExportError, ExportOptions, ExportResult, RasterCandidate};
 
 struct Diag {
@@ -71,6 +71,13 @@ pub(crate) fn export_document(
         ref_stack: HashSet::new(),
     };
     let root_id = cx.emit(root, None, None, false)?;
+    if let Some(Value::Object(node)) = cx.nodes.get_mut(&root_id) {
+        if let Some(Value::Object(layout)) = node.get_mut("layout") {
+            let fill = json!({ "type": "percent", "value": 100.0 });
+            layout.insert("width".into(), fill.clone());
+            layout.insert("height".into(), fill);
+        }
+    }
     cx.record_duplicate_runtime_ids();
     cx.diags.sort_by(|a, b| {
         sev_rank(a.severity)
@@ -273,7 +280,33 @@ impl Cx<'_> {
         Ok(id)
     }
 
-    fn text_payload(&self, t: &TextNode) -> Result<Value, ExportError> {
+    fn intern_font(&mut self) -> String {
+        if let Some(id) = self
+            .assets
+            .iter()
+            .find_map(|(k, v)| (v["kind"] == "font").then(|| k.clone()))
+        {
+            return id;
+        }
+        let sidecar = font_from_bytes(
+            include_bytes!("../../op-host-desktop/assets/fonts/Inter-VF.ttf").to_vec(),
+        );
+        let id = sidecar.id();
+        self.assets.insert(
+            id.clone(),
+            json!({
+                "kind": sidecar.kind,
+                "uri": sidecar.uri(),
+                "mime_type": sidecar.mime,
+                "sha256": sidecar.sha256,
+                "byte_length": sidecar.bytes.len() as u64,
+            }),
+        );
+        self.sidecars.push(sidecar);
+        id
+    }
+
+    fn text_payload(&mut self, t: &TextNode) -> Result<Value, ExportError> {
         let (content, runs) = text_content(t);
         let color = first_solid_color(t.fill.as_deref()).unwrap_or([0.0, 0.0, 0.0, 1.0]);
         let weight = font_weight(t.font_weight.as_ref());
@@ -314,6 +347,7 @@ impl Cx<'_> {
             "content": content,
             "defaults": {
                 "family": family,
+                "font": self.intern_font(),
                 "weight": weight,
                 "font_style": font_style,
                 "size": { "type": "px", "value": num(size) },

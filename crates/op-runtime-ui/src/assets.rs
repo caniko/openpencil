@@ -45,6 +45,16 @@ fn dir_for(kind: &str) -> &'static str {
     }
 }
 
+pub(crate) fn font_from_bytes(bytes: Vec<u8>) -> Sidecar {
+    Sidecar {
+        kind: "font",
+        ext: "ttf",
+        mime: "font/ttf",
+        sha256: hex_sha256(&bytes),
+        bytes,
+    }
+}
+
 pub(crate) fn raster_fallback_from_png(bytes: Vec<u8>) -> Result<Sidecar, ExportError> {
     if png_size(&bytes).is_none() {
         return Err(ExportError::msg("raster fallback is not a PNG"));
