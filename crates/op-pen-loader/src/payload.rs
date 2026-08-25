@@ -280,6 +280,8 @@ fn is_zero_i8(v: &i8) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextRunPayload {
     pub text: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub font_family: String,
     #[serde(default)]
     pub font_size: f32,
     #[serde(default)]

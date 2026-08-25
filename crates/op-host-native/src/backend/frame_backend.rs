@@ -348,4 +348,16 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner
             .measure_text_family_styled(text, font_size, family, weight, italic)
     }
+
+    fn text_baseline_offset(
+        &mut self,
+        font_size: f32,
+        line_height: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        self.inner
+            .text_baseline_offset(font_size, line_height, family, weight, italic)
+    }
 }

@@ -6,7 +6,7 @@
 //! painter uses (`canvas_viewport_paint::paint_text_node` calls it
 //! too), so caret xy, selection rects, and click-to-caret hit-testing
 //! all agree with the painted glyphs: same CJK-aware wrap
-//! (`canvas_viewport_overlay::wrap_text`), same wrap-width tolerance,
+//! (`canvas_viewport_overlay::wrap_text`), same authored wrap width,
 //! same per-line alignment, same letter-spacing advance model.
 //!
 //! All geometry is in DOCUMENT space (the painter applies the
@@ -43,14 +43,19 @@ pub struct TextEditLayout {
 
 /// Resolve the painted line layout for `node` — paint-parity
 /// defaults (13 px font, weight 400, 1.2 line height) and the same
-/// wrap decision (`text_wrap` + 5% / half-font-size tolerance) as
+/// wrap decision (`text_wrap` against the authored node width) as
 /// `paint_text_node`.
 pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> TextEditLayout {
     let text = node.text.as_deref().unwrap_or("");
     let mut font_size = if node.font_size > 0.0 {
         node.font_size
     } else {
-        13.0
+        node.text_runs
+            .iter()
+            .map(|run| run.font_size)
+            .reduce(f32::max)
+            .filter(|size| *size > 0.0)
+            .unwrap_or(13.0)
     };
     let weight = if node.font_weight > 0 {
         node.font_weight
@@ -63,17 +68,26 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         1.2
     };
     let wrap_width_doc = if node.text_wrap {
-        // Same tolerance as the painter (TS renderer parity): without
-        // it CJK strings that exactly fit can wrap differently here
-        // than on the painted canvas.
-        let doc_width = node.bounds.size.x;
-        let tolerance = (doc_width * 0.05).ceil().min((font_size * 0.5).ceil());
-        Some(doc_width + tolerance)
+        Some(node.bounds.size.x)
     } else {
         None
     };
+    let family = if node.font_family.trim().is_empty() {
+        "system-ui"
+    } else {
+        node.font_family.as_str()
+    };
     let lines: Vec<String> = if let Some(doc_wrap_width) = wrap_width_doc {
-        super::canvas_viewport_overlay::wrap_text(backend, text, font_size, doc_wrap_width, weight)
+        super::canvas_viewport_overlay::wrap_text(
+            backend,
+            text,
+            font_size,
+            doc_wrap_width,
+            family,
+            weight,
+            node.italic,
+            node.letter_spacing,
+        )
     } else {
         text.split('\n').map(str::to_string).collect()
     };
@@ -425,7 +439,7 @@ mod tests {
         let mut b = UniformBackend;
         let mut node = text_node("hello world", 60.0);
         node.text_wrap = true;
-        // 60 px + tolerance(min(ceil(3), ceil(10)) = 3) = 63 → 6 chars.
+        // Six 10 px characters fit exactly.
         let layout = text_edit_layout(&mut b, &node);
         assert_eq!(layout.lines, vec!["hello ", "world"]);
         assert_eq!(layout.line_ranges(), vec![(0, 6), (6, 11)]);

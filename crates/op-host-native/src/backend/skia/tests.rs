@@ -30,6 +30,15 @@ fn color_roundtrip_clamps_and_packs() {
 }
 
 #[test]
+fn text_baseline_splits_extra_line_height_evenly() {
+    let mut be = NativeBackend::with_dpi(1.0);
+    let tight = be.text_baseline_offset(20.0, 24.0, "Inter", 400, false);
+    let loose = be.text_baseline_offset(20.0, 30.0, "Inter", 400, false);
+
+    assert!((loose - tight - 3.0).abs() < 0.01);
+}
+
+#[test]
 fn contain_rect_fits_wide_image_letterboxed_vertically() {
     let outer = Rect::xywh(0.0, 0.0, 100.0, 100.0);
     // A 200×100 image is wider than the box → width-bound, with
@@ -283,6 +292,35 @@ fn skia_measure_matches_native_weighted_font_resolution() {
             rel * 100.0
         );
     }
+}
+
+#[test]
+fn variable_font_uses_the_requested_weight_axis() {
+    let _guard = crate::font_registry_test_support::lock();
+    jian_skia::register_imported_font(
+        include_bytes!("../../../../op-host-desktop/assets/fonts/Inter-VF.ttf").to_vec(),
+    )
+    .expect("Inter-VF.ttf must parse as a font");
+    let resolver = jian_skia::FontResolver::new(skia_safe::FontMgr::new());
+    let weight_tag = skia_safe::FourByteTag::from_chars('w', 'g', 'h', 't');
+
+    for weight in [400, 700] {
+        let resolved = resolver
+            .typeface_for_char(Some("Inter"), 'A', weight, false)
+            .expect("Inter must cover ASCII");
+        let actual = resolved
+            .typeface
+            .variation_design_position()
+            .expect("Inter must expose variation coordinates")
+            .into_iter()
+            .find(|coordinate| coordinate.axis == weight_tag)
+            .expect("Inter must expose a wght coordinate")
+            .value;
+        assert_eq!(actual, f32::from(weight));
+        assert!(!resolved.synthetic_bold);
+    }
+
+    jian_skia::remove_imported_font("Inter");
 }
 
 #[cfg_attr(

@@ -100,6 +100,33 @@ impl NativeBackend {
         self.measure_text_family_styled(text, font_size, family, 400, false)
     }
 
+    pub fn text_baseline_offset(
+        &mut self,
+        font_size: f32,
+        line_height: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        jian_skia::with_font_lock(|| {
+            let Some(segment) = self
+                .font_resolver
+                .segment_text("M", Some(family), weight, italic)
+                .into_iter()
+                .next()
+            else {
+                return font_size;
+            };
+            let mut font = skia_safe::Font::new(&segment.typeface, font_size);
+            font.set_hinting(skia_safe::FontHinting::None)
+                .set_subpixel(true)
+                .set_linear_metrics(true)
+                .set_baseline_snap(false);
+            let (_, metrics) = font.metrics();
+            (line_height - metrics.descent - metrics.ascent) / 2.0
+        })
+    }
+
     /// Render every shaped run in the layout via cached typefaces +
     /// `Canvas::draw_str` (Step 4 perf fix — see comment on the
     /// `typeface` / `cjk_typeface` fields).
@@ -156,6 +183,10 @@ impl NativeBackend {
                 let y = origin.y + run.origin.y;
                 for segment in segments {
                     let mut font = skia_safe::Font::new(&segment.typeface, run.font_size);
+                    font.set_hinting(skia_safe::FontHinting::None)
+                        .set_subpixel(true)
+                        .set_linear_metrics(true)
+                        .set_baseline_snap(false);
                     if segment.synthetic_italic {
                         font.set_skew_x(jian_skia::SYNTHETIC_ITALIC_SKEW);
                     }

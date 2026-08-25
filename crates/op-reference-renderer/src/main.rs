@@ -90,9 +90,15 @@ fn render(
             resize_frames(&mut page.children, width, height)?;
         }
     }
-    jian_skia::register_bundled_fonts(BUNDLED_FONTS.iter().map(|font| font.to_vec()).collect());
+    for font in BUNDLED_FONTS {
+        jian_skia::register_imported_font(font.to_vec())
+            .map_err(|error| format!("bundled font: {error}"))?;
+    }
     let state = op_editor_core::EditorState::from_document(loaded.value);
     let scene = op_pen_loader::editor_state_to_layout_scene(&state);
+    if let Some(path) = std::env::var_os("OPENPENCIL_SCENE_TRACE") {
+        std::fs::write(path, format!("{scene:#?}")).map_err(|e| e.to_string())?;
+    }
     let page = scene.active_page().ok_or("no active page")?;
     if page.children.is_empty() {
         return Err("active page has no nodes".into());

@@ -669,6 +669,7 @@ fn export_paints_styled_text_runs_with_decorations() {
     node.text_runs = vec![SceneTextRun {
         start: 0,
         end: 5,
+        font_family: String::new(),
         font_size: 0.0,
         font_weight: 700,
         fill: None,

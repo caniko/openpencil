@@ -371,6 +371,7 @@ fn text_runs_to_scene(
             let scene = SceneTextRun {
                 start,
                 end,
+                font_family: run.font_family.clone(),
                 font_size: run.font_size,
                 font_weight: run.font_weight,
                 fill: run

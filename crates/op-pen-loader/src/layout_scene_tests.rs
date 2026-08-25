@@ -331,6 +331,31 @@ fn omitted_height_text_uses_content_height_for_fixed_and_fill_width() {
 }
 
 #[test]
+fn horizontal_fill_text_children_share_the_remaining_width() {
+    let src = r##"{
+      "version":"0.8.0","children":[{
+        "type":"frame","id":"root","width":1200,"height":200,
+        "layout":"horizontal","gap":20,"children":[
+          {"type":"text","id":"left","width":"fill_container","height":"fill_container","content":"Long text whose intrinsic width exceeds its equal share of the row by a wide margin"},
+          {"type":"text","id":"middle","width":"fill_container","height":"fill_container","content":"medium"},
+          {"type":"text","id":"right","width":"fill_container","height":"fill_container","content":"x"}
+        ]
+      }]
+    }"##;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    let page = scene.active_page().expect("active page");
+    let widths = ["left", "middle", "right"].map(|id| page.find(id).unwrap().bounds.size.x);
+
+    assert_eq!(widths.iter().sum::<f32>(), 1160.0);
+    assert!(
+        widths.iter().copied().fold(f32::MIN, f32::max)
+            - widths.iter().copied().fold(f32::MAX, f32::min)
+            <= 1.0,
+        "unexpected widths: {widths:?}"
+    );
+}
+
+#[test]
 fn explicit_height_multiline_text_rejects_pixel_like_line_height_for_paint() {
     // An explicit box height is a geometry contract, not permission to change
     // lineHeight from a multiplier into pixels. Layout and paint must therefore
@@ -934,7 +959,7 @@ fn scene_text_runs_map_segments_onto_byte_ranges() {
       "pages":[{"id":"p","name":"P","children":[
         {"type":"text","id":"t","opacity":0.5,
          "content":[
-           {"text":"汉字","fontWeight":700},
+           {"text":"汉字","fontFamily":"Inter","fontWeight":700},
            {"text":"ab","fill":"#00ff00","fontStyle":"italic"}
          ]}
       ]}],
@@ -947,6 +972,7 @@ fn scene_text_runs_map_segments_onto_byte_ranges() {
     // "汉字" = 6 bytes; ranges are cumulative byte offsets.
     assert_eq!((t.text_runs[0].start, t.text_runs[0].end), (0, 6));
     assert_eq!((t.text_runs[1].start, t.text_runs[1].end), (6, 8));
+    assert_eq!(t.text_runs[0].font_family, "Inter");
     assert_eq!(t.text_runs[0].font_weight, 700);
     assert!(t.text_runs[1].italic);
     // Node opacity 0.5 folds into the run fill's alpha like the

@@ -168,6 +168,10 @@ fn measure_line_slices(
             run.map(|i| &node.text_runs[i]),
         );
         let slice = &text[start..end];
+        let family = run
+            .map(|i| node.text_runs[i].font_family.as_str())
+            .filter(|family| !family.is_empty())
+            .unwrap_or(family);
         w += backend.measure_text_family_styled(
             slice,
             style.font_size,
@@ -349,7 +353,19 @@ pub(crate) fn paint_text_node(
         // exports already bake vertical placement into `x/y`; applying
         // middle/bottom again shifts imported labels away from their
         // TS positions.
-        let first_baseline_y = world_rect.origin.y + font_size;
+        let baseline_family = paint_node
+            .text_runs
+            .iter()
+            .find_map(|run| (!run.font_family.is_empty()).then_some(run.font_family.as_str()))
+            .unwrap_or(family);
+        let first_baseline_y = world_rect.origin.y
+            + cx.backend.text_baseline_offset(
+                font_size,
+                layout.line_h,
+                baseline_family,
+                weight,
+                paint_node.italic,
+            );
         let last_line = layout.lines.len().saturating_sub(1);
         for (idx, line) in layout.lines.iter().enumerate() {
             if line.is_empty() {
@@ -401,12 +417,16 @@ pub(crate) fn paint_text_node(
                         run.map(|i| &paint_node.text_runs[i]),
                     );
                     let slice = &text[start..end];
+                    let slice_family = run
+                        .map(|i| paint_node.text_runs[i].font_family.as_str())
+                        .filter(|family| !family.is_empty())
+                        .unwrap_or(family);
                     let slice_x0 = x;
                     let (next_x, glyph_end) = draw_slice(
                         cx.backend,
                         slice,
                         style,
-                        family,
+                        slice_family,
                         x,
                         baseline_y,
                         letter_spacing,
@@ -457,6 +477,7 @@ mod tests {
         SceneTextRun {
             start,
             end,
+            font_family: String::new(),
             font_size: 0.0,
             font_weight: 0,
             fill: None,
@@ -632,6 +653,24 @@ mod tests {
     }
 
     #[test]
+    fn styled_run_size_sets_the_baseline_when_the_node_has_no_size() {
+        let mut node = text_node("large");
+        node.font_size = 0.0;
+        node.text_runs = vec![SceneTextRun {
+            font_size: 24.0,
+            ..run(0, 5)
+        }];
+        let mut backend = CaptureBackend::default();
+        let mut cx = PaintCx {
+            backend: &mut backend,
+        };
+
+        paint_text_node(&mut cx, &node, node.bounds, 1.0, &None);
+
+        assert_eq!(backend.origins[0].y, 24.0);
+    }
+
+    #[test]
     fn italic_run_sets_layout_italic_flag() {
         let mut node = text_node("ab");
         node.text_runs = vec![SceneTextRun {
@@ -712,7 +751,7 @@ mod tests {
 
     #[test]
     fn segment_boundary_maps_onto_wrapped_lines() {
-        // 11-char content wraps at ~6 chars (60 px + tolerance);
+        // 11-char content wraps at 6 chars in a 60 px box;
         // runs split at byte 8 — the SECOND wrapped line must split
         // into two styled slices at the run boundary.
         let mut node = text_node("hello world");
