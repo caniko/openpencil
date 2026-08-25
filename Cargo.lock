@@ -3737,6 +3737,7 @@ dependencies = [
 name = "op-reference-renderer"
 version = "0.8.1"
 dependencies = [
+ "jian-ops-schema",
  "jian-skia",
  "op-editor-core",
  "op-host-services",
