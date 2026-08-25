@@ -513,7 +513,18 @@ impl Cx<'_> {
                 self.unsupported(id, "stroke")?;
             }
         }
-        if let Some(radius) = corner_of(node) {
+        if matches!(node, PenNode::Ellipse(_)) {
+            let half = || json!({ "type": "percent", "value": 50 });
+            style.insert(
+                "corner_radius".into(),
+                json!({
+                    "top_left": half(),
+                    "top_right": half(),
+                    "bottom_right": half(),
+                    "bottom_left": half(),
+                }),
+            );
+        } else if let Some(radius) = corner_of(node) {
             style.insert("corner_radius".into(), corner_json(radius));
         }
         if let Some(effects) = effects_of(node) {

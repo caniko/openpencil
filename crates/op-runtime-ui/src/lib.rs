@@ -202,6 +202,10 @@ mod tests {
         assert_eq!(result.raster_candidates[0].source_id, "e");
         assert_eq!(result.raster_candidates[0].scene_id, "e");
         assert_eq!(result.raster_candidates[0].page_index, 0);
+        assert_eq!(
+            result.manifest["nodes"]["e"]["style"]["corner_radius"]["top_left"],
+            serde_json::json!({"type": "percent", "value": 50})
+        );
     }
 
     #[test]
