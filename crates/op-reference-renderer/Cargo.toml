@@ -1,0 +1,17 @@
+[package]
+name = "op-reference-renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Deterministic headless OpenPencil reference renderer"
+
+[[bin]]
+name = "op-reference-renderer"
+path = "src/main.rs"
+
+[dependencies]
+op-editor-core = { path = "../op-editor-core" }
+op-host-services = { path = "../op-host-services" }
+op-pen-loader = { path = "../op-pen-loader" }
+jian-skia = { path = "../../vendor/jian/crates/jian-skia", features = ["textlayout"] }

@@ -3734,6 +3734,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "op-reference-renderer"
+version = "0.8.1"
+dependencies = [
+ "jian-skia",
+ "op-editor-core",
+ "op-host-services",
+ "op-pen-loader",
+]
+
+[[package]]
 name = "op-rpc-transport"
 version = "0.8.1"
 dependencies = [
