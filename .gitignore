@@ -35,6 +35,7 @@ dist-electron/
 
 # Rust
 /target
+/.nix-target
 **/*.rs.bk
 Cargo.lock.merge-conflict
 /crates/*/target
