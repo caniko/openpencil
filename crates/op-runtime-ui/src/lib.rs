@@ -441,6 +441,28 @@ mod tests {
         let (sx, sy, ex, ey) = linear_ends(&g(270));
         assert!(sx > 1.0 && ex < 0.0);
         assert!((sy - 0.5).abs() < 1e-9 && (ey - 0.5).abs() < 1e-9);
+
+        for (angle, x_sign, y_sign) in [
+            (45, 1.0, -1.0),
+            (135, 1.0, 1.0),
+            (225, -1.0, 1.0),
+            (315, -1.0, -1.0),
+        ] {
+            let (sx, sy, ex, ey) = linear_ends(&g(angle));
+            assert!((ex - sx) * x_sign > 0.0, "angle {angle}: x");
+            assert!((ey - sy) * y_sign > 0.0, "angle {angle}: y");
+        }
+
+        let close = |a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)| {
+            [a.0 - b.0, a.1 - b.1, a.2 - b.2, a.3 - b.3]
+                .into_iter()
+                .all(|v| v.abs() < 1e-9)
+        };
+        assert!(close(linear_ends(&g(-90)), linear_ends(&g(270))));
+        assert!(close(linear_ends(&g(450)), linear_ends(&g(90))));
+
+        let non_square = r##"{"version":"0.8.0","children":[{"type":"rectangle","id":"r","width":200,"height":50,"fill":[{"type":"linear_gradient","angle":45,"stops":[{"offset":0,"color":"#000000"},{"offset":1,"color":"#ffffff"}]}]}]}"##;
+        assert!(close(linear_ends(non_square), linear_ends(&g(45))));
     }
 
     #[test]
