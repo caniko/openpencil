@@ -778,8 +778,8 @@ fn one_fill_json(fill: &PenFill) -> Option<Value> {
             let (dx, dy) = (rad.sin(), -rad.cos());
             Some(json!({
                 "type": "linear",
-                "start": { "x": num(0.5 - dx), "y": num(0.5 - dy) },
-                "end": { "x": num(0.5 + dx), "y": num(0.5 + dy) },
+                "start": { "x": num(0.5 - dx * 0.5), "y": num(0.5 - dy * 0.5) },
+                "end": { "x": num(0.5 + dx * 0.5), "y": num(0.5 + dy * 0.5) },
                 "stops": stops,
             }))
         }
