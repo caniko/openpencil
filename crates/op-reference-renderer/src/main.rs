@@ -118,6 +118,9 @@ fn resize_frames(nodes: &mut [PenNode], width: u32, height: u32) -> Result<(), S
         let PenNode::Frame(frame) = node else {
             return Err("viewport override requires top-level frames".into());
         };
+        if frame.reusable == Some(true) {
+            continue;
+        }
         frame.container.width = Some(SizingBehavior::Number(width.into()));
         frame.container.height = Some(SizingBehavior::Number(height.into()));
     }
@@ -188,5 +191,36 @@ mod tests {
         let image = std::fs::read(root.join("out/artboard.png")).unwrap();
         assert_eq!(&image[16..24], &[0, 0, 1, 64, 0, 0, 0, 180]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn viewport_override_preserves_reusable_frames() {
+        let source = r##"{"version":"0.8.0","children":[{"type":"frame","id":"button","reusable":true,"width":100,"height":40},{"type":"frame","id":"artboard","width":100,"height":100}]}"##;
+        let mut loaded = op_pen_loader::load_canonical(source).unwrap();
+
+        resize_frames(&mut loaded.value.children, 320, 180).unwrap();
+
+        let PenNode::Frame(button) = &loaded.value.children[0] else {
+            panic!("expected reusable frame");
+        };
+        let PenNode::Frame(artboard) = &loaded.value.children[1] else {
+            panic!("expected artboard frame");
+        };
+        assert_eq!(
+            button.container.width,
+            Some(SizingBehavior::Number(100.into()))
+        );
+        assert_eq!(
+            button.container.height,
+            Some(SizingBehavior::Number(40.into()))
+        );
+        assert_eq!(
+            artboard.container.width,
+            Some(SizingBehavior::Number(320.into()))
+        );
+        assert_eq!(
+            artboard.container.height,
+            Some(SizingBehavior::Number(180.into()))
+        );
     }
 }
