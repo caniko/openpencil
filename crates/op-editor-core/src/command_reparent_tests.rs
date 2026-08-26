@@ -6,7 +6,7 @@ use crate::command::EditorCommand;
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::test_support::{frame, rect, state_with};
-use crate::walkers::find_node;
+use crate::walkers::{find_node, find_node_mut};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::page::PenPage;
 use serde_json::json;
@@ -114,6 +114,14 @@ fn copy_node_can_target_requested_page_without_switching_active_page() {
 #[test]
 fn copy_node_applies_root_overrides_without_overriding_fresh_id() {
     let mut s = state_with(vec![rect("n1", "Source", 0.0, 0.0, 10.0, 10.0)]);
+    let source = find_node_mut(s.active_children_mut(), &id("n1")).unwrap();
+    source.base_mut().runtime_id = Some("menu.source".into());
+    source.base_mut().role = Some("button".into());
+    source.base_mut().visual_states = Some(
+        [("hover".into(), "menu.source.hover".into())]
+            .into_iter()
+            .collect(),
+    );
 
     assert!(s.apply(EditorCommand::CopyNode {
         node_id: id("n1"),
@@ -131,6 +139,9 @@ fn copy_node_applies_root_overrides_without_overriding_fresh_id() {
     assert_eq!(clone.base().name.as_deref(), Some("Copy"));
     assert_eq!(clone.base().x, Some(42.0));
     assert_eq!(clone.width_px(), Some(88.0));
+    assert_eq!(clone.base().runtime_id, None);
+    assert_eq!(clone.base().visual_states, None);
+    assert_eq!(clone.base().role.as_deref(), Some("button"));
 }
 
 #[test]

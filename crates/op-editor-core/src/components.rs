@@ -296,6 +296,7 @@ impl EditorState {
         let mut next_id = self.next_node_id_seed()?;
         let mut taken = self.collect_node_ids();
         let mut clone = walkers::deep_clone_with_new_ids(&template, &mut next_id, &mut taken);
+        walkers::clear_runtime_identity(&mut clone);
         set_reusable(&mut clone, false);
         walkers::translate_subtree(&mut clone, 20.0, 20.0);
         clone.base_mut().name = Some(name);

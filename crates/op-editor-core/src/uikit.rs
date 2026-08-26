@@ -514,6 +514,7 @@ impl EditorState {
         let mut next_id = self.max_node_id().checked_add(1)?;
         let mut taken = std::collections::HashSet::new();
         let mut clone = walkers::deep_clone_with_new_ids(&authored, &mut next_id, &mut taken);
+        walkers::clear_runtime_identity(&mut clone);
         // TS deletes the clone's root `reusable` flag so the inserted
         // instance is standalone (`component-browser-card.tsx:36-40`);
         // without this an instantiated imported-kit component would be
