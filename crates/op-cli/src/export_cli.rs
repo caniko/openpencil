@@ -292,12 +292,24 @@ pub(crate) fn run_export_opui_watch_for(
     debounce_ms: u64,
     max_updates: Option<usize>,
 ) -> Result<String, String> {
-    println!(
-        "{}",
-        run_export_opui(file, output, item_id, strict, raster_native)?
-    );
     let source = std::path::absolute(file)
         .map_err(|error| format!("resolve watched source {file}: {error}"))?;
+    let report_failure = |error: String| {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "export_failed",
+                "source": source,
+                "output": output,
+                "error": error,
+                "last_good_retained": Path::new(output).is_file(),
+            })
+        )
+    };
+    match run_export_opui(file, output, item_id, strict, raster_native) {
+        Ok(message) => println!("{message}"),
+        Err(error) => report_failure(error),
+    }
     let parent = source
         .parent()
         .ok_or_else(|| format!("watched source has no parent: {}", source.display()))?;
@@ -361,16 +373,7 @@ pub(crate) fn run_export_opui_watch_for(
                     .to_string());
                 }
             }
-            Err(error) => eprintln!(
-                "{}",
-                serde_json::json!({
-                    "event": "export_failed",
-                    "source": source,
-                    "output": output,
-                    "error": error,
-                    "last_good_retained": true,
-                })
-            ),
+            Err(error) => report_failure(error),
         }
     }
 }

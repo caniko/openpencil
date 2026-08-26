@@ -287,6 +287,53 @@ fn export_opui_watch_exports_a_settled_source_change() {
 }
 
 #[test]
+fn export_opui_watch_recovers_from_invalid_initial_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("x.op");
+    let output = dir.path().join("x.opui");
+    std::fs::write(
+        &source,
+        r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"Last good"}]}"#,
+    )
+    .unwrap();
+    export_cli::run_export_opui(
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        None,
+        false,
+        false,
+    )
+    .unwrap();
+    let last_good = std::fs::read(&output).unwrap();
+    std::fs::write(&source, "not json").unwrap();
+    let changed = source.clone();
+    let retained = output.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(std::fs::read(retained).unwrap(), last_good);
+        std::fs::write(
+            changed,
+            r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"Repaired"}]}"#,
+        )
+        .unwrap();
+    });
+
+    export_cli::run_export_opui_watch_for(
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        None,
+        false,
+        false,
+        25,
+        Some(1),
+    )
+    .unwrap();
+    writer.join().unwrap();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(manifest["nodes"]["root"]["text"]["content"], "Repaired");
+}
+
+#[test]
 fn runtime_ui_entrypoint_is_authored_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("app.op");
