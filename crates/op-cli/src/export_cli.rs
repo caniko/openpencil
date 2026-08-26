@@ -294,6 +294,15 @@ pub(crate) fn run_export_opui_watch_for(
 ) -> Result<String, String> {
     let source = std::path::absolute(file)
         .map_err(|error| format!("resolve watched source {file}: {error}"))?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| format!("watched source has no parent: {}", source.display()))?;
+    let (send, receive) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(send)
+        .map_err(|error| format!("create file watcher: {error}"))?;
+    watcher
+        .watch(parent, RecursiveMode::NonRecursive)
+        .map_err(|error| format!("watch {}: {error}", parent.display()))?;
     let report_failure = |error: String| {
         eprintln!(
             "{}",
@@ -310,15 +319,6 @@ pub(crate) fn run_export_opui_watch_for(
         Ok(message) => println!("{message}"),
         Err(error) => report_failure(error),
     }
-    let parent = source
-        .parent()
-        .ok_or_else(|| format!("watched source has no parent: {}", source.display()))?;
-    let (send, receive) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(send)
-        .map_err(|error| format!("create file watcher: {error}"))?;
-    watcher
-        .watch(parent, RecursiveMode::NonRecursive)
-        .map_err(|error| format!("watch {}: {error}", parent.display()))?;
     let debounce = Duration::from_millis(debounce_ms);
     let mut updates = 0;
 
