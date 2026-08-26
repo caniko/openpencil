@@ -364,7 +364,10 @@ fn runtime_ui_metadata_is_authored_and_schema_valid() {
     )
     .unwrap();
 
-    export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap()).unwrap();
+    let response =
+        export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap())
+            .unwrap();
+    assert!(response.contains("legacy name selector"));
     let document = op_runtime_ui::load_document(&source).unwrap();
     let value = serde_json::to_value(document).unwrap();
     assert_eq!(value["runtimeEntrypoints"]["app"], "main.play");
@@ -380,6 +383,56 @@ fn runtime_ui_metadata_is_authored_and_schema_valid() {
         value["children"][0]["children"][2]["runtimeId"],
         "main.play.hover"
     );
+}
+
+#[test]
+fn runtime_ui_metadata_prefers_exact_ids_and_rejects_stale_specs() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.op");
+    let spec = dir.path().join("runtime.json");
+    std::fs::write(
+        &source,
+        r#"{"version":"0.8.1","children":[{"type":"frame","id":"play","name":"Duplicate","width":100,"height":40,"children":[{"type":"frame","id":"play-default","name":"Duplicate","width":100,"height":40}]}]}"#,
+    )
+    .unwrap();
+    let digest = op_runtime_ui::source_sha256(&source).unwrap();
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"sourceSha256":"{digest}","nodes":[{{"nodeId":"play","runtimeId":"main.play","role":"button","visualStates":{{"default":{{"nodeId":"play-default"}}}}}}]}}"#
+        ),
+    )
+    .unwrap();
+
+    let response =
+        export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap())
+            .unwrap();
+    assert!(response.contains(r#""warnings":[]"#));
+    let document = op_runtime_ui::load_document(&source).unwrap();
+    let value = serde_json::to_value(document).unwrap();
+    assert_eq!(value["children"][0]["runtimeId"], "main.play");
+    assert_eq!(
+        value["children"][0]["children"][0]["runtimeId"],
+        "main.play.default"
+    );
+
+    let error =
+        export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap())
+            .unwrap_err();
+    assert!(error.contains("spec is stale"));
+
+    let current = op_runtime_ui::source_sha256(&source).unwrap();
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"sourceSha256":"{current}","nodes":[{{"nodeId":"missing","runtimeId":"main.missing"}}]}}"#
+        ),
+    )
+    .unwrap();
+    let error =
+        export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap())
+            .unwrap_err();
+    assert!(error.contains("nodeId selector `missing` matched 0 nodes"));
 }
 
 #[cfg(feature = "opui-raster")]

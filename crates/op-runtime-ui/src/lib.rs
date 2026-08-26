@@ -61,6 +61,10 @@ pub fn load_document(input: &Path) -> Result<jian_ops_schema::PenDocument, Expor
         .map_err(|e| ExportError::msg(e.to_string()))
 }
 
+pub fn source_sha256(input: &Path) -> Result<String, ExportError> {
+    Ok(assets::hex_sha256(&fs::read(input)?))
+}
+
 pub fn write_document(
     output: &Path,
     document: &jian_ops_schema::PenDocument,

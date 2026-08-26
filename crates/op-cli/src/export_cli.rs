@@ -39,40 +39,66 @@ pub(crate) fn apply_runtime_metadata(file: &str, spec: &str) -> Result<String, S
         &std::fs::read(spec).map_err(|error| format!("read {spec}: {error}"))?,
     )
     .map_err(|error| format!("parse {spec}: {error}"))?;
+    if let Some(expected) = spec.get("sourceSha256").and_then(Value::as_str) {
+        let actual = op_runtime_ui::source_sha256(path).map_err(|error| error.to_string())?;
+        if expected != actual {
+            return Err(format!(
+                "runtime metadata spec is stale: sourceSha256 is {expected}, current source is {actual}"
+            ));
+        }
+    }
     let nodes = spec
         .get("nodes")
         .and_then(Value::as_array)
         .ok_or("runtime metadata spec requires a nodes array")?;
+    let mut legacy_selectors = 0;
     for node in nodes {
-        let name = node
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or("runtime metadata node requires name")?;
+        let node_id = node.get("nodeId").and_then(Value::as_str);
+        let name = node.get("name").and_then(Value::as_str);
+        let selector = node_id
+            .or(name)
+            .ok_or("runtime metadata node requires nodeId (preferred) or name (legacy)")?;
+        if node_id.is_none() {
+            legacy_selectors += 1;
+        }
         let runtime_id = node
             .get("runtimeId")
             .and_then(Value::as_str)
             .filter(|runtime_id| is_runtime_id(runtime_id))
-            .ok_or_else(|| format!("runtime metadata node `{name}` has invalid runtimeId"))?;
+            .ok_or_else(|| format!("runtime metadata node `{selector}` has invalid runtimeId"))?;
         let node_type = node.get("type").and_then(Value::as_str);
         let mut visual_states = serde_json::Map::new();
         if let Some(states) = node.get("visualStates").and_then(Value::as_object) {
-            for (state, target_name) in states {
-                let target_name = target_name
-                    .as_str()
-                    .ok_or_else(|| format!("visual state `{state}` on `{name}` must be a name"))?;
+            for (state, target) in states {
                 let target_runtime_id = format!("{runtime_id}.{state}");
-                set_named_node_field(
-                    &mut value,
-                    target_name,
-                    Some("frame"),
-                    "runtimeId",
-                    Value::String(target_runtime_id.clone()),
-                )?;
+                if let Some(target_id) = target.get("nodeId").and_then(Value::as_str) {
+                    set_id_node_field(
+                        &mut value,
+                        target_id,
+                        Some("frame"),
+                        "runtimeId",
+                        Value::String(target_runtime_id.clone()),
+                    )?;
+                } else if let Some(target_name) = target.as_str() {
+                    legacy_selectors += 1;
+                    set_named_node_field(
+                        &mut value,
+                        target_name,
+                        Some("frame"),
+                        "runtimeId",
+                        Value::String(target_runtime_id.clone()),
+                    )?;
+                } else {
+                    return Err(format!(
+                        "visual state `{state}` on `{selector}` requires a nodeId selector"
+                    ));
+                }
                 visual_states.insert(state.clone(), Value::String(target_runtime_id));
             }
         }
-        set_named_node_field(
+        set_selected_node_field(
             &mut value,
+            node_id,
             name,
             node_type,
             "runtimeId",
@@ -85,12 +111,20 @@ pub(crate) fn apply_runtime_metadata(file: &str, spec: &str) -> Result<String, S
             ("enabled", "enabled"),
         ] {
             if let Some(field) = node.get(source) {
-                set_named_node_field(&mut value, name, node_type, target, field.clone())?;
+                set_selected_node_field(
+                    &mut value,
+                    node_id,
+                    name,
+                    node_type,
+                    target,
+                    field.clone(),
+                )?;
             }
         }
         if !visual_states.is_empty() {
-            set_named_node_field(
+            set_selected_node_field(
                 &mut value,
+                node_id,
                 name,
                 node_type,
                 "visualStates",
@@ -108,8 +142,52 @@ pub(crate) fn apply_runtime_metadata(file: &str, spec: &str) -> Result<String, S
         "event": "runtime_metadata_updated",
         "file": file,
         "nodes": nodes.len(),
+        "warnings": if legacy_selectors == 0 {
+            Vec::<String>::new()
+        } else {
+            vec![format!("{legacy_selectors} legacy name selector(s); use nodeId")]
+        },
     })
     .to_string())
+}
+
+fn set_selected_node_field(
+    document: &mut Value,
+    node_id: Option<&str>,
+    name: Option<&str>,
+    node_type: Option<&str>,
+    field: &str,
+    value: Value,
+) -> Result<(), String> {
+    if let Some(node_id) = node_id {
+        set_id_node_field(document, node_id, node_type, field, value)
+    } else {
+        set_named_node_field(
+            document,
+            name.expect("selector was validated"),
+            node_type,
+            field,
+            value,
+        )
+    }
+}
+
+fn set_id_node_field(
+    document: &mut Value,
+    node_id: &str,
+    node_type: Option<&str>,
+    field: &str,
+    value: Value,
+) -> Result<(), String> {
+    let count = count_nodes(document, "id", node_id, node_type);
+    if count != 1 {
+        return Err(format!(
+            "runtime metadata nodeId selector `{node_id}` matched {count} nodes"
+        ));
+    }
+    let node = find_node_mut(document, "id", node_id, node_type).expect("count proved one match");
+    node.insert(field.into(), value);
+    Ok(())
 }
 
 fn set_named_node_field(
@@ -119,48 +197,49 @@ fn set_named_node_field(
     field: &str,
     value: Value,
 ) -> Result<(), String> {
-    let count = count_named_nodes(document, name, node_type);
+    let count = count_nodes(document, "name", name, node_type);
     if count != 1 {
         return Err(format!(
             "runtime metadata selector `{name}` matched {count} nodes; name/type selectors must be unique"
         ));
     }
-    let node = find_named_node_mut(document, name, node_type).expect("count proved one match");
+    let node = find_node_mut(document, "name", name, node_type).expect("count proved one match");
     node.insert(field.into(), value);
     Ok(())
 }
 
-fn count_named_nodes(value: &Value, name: &str, node_type: Option<&str>) -> usize {
+fn count_nodes(value: &Value, field: &str, expected: &str, node_type: Option<&str>) -> usize {
     match value {
         Value::Object(object) => {
             usize::from(
                 object.get("type").is_some()
-                    && object.get("name").and_then(Value::as_str) == Some(name)
+                    && object.get(field).and_then(Value::as_str) == Some(expected)
                     && node_type.is_none_or(|node_type| {
                         object.get("type").and_then(Value::as_str) == Some(node_type)
                     }),
             ) + object
                 .values()
-                .map(|value| count_named_nodes(value, name, node_type))
+                .map(|value| count_nodes(value, field, expected, node_type))
                 .sum::<usize>()
         }
         Value::Array(values) => values
             .iter()
-            .map(|value| count_named_nodes(value, name, node_type))
+            .map(|value| count_nodes(value, field, expected, node_type))
             .sum(),
         _ => 0,
     }
 }
 
-fn find_named_node_mut<'a>(
+fn find_node_mut<'a>(
     value: &'a mut Value,
-    name: &str,
+    field: &str,
+    expected: &str,
     node_type: Option<&str>,
 ) -> Option<&'a mut serde_json::Map<String, Value>> {
     match value {
         Value::Object(object) => {
             if object.get("type").is_some()
-                && object.get("name").and_then(Value::as_str) == Some(name)
+                && object.get(field).and_then(Value::as_str) == Some(expected)
                 && node_type.is_none_or(|node_type| {
                     object.get("type").and_then(Value::as_str) == Some(node_type)
                 })
@@ -169,11 +248,11 @@ fn find_named_node_mut<'a>(
             }
             object
                 .values_mut()
-                .find_map(|value| find_named_node_mut(value, name, node_type))
+                .find_map(|value| find_node_mut(value, field, expected, node_type))
         }
         Value::Array(values) => values
             .iter_mut()
-            .find_map(|value| find_named_node_mut(value, name, node_type)),
+            .find_map(|value| find_node_mut(value, field, expected, node_type)),
         _ => None,
     }
 }
