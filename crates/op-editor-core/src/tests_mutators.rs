@@ -7,7 +7,7 @@
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::test_support::{ellipse, frame, group, rect, sample, state_with};
-use crate::walkers::{find_node, ReorderDirection};
+use crate::walkers::{find_node, find_node_mut, ReorderDirection};
 use jian_ops_schema::style::PenFill;
 use jian_ops_schema::variable::{VariableKind, VariableScalar};
 
@@ -237,6 +237,14 @@ fn delete_selected_protects_ancestor_of_locked_descendant() {
 #[test]
 fn duplicate_selected_clones_subtree_with_fresh_ids_and_selects_it() {
     let mut s = sample();
+    let original = find_node_mut(s.active_children_mut(), &NodeId::new("n10")).unwrap();
+    original.base_mut().runtime_id = Some("menu.root".into());
+    original.base_mut().role = Some("menu".into());
+    original.base_mut().visual_states = Some(
+        [("hover".into(), "menu.root.hover".into())]
+            .into_iter()
+            .collect(),
+    );
     s.set_single_selection(NodeId::new("n10"));
     let mut next_id = 1_000u64;
     let clone_id = s
@@ -257,6 +265,9 @@ fn duplicate_selected_clones_subtree_with_fresh_ids_and_selects_it() {
         clone.children().map(|c| c.len()),
         original.children().map(|c| c.len())
     );
+    assert_eq!(clone.base().runtime_id, None);
+    assert_eq!(clone.base().visual_states, None);
+    assert_eq!(clone.base().role.as_deref(), Some("menu"));
     assert!(s.validate().is_ok());
 }
 

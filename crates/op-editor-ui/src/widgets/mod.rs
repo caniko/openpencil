@@ -82,6 +82,9 @@ mod property_panel_multi_select_tests;
 mod property_panel_overlay_hit;
 #[cfg(test)]
 mod property_panel_press_tests;
+pub mod property_panel_runtime;
+#[cfg(test)]
+mod property_panel_runtime_tests;
 pub mod property_panel_sections;
 pub mod property_panel_snapshot;
 pub mod property_panel_stroke;

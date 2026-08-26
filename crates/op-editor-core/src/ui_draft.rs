@@ -106,9 +106,33 @@ pub enum PropertyFocus {
     WidgetMin,
     WidgetMax,
     WidgetStep,
+    RuntimeId,
+    RuntimeRole,
+    RuntimeAccessibilityLabel,
+    RuntimeTabIndex,
+    RuntimeStateDefault,
+    RuntimeStateHover,
+    RuntimeStatePressed,
+    RuntimeStateDisabled,
+    RuntimeStateFocused,
 }
 
 impl PropertyFocus {
+    pub fn is_runtime_text(self) -> bool {
+        matches!(
+            self,
+            Self::RuntimeId
+                | Self::RuntimeRole
+                | Self::RuntimeAccessibilityLabel
+                | Self::RuntimeTabIndex
+                | Self::RuntimeStateDefault
+                | Self::RuntimeStateHover
+                | Self::RuntimeStatePressed
+                | Self::RuntimeStateDisabled
+                | Self::RuntimeStateFocused
+        )
+    }
+
     /// True when the focused row carries hex colour input — drives
     /// the `#`-sticky keyboard validation. Hex focuses cap the draft
     /// at 7 chars (`#RRGGBB`).
@@ -135,6 +159,15 @@ impl PropertyFocus {
                 | PropertyFocus::WidgetLeadingIcon
                 | PropertyFocus::WidgetTrailingIcon
                 | PropertyFocus::WidgetBindKey
+                | PropertyFocus::RuntimeId
+                | PropertyFocus::RuntimeRole
+                | PropertyFocus::RuntimeAccessibilityLabel
+                | PropertyFocus::RuntimeTabIndex
+                | PropertyFocus::RuntimeStateDefault
+                | PropertyFocus::RuntimeStateHover
+                | PropertyFocus::RuntimeStatePressed
+                | PropertyFocus::RuntimeStateDisabled
+                | PropertyFocus::RuntimeStateFocused
         )
     }
 

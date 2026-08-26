@@ -325,6 +325,18 @@ pub fn deep_clone_with_new_ids(
     clone
 }
 
+/// Runtime IDs are document-unique. Duplicate/paste callers clear them
+/// (and their ID-based visual-state links) while preserving semantic metadata.
+pub(crate) fn clear_runtime_identity(node: &mut PenNode) {
+    node.base_mut().runtime_id = None;
+    node.base_mut().visual_states = None;
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            clear_runtime_identity(child);
+        }
+    }
+}
+
 /// Translate the subtree rooted at `node` by `(dx, dy)` document px.
 ///
 /// Only the root's own `x` / `y` move. Child coords in the canonical

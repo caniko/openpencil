@@ -420,6 +420,10 @@ impl WidgetHost {
                 self.editor_state.commit_history();
                 let _ = self.editor_state.set_selected_widget_checked(new_value);
             }
+            A::ToggleRuntimeEnabled(enabled) => {
+                self.editor_state.commit_history();
+                let _ = self.editor_state.set_selected_runtime_enabled(enabled);
+            }
             A::PickFillImage => {
                 // Queue the browser file picker — `dom_io` drains
                 // this flag after the event handler releases the host

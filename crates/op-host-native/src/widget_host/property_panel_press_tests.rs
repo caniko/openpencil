@@ -1,5 +1,6 @@
 use super::WidgetHostNative;
 use op_editor_core::codegen::{CodegenHover, CodegenPhase};
+use op_editor_core::pen_node_ext::PenNodeExt;
 use op_editor_core::PropertyTab;
 use op_editor_core::{ButtonPressTarget, NodeId, PropertyFocus};
 use op_editor_ui::widgets::property_panel_action::CodegenAction;
@@ -15,6 +16,41 @@ fn seed(host: &mut WidgetHostNative, json: &str) {
         .value;
     *host.editor_state_mut() = op_editor_core::EditorState::from_document(doc);
     host.mark_paint_dirty_for_test();
+}
+
+#[test]
+fn native_runtime_metadata_commit_is_undoable() {
+    let mut host = WidgetHostNative::new();
+    seed(
+        &mut host,
+        r#"{"version":"1.0.0","children":[{"type":"rectangle","id":"button","width":10,"height":10}]}"#,
+    );
+    host.editor_state_mut()
+        .set_single_selection(NodeId::new("button"));
+    host.editor_state_mut().ui.property_focus = Some(PropertyFocus::RuntimeId);
+    host.editor_state_mut()
+        .ui
+        .property_input
+        .set_text("menu.play");
+
+    host.commit_property_focus_if_any();
+    assert_eq!(
+        host.editor_state()
+            .selected_node()
+            .unwrap()
+            .base()
+            .runtime_id
+            .as_deref(),
+        Some("menu.play")
+    );
+    assert!(host.editor_state_mut().undo());
+    assert!(host
+        .editor_state()
+        .selected_node()
+        .unwrap()
+        .base()
+        .runtime_id
+        .is_none());
 }
 
 fn point_for_action(

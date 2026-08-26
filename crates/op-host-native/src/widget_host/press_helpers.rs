@@ -736,6 +736,20 @@ pub(in crate::widget_host) fn property_focus_initial(
     use super::helpers::color_to_hex;
     use op_editor_core::PropertyFocus as F;
     match focus {
+        F::RuntimeId
+        | F::RuntimeRole
+        | F::RuntimeAccessibilityLabel
+        | F::RuntimeTabIndex
+        | F::RuntimeStateDefault
+        | F::RuntimeStateHover
+        | F::RuntimeStatePressed
+        | F::RuntimeStateDisabled
+        | F::RuntimeStateFocused => panel
+            .snapshot
+            .runtime_ui
+            .value_for(focus)
+            .unwrap_or_default()
+            .to_owned(),
         F::PositionX => panel.snapshot.x.to_string(),
         F::PositionY => panel.snapshot.y.to_string(),
         F::SizeW => panel.snapshot.width.to_string(),

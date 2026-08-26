@@ -54,7 +54,7 @@ pub(crate) use crate::widgets::property_panel_layout::SectionCapabilities;
 use crate::widgets::property_panel_snapshot::color_from_hex;
 pub use crate::widgets::property_panel_snapshot::{
     EffectKind, EffectSummary, EllipseArcSummary, FillSummary, GradientStopSummary, NodeSnapshot,
-    WidgetKind, WidgetSummary,
+    RuntimeUiSummary, WidgetKind, WidgetSummary,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -647,6 +647,9 @@ impl PropertyPanel {
     /// Total height (px) of the panel's section content — drives the
     /// scroll clamp so the inspector can't scroll past its end.
     pub fn content_height(&self, panel_rect: Rect) -> f32 {
+        if matches!(self.tab, op_editor_core::PropertyTab::Interact) {
+            return crate::widgets::property_panel_runtime::content_height();
+        }
         sections::property_panel_content_height(
             panel_rect,
             self.visible_sections(),
@@ -720,7 +723,7 @@ impl PropertyPanel {
             panel_rect.origin.x,
             panel_rect.origin.y,
             point,
-            self.snapshot.widget.is_some(),
+            !self.is_multi && !self.snapshot.kind.is_empty(),
         ) {
             return Some(PropertyPanelAction::SetPropertyTab(tab));
         }
@@ -735,6 +738,16 @@ impl PropertyPanel {
                 point,
                 self.locale,
             );
+        }
+        if matches!(self.tab, op_editor_core::PropertyTab::Interact) {
+            if !self.point_in_section_viewport(panel_rect, point) {
+                return None;
+            }
+            let (action, rect) = crate::widgets::property_panel_runtime::enabled_action_rect(
+                self.scrolled_rect(panel_rect),
+                self.snapshot.runtime_ui.enabled,
+            );
+            return rect.contains(point).then_some(action);
         }
         if self.image_fill_popover_open {
             if let Some(action) = sections::image_fill_popover_action_at(
@@ -909,6 +922,16 @@ impl PropertyPanel {
             // The Code tab paints no Design input rows — a click must
             // not focus an invisible input (paint + hit-test agree).
             return None;
+        }
+        if matches!(self.tab, op_editor_core::PropertyTab::Interact) {
+            if !self.point_in_section_viewport(panel_rect, point) {
+                return None;
+            }
+            return crate::widgets::property_panel_runtime::input_rects(
+                self.scrolled_rect(panel_rect),
+            )
+            .into_iter()
+            .find_map(|(focus, rect)| rect.contains(point).then_some(focus));
         }
         if !self.point_in_section_viewport(panel_rect, point) {
             return None;
@@ -1123,7 +1146,7 @@ impl Widget for PropertyPanel {
             sections::TabStripState {
                 active: self.tab,
                 hover: self.tab_hover,
-                show_interact: self.snapshot.widget.is_some(),
+                show_interact: !self.is_multi && !self.snapshot.kind.is_empty(),
             },
             x,
             rect.origin.y,
@@ -1148,6 +1171,24 @@ impl Widget for PropertyPanel {
                 self.now_ms,
                 self.codegen_pressed,
             );
+            return;
+        }
+        if matches!(self.tab, op_editor_core::PropertyTab::Interact) {
+            cx.backend.save();
+            cx.backend.clip_rect(Rect {
+                origin: Point2D::new(x, tab_bottom),
+                size: Point2D::new(w, (rect.origin.y + rect.size.y - tab_bottom).max(0.0)),
+            });
+            crate::widgets::property_panel_runtime::paint_runtime_panel(
+                cx,
+                &self.theme,
+                &self.snapshot,
+                &edit_ctx,
+                x,
+                tab_bottom - self.effective_scroll(rect),
+                w,
+            );
+            cx.backend.restore();
             return;
         }
         // Section content scrolls below the pinned tab strip; clip it

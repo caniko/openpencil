@@ -32,6 +32,7 @@ fn empty_doc() -> PenDocument {
     PenDocument {
         version: "1.0.0".into(),
         name: None,
+        runtime_entrypoints: None,
         themes: None,
         variables: None,
         pages: None,

@@ -508,6 +508,10 @@ impl WidgetHostNative {
                 self.editor_state.commit_history();
                 let _ = self.editor_state.set_selected_widget_checked(new_value);
             }
+            A::ToggleRuntimeEnabled(enabled) => {
+                self.editor_state.commit_history();
+                let _ = self.editor_state.set_selected_runtime_enabled(enabled);
+            }
             A::PickFillImage => {
                 // Queue the file dialog — the desktop runner pops it
                 // on the next frame and writes the chosen image into

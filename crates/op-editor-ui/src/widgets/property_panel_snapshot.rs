@@ -105,6 +105,7 @@ pub struct NodeSnapshot {
     /// widget `PenNode` variants. Drives the Widget section's
     /// visibility + rows.
     pub widget: Option<WidgetSummary>,
+    pub runtime_ui: RuntimeUiSummary,
     pub fill: Option<Color>,
     /// Primary solid-fill opacity in `[0.0, 1.0]` — the Fill
     /// section's `100 %` paints `fill_opacity * 100`.
@@ -144,6 +145,64 @@ pub struct NodeSnapshot {
     /// True when the selection is a reusable COMPONENT definition —
     /// drives the purple badge + the Detach-component button.
     pub is_reusable: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeUiSummary {
+    pub runtime_id: String,
+    pub role: String,
+    pub accessibility_label: String,
+    pub tab_index: String,
+    pub enabled: bool,
+    pub default_state: String,
+    pub hover_state: String,
+    pub pressed_state: String,
+    pub disabled_state: String,
+    pub focused_state: String,
+}
+
+impl RuntimeUiSummary {
+    pub fn value_for(&self, focus: op_editor_core::PropertyFocus) -> Option<&str> {
+        use op_editor_core::PropertyFocus as F;
+        Some(match focus {
+            F::RuntimeId => &self.runtime_id,
+            F::RuntimeRole => &self.role,
+            F::RuntimeAccessibilityLabel => &self.accessibility_label,
+            F::RuntimeTabIndex => &self.tab_index,
+            F::RuntimeStateDefault => &self.default_state,
+            F::RuntimeStateHover => &self.hover_state,
+            F::RuntimeStatePressed => &self.pressed_state,
+            F::RuntimeStateDisabled => &self.disabled_state,
+            F::RuntimeStateFocused => &self.focused_state,
+            _ => return None,
+        })
+    }
+
+    fn from_node(node: &PenNode) -> Self {
+        let base = node.base();
+        let state = |name| {
+            base.visual_states
+                .as_ref()
+                .and_then(|states| states.get(name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        Self {
+            runtime_id: base.runtime_id.clone().unwrap_or_default(),
+            role: base.role.clone().unwrap_or_default(),
+            accessibility_label: base.accessibility_label.clone().unwrap_or_default(),
+            tab_index: base
+                .tab_index
+                .map(|index| index.to_string())
+                .unwrap_or_default(),
+            enabled: !matches!(base.enabled, Some(BoolOrExpression::Bool(false))),
+            default_state: state("default"),
+            hover_state: state("hover"),
+            pressed_state: state("pressed"),
+            disabled_state: state("disabled"),
+            focused_state: state("focused"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -528,6 +587,7 @@ impl NodeSnapshot {
             icon: None,
             text: None,
             widget: None,
+            runtime_ui: RuntimeUiSummary::default(),
             fill: None,
             fill_opacity: 1.0,
             fills: Vec::new(),
@@ -589,6 +649,7 @@ impl NodeSnapshot {
             icon: None,
             text: None,
             widget: None,
+            runtime_ui: RuntimeUiSummary::default(),
             fill: None,
             fill_opacity: 1.0,
             // Multi-select hides the Fill section (see `for_multi`),
@@ -678,6 +739,7 @@ impl NodeSnapshot {
             icon: icon_summary_of(node),
             text: text_summary_of(node),
             widget: widget_summary_of(node),
+            runtime_ui: RuntimeUiSummary::from_node(node),
             fill,
             fill_opacity: op_editor_core::first_solid_fill_opacity(node),
             fills: fills_of(node),

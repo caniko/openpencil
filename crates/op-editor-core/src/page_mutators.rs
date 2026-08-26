@@ -240,7 +240,11 @@ impl EditorState {
         let new_children: Vec<PenNode> = source
             .children
             .iter()
-            .map(|c| walkers::deep_clone_with_new_ids(c, &mut next_id, &mut taken))
+            .map(|c| {
+                let mut clone = walkers::deep_clone_with_new_ids(c, &mut next_id, &mut taken);
+                walkers::clear_runtime_identity(&mut clone);
+                clone
+            })
             .collect();
         let clone_name = custom_name.unwrap_or_else(|| format!("{} copy", source.name));
         let clone = make_page(new_page_id.into(), clone_name, new_children);

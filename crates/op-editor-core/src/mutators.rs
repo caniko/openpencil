@@ -674,6 +674,7 @@ pub(crate) fn duplicate_in_children(
         let size = walkers::subtree_size(&children[idx]);
         next_id.checked_add(size)?;
         let mut clone = walkers::deep_clone_with_new_ids(&children[idx], next_id, taken);
+        walkers::clear_runtime_identity(&mut clone);
         walkers::translate_subtree(&mut clone, offset, offset);
         let new_id = NodeId::new_opt(clone.id_str())?;
         children.insert(idx + 1, clone);

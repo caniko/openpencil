@@ -118,6 +118,7 @@ impl EditorState {
                 }
             }
             let mut clone = walkers::deep_clone_with_new_ids(original, next_id, &mut taken);
+            walkers::clear_runtime_identity(&mut clone);
             walkers::translate_subtree(&mut clone, offset_doc_px, offset_doc_px);
             let id = NodeId::new_opt(clone.id_str());
             if !walkers::insert_into_parent(children, parent.as_ref(), insert_index, clone) {

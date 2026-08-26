@@ -466,6 +466,7 @@ mod tests {
         PenDocument {
             version: "1.0.0".to_string(),
             name: Some("Source".to_string()),
+            runtime_entrypoints: None,
             themes: None,
             variables: None,
             pages: None,

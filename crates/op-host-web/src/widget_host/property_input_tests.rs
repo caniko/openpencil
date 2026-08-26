@@ -3,6 +3,7 @@ use jian_ops_schema::node::PenNode;
 use jian_ops_schema::style::PenFill;
 use jian_ops_schema::variable::{VariableKind, VariableScalar};
 use op_editor_core::editor_ui_state::EffectParamFocus;
+use op_editor_core::pen_node_ext::PenNodeExt;
 use op_editor_core::ui_draft::PropertyFocus;
 use op_editor_core::{own_bounds, EffectField, NodeId, PropertyTab, Tool};
 use op_editor_ui::widgets::{PropertyPanel, PropertyPanelAction, Toolbar, TOP_BAR_HEIGHT};
@@ -421,6 +422,38 @@ fn web_property_focus_commit_reads_text_input_state() {
     let bounds = own_bounds(host.editor_state.selected_node().unwrap());
     assert_eq!(bounds.w, 321.0);
     assert!(host.editor_state.ui.property_input.text().is_empty());
+}
+
+#[test]
+fn web_runtime_metadata_commit_is_undoable() {
+    let mut host = WidgetHost::new();
+    seed(
+        &mut host,
+        r#"{"version":"1.0.0","children":[{"type":"rectangle","id":"button","width":10,"height":10}]}"#,
+    );
+    host.editor_state
+        .set_single_selection(NodeId::new("button"));
+    host.editor_state.ui.property_focus = Some(PropertyFocus::RuntimeId);
+    host.editor_state.ui.property_input.set_text("menu.play");
+
+    host.commit_property_focus_if_any();
+    assert_eq!(
+        host.editor_state
+            .selected_node()
+            .unwrap()
+            .base()
+            .runtime_id
+            .as_deref(),
+        Some("menu.play")
+    );
+    assert!(host.editor_state.undo());
+    assert!(host
+        .editor_state
+        .selected_node()
+        .unwrap()
+        .base()
+        .runtime_id
+        .is_none());
 }
 
 #[test]

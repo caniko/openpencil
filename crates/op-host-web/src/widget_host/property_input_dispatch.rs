@@ -134,6 +134,11 @@ impl WidgetHost {
                     .editor_state
                     .set_selected_widget_bind_value(draft.trim());
             }
+            focus if focus.is_runtime_text() => {
+                let _ = self
+                    .editor_state
+                    .set_selected_runtime_text(focus, draft.trim());
+            }
             _ => {
                 if let Ok(value) = draft.trim().parse::<f32>() {
                     let _ = self.editor_state.commit_property_edit(focus, value);
@@ -155,6 +160,20 @@ pub(in crate::widget_host) fn property_focus_initial(
     panel: &op_editor_ui::widgets::PropertyPanel,
 ) -> String {
     match focus {
+        PropertyFocus::RuntimeId
+        | PropertyFocus::RuntimeRole
+        | PropertyFocus::RuntimeAccessibilityLabel
+        | PropertyFocus::RuntimeTabIndex
+        | PropertyFocus::RuntimeStateDefault
+        | PropertyFocus::RuntimeStateHover
+        | PropertyFocus::RuntimeStatePressed
+        | PropertyFocus::RuntimeStateDisabled
+        | PropertyFocus::RuntimeStateFocused => panel
+            .snapshot
+            .runtime_ui
+            .value_for(focus)
+            .unwrap_or_default()
+            .to_owned(),
         PropertyFocus::PositionX => panel.snapshot.x.to_string(),
         PropertyFocus::PositionY => panel.snapshot.y.to_string(),
         PropertyFocus::SizeW => panel.snapshot.width.to_string(),

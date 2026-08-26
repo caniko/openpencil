@@ -289,6 +289,11 @@ impl WidgetHostNative {
                     .editor_state
                     .set_selected_widget_bind_value(draft.trim());
             }
+            focus if focus.is_runtime_text() => {
+                let _ = self
+                    .editor_state
+                    .set_selected_runtime_text(focus, draft.trim());
+            }
             _ => {
                 if let Ok(value) = draft.trim().parse::<f32>() {
                     let _ = self.editor_state.commit_property_edit(focus, value);

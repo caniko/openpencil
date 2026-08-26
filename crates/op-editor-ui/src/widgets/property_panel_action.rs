@@ -157,6 +157,7 @@ pub enum PropertyPanelAction {
     /// User clicked a tab in the pinned Design / Code strip — the host
     /// switches `editor_ui.property_tab`.
     SetPropertyTab(op_editor_core::PropertyTab),
+    ToggleRuntimeEnabled(bool),
     SetFlexLayout(op_editor_core::FlexLayout),
     ToggleSizeFillWidth,
     ToggleSizeFillHeight,

@@ -55,6 +55,86 @@ fn stroke_values_for_mode_update(
 }
 
 impl EditorState {
+    pub fn set_selected_runtime_text(&mut self, focus: PropertyFocus, value: &str) -> bool {
+        let sel = self.selection.anchor.clone();
+        if !sel.is_real() || !self.is_editable(&sel) {
+            return false;
+        }
+        let value = value.trim();
+        if matches!(
+            focus,
+            PropertyFocus::RuntimeId
+                | PropertyFocus::RuntimeStateDefault
+                | PropertyFocus::RuntimeStateHover
+                | PropertyFocus::RuntimeStatePressed
+                | PropertyFocus::RuntimeStateDisabled
+                | PropertyFocus::RuntimeStateFocused
+        ) && !value.is_empty()
+            && !is_runtime_id(value)
+        {
+            return false;
+        }
+        let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
+            return false;
+        };
+        let base = node.base_mut();
+        match focus {
+            PropertyFocus::RuntimeId => base.runtime_id = (!value.is_empty()).then(|| value.into()),
+            PropertyFocus::RuntimeRole => base.role = (!value.is_empty()).then(|| value.into()),
+            PropertyFocus::RuntimeAccessibilityLabel => {
+                base.accessibility_label = (!value.is_empty()).then(|| value.into());
+            }
+            PropertyFocus::RuntimeTabIndex => {
+                base.tab_index = if value.is_empty() {
+                    None
+                } else {
+                    let Ok(index) = value.parse() else {
+                        return false;
+                    };
+                    Some(index)
+                };
+            }
+            PropertyFocus::RuntimeStateDefault
+            | PropertyFocus::RuntimeStateHover
+            | PropertyFocus::RuntimeStatePressed
+            | PropertyFocus::RuntimeStateDisabled
+            | PropertyFocus::RuntimeStateFocused => {
+                let key = match focus {
+                    PropertyFocus::RuntimeStateDefault => "default",
+                    PropertyFocus::RuntimeStateHover => "hover",
+                    PropertyFocus::RuntimeStatePressed => "pressed",
+                    PropertyFocus::RuntimeStateDisabled => "disabled",
+                    PropertyFocus::RuntimeStateFocused => "focused",
+                    _ => unreachable!(),
+                };
+                let states = base.visual_states.get_or_insert_default();
+                if value.is_empty() {
+                    states.remove(key);
+                } else {
+                    states.insert(key.into(), value.into());
+                }
+                if states.is_empty() {
+                    base.visual_states = None;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn set_selected_runtime_enabled(&mut self, enabled: bool) -> bool {
+        let sel = self.selection.anchor.clone();
+        if !sel.is_real() || !self.is_editable(&sel) {
+            return false;
+        }
+        let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
+            return false;
+        };
+        node.base_mut().enabled =
+            Some(jian_ops_schema::node::base::BoolOrExpression::Bool(enabled));
+        true
+    }
+
     /// Apply a parsed numeric property edit to the anchor node.
     /// True on a real, editable selection.
     pub fn commit_property_edit(&mut self, focus: PropertyFocus, value: f32) -> bool {
@@ -314,7 +394,16 @@ impl EditorState {
             | PropertyFocus::WidgetLabel
             | PropertyFocus::WidgetLeadingIcon
             | PropertyFocus::WidgetTrailingIcon
-            | PropertyFocus::WidgetBindKey => {}
+            | PropertyFocus::WidgetBindKey
+            | PropertyFocus::RuntimeId
+            | PropertyFocus::RuntimeRole
+            | PropertyFocus::RuntimeAccessibilityLabel
+            | PropertyFocus::RuntimeTabIndex
+            | PropertyFocus::RuntimeStateDefault
+            | PropertyFocus::RuntimeStateHover
+            | PropertyFocus::RuntimeStatePressed
+            | PropertyFocus::RuntimeStateDisabled
+            | PropertyFocus::RuntimeStateFocused => {}
             PropertyFocus::FillOpacity(index) => {
                 // The primary fill (index 0) keeps `set_selected_fill_opacity`
                 // (writes the first fill's body opacity); a non-primary row
@@ -579,6 +668,12 @@ impl EditorState {
             crate::fills::reset_primary_image_adjustments(node)
         }
     }
+}
+
+fn is_runtime_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('A'..='Z' | 'a'..='z'))
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
 }
 
 fn container_padding_values(node: &PenNode) -> [f64; 4] {

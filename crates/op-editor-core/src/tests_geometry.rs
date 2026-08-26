@@ -305,3 +305,43 @@ fn selection_bounds_unions_multiple_nodes() {
         }
     );
 }
+
+#[test]
+fn runtime_ui_metadata_edits_validate_and_undo() {
+    let mut s = state_with(vec![rect("n1", "Button", 0.0, 0.0, 10.0, 10.0)]);
+    s.set_single_selection(NodeId::new("n1"));
+    s.commit_history();
+    assert!(s.set_selected_runtime_text(PropertyFocus::RuntimeId, "menu.play"));
+    assert!(s.set_selected_runtime_text(PropertyFocus::RuntimeRole, "button"));
+    assert!(s.set_selected_runtime_text(PropertyFocus::RuntimeAccessibilityLabel, "Play"));
+    assert!(s.set_selected_runtime_text(PropertyFocus::RuntimeTabIndex, "2"));
+    assert!(s.set_selected_runtime_text(PropertyFocus::RuntimeStateHover, "menu.play.hover"));
+    assert!(s.set_selected_runtime_enabled(false));
+    assert!(!s.set_selected_runtime_text(PropertyFocus::RuntimeId, "not valid"));
+
+    let node = find_node(s.active_children(), &NodeId::new("n1")).unwrap();
+    assert_eq!(node.base().runtime_id.as_deref(), Some("menu.play"));
+    assert_eq!(node.base().role.as_deref(), Some("button"));
+    assert_eq!(node.base().accessibility_label.as_deref(), Some("Play"));
+    assert_eq!(node.base().tab_index, Some(2));
+    assert_eq!(
+        node.base().visual_states.as_ref().unwrap()["hover"],
+        "menu.play.hover"
+    );
+    assert!(matches!(
+        node.base().enabled,
+        Some(jian_ops_schema::node::base::BoolOrExpression::Bool(false))
+    ));
+    let json = serde_json::to_string(&s.doc).unwrap();
+    let round_trip = jian_ops_schema::load_str(&json).unwrap().value;
+    let node = find_node(&round_trip.children, &NodeId::new("n1")).unwrap();
+    assert_eq!(node.base().runtime_id.as_deref(), Some("menu.play"));
+    assert_eq!(
+        node.base().visual_states.as_ref().unwrap()["hover"],
+        "menu.play.hover"
+    );
+
+    assert!(s.undo());
+    let node = find_node(s.active_children(), &NodeId::new("n1")).unwrap();
+    assert!(node.base().runtime_id.is_none());
+}
