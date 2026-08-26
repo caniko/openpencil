@@ -125,8 +125,27 @@ fn run(args: &[String]) -> Result<String, String> {
             output,
             strict,
             raster_native,
+            watch,
+            debounce_ms,
         } => {
-            export_cli::run_export_opui(&file, &output, item_id.as_deref(), strict, raster_native)?
+            if watch {
+                export_cli::run_export_opui_watch(
+                    &file,
+                    &output,
+                    item_id.as_deref(),
+                    strict,
+                    raster_native,
+                    debounce_ms,
+                )?
+            } else {
+                export_cli::run_export_opui(
+                    &file,
+                    &output,
+                    item_id.as_deref(),
+                    strict,
+                    raster_native,
+                )?
+            }
         }
     };
     Ok(if pretty { pretty_json(&out) } else { out })
@@ -190,6 +209,8 @@ enum Command {
         output: String,
         strict: bool,
         raster_native: bool,
+        watch: bool,
+        debounce_ms: u64,
     },
 }
 

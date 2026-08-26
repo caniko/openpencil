@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use jian_ops_schema::node::{
-    CornerRadius, FontWeight, ImageFitMode, JustifyContent, LayoutMode, NumberOrExpression,
-    Padding, PenNode, PenNodeBase, TextAlign, TextAlignVertical, TextContent, TextFontStyle,
-    TextGrowth, TextNode,
+    BoolOrExpression, CornerRadius, FontWeight, ImageFitMode, JustifyContent, LayoutMode,
+    NumberOrExpression, Padding, PenNode, PenNodeBase, TextAlign, TextAlignVertical, TextContent,
+    TextFontStyle, TextGrowth, TextNode,
 };
 use jian_ops_schema::sizing::{SizingBehavior, SizingKeyword};
 use jian_ops_schema::style::{
@@ -78,6 +78,7 @@ pub(crate) fn export_document(
             layout.insert("height".into(), fill);
         }
     }
+    cx.validate_visual_states()?;
     cx.record_duplicate_runtime_ids();
     cx.diags.sort_by(|a, b| {
         sev_rank(a.severity)
@@ -94,6 +95,20 @@ pub(crate) fn export_document(
             .then(a.message.cmp(&b.message))
     });
     let diagnostics = Value::Array(cx.diags.iter().map(diag_json).collect());
+    let mut entrypoints = Map::new();
+    entrypoints.insert("default".into(), json!(root_id));
+    if let Some(authored) = &doc.runtime_entrypoints {
+        let root_runtime_id = cx.nodes[&root_id].get("runtime_id").and_then(Value::as_str);
+        for (name, runtime_id) in authored {
+            if root_runtime_id != Some(runtime_id.as_str()) {
+                return Err(ExportError::msg(format!(
+                    "runtime entrypoint `{name}` targets `{runtime_id}`, but the exported root is `{}`",
+                    root_runtime_id.unwrap_or("<missing runtimeId>")
+                )));
+            }
+            entrypoints.insert(name.clone(), json!(root_id));
+        }
+    }
     let mut nodes = Map::new();
     for (k, v) in cx.nodes {
         nodes.insert(k, v);
@@ -113,7 +128,7 @@ pub(crate) fn export_document(
             "name": opts.name,
             "reference_viewport": { "width": num(vw), "height": num(vh) },
         },
-        "entrypoints": { "default": root_id },
+        "entrypoints": entrypoints,
         "assets": assets,
         "nodes": nodes,
         "diagnostics": diagnostics,
@@ -177,7 +192,14 @@ impl Cx<'_> {
         obj.insert("type".into(), json!(typ));
         obj.insert("source_id".into(), json!(id));
         let name = node_base(node).name.as_deref();
-        if let Some(rid) = runtime_id_of(&id, name) {
+        if node_base(node)
+            .runtime_id
+            .as_deref()
+            .is_some_and(|runtime_id| !is_runtime_id(runtime_id))
+        {
+            return Err(ExportError::msg(format!("invalid runtimeId on `{id}`")));
+        }
+        if let Some(rid) = runtime_id_of(&id, name, node_base(node).runtime_id.as_deref()) {
             obj.insert("runtime_id".into(), json!(rid));
         }
         if let Some(name) = name.filter(|n| !n.is_empty()) {
@@ -190,7 +212,7 @@ impl Cx<'_> {
         obj.insert("children".into(), json!(child_ids));
         obj.insert("layout".into(), self.layout_of(node, parent_flex));
         obj.insert("style".into(), self.style_of(node, &id)?);
-        obj.insert("extensions".into(), json!({}));
+        obj.insert("extensions".into(), runtime_extensions(node_base(node)));
         if let Some(p) = payload {
             obj.insert(payload_key.into(), p);
         }
@@ -246,7 +268,14 @@ impl Cx<'_> {
             .name
             .clone()
             .or_else(|| node_base(target).name.clone());
-        if let Some(rid) = runtime_id_of(&id, name.as_deref()) {
+        if r.base
+            .runtime_id
+            .as_deref()
+            .is_some_and(|runtime_id| !is_runtime_id(runtime_id))
+        {
+            return Err(ExportError::msg(format!("invalid runtimeId on `{id}`")));
+        }
+        if let Some(rid) = runtime_id_of(&id, name.as_deref(), r.base.runtime_id.as_deref()) {
             obj.insert("runtime_id".into(), json!(rid));
         }
         if let Some(name) = name.filter(|n| !n.is_empty()) {
@@ -272,7 +301,7 @@ impl Cx<'_> {
             ),
         );
         obj.insert("style".into(), self.style_of(target, &id)?);
-        obj.insert("extensions".into(), json!({}));
+        obj.insert("extensions".into(), runtime_extensions(&r.base));
         if let Some(p) = payload {
             obj.insert(payload_key.into(), p);
         }
@@ -564,7 +593,7 @@ impl Cx<'_> {
             code: "opui.unsupported_native",
             severity: "warning",
             node_id: id.to_string(),
-            runtime_id: runtime_id_of(id, None),
+            runtime_id: runtime_id_of(id, None, None),
             message: format!("{kind} approximated as container"),
             strategy: "native",
         });
@@ -609,6 +638,31 @@ impl Cx<'_> {
             }
         }
         self.diags.extend(dupes);
+    }
+
+    fn validate_visual_states(&self) -> Result<(), ExportError> {
+        let runtime_ids = self
+            .nodes
+            .values()
+            .filter_map(|node| node.get("runtime_id").and_then(Value::as_str))
+            .collect::<HashSet<_>>();
+        for node in self.nodes.values() {
+            let Some(states) = node
+                .pointer("/extensions/openpencil.runtime/visual_states")
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            for (state, target) in states {
+                let target = target.as_str().unwrap_or_default();
+                if !runtime_ids.contains(target) {
+                    return Err(ExportError::msg(format!(
+                        "visual state `{state}` targets missing runtimeId `{target}`"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn record_raster(&mut self, node: &PenNode, source_id: &str, scene_id: &str) {
@@ -849,10 +903,40 @@ fn percent_length(raw: &str) -> Option<Value> {
     Some(json!({ "type": "percent", "value": num(value) }))
 }
 
-fn runtime_id_of(id: &str, name: Option<&str>) -> Option<String> {
-    name.filter(|n| is_runtime_id(n))
+fn runtime_id_of(id: &str, name: Option<&str>, explicit: Option<&str>) -> Option<String> {
+    explicit
+        .filter(|n| is_runtime_id(n))
+        .or_else(|| name.filter(|n| is_runtime_id(n)))
         .map(str::to_string)
         .or_else(|| is_runtime_id(id).then(|| id.to_string()))
+}
+
+fn runtime_extensions(base: &PenNodeBase) -> Value {
+    let mut runtime = Map::new();
+    if let Some(role) = base.role.as_deref().filter(|value| !value.is_empty()) {
+        runtime.insert("role".into(), json!(role));
+    }
+    if let Some(label) = base
+        .accessibility_label
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        runtime.insert("accessibility_label".into(), json!(label));
+    }
+    if let Some(tab_index) = base.tab_index {
+        runtime.insert("tab_index".into(), json!(tab_index));
+    }
+    if let Some(BoolOrExpression::Bool(enabled)) = &base.enabled {
+        runtime.insert("enabled".into(), json!(enabled));
+    }
+    if let Some(states) = &base.visual_states {
+        runtime.insert("visual_states".into(), json!(states));
+    }
+    if runtime.is_empty() {
+        json!({})
+    } else {
+        json!({ "openpencil.runtime": runtime })
+    }
 }
 
 fn is_runtime_id(s: &str) -> bool {

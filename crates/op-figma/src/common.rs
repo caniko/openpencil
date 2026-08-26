@@ -236,7 +236,11 @@ pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
             .get_str("name")
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string()),
+        runtime_id: None,
         role: None,
+        accessibility_label: None,
+        tab_index: None,
+        visual_states: None,
         explain: None,
         x: Some(x),
         y: Some(y),

@@ -1,6 +1,9 @@
 use std::path::Path;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use base64::Engine as _;
+use notify::{RecursiveMode, Watcher};
 use serde_json::Value;
 
 use crate::command_helpers::flag_value;
@@ -40,12 +43,29 @@ pub(crate) fn map_export(flags: &Flags) -> Result<Command, String> {
         if raster_native && !cfg!(feature = "opui-raster") {
             return Err("rebuild op with --features opui-raster".into());
         }
+        let watch = flags.contains_key("watch");
+        let debounce_ms = flag_value(flags, "debounce-ms")
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| format!("--debounce-ms must be an integer, got {value:?}"))
+            })
+            .transpose()?
+            .unwrap_or(150);
+        if debounce_ms == 0 {
+            return Err("--debounce-ms must be greater than zero".into());
+        }
+        if flags.contains_key("debounce-ms") && !watch {
+            return Err("--debounce-ms requires --watch".into());
+        }
         return Ok(Command::ExportOpui {
             file,
             item_id,
             output,
             strict: flags.contains_key("strict"),
             raster_native,
+            watch,
+            debounce_ms,
         });
     }
     if !matches!(format.as_str(), "png" | "jpeg" | "jpg" | "webp" | "pdf") {
@@ -65,6 +85,118 @@ pub(crate) fn map_export(flags: &Flags) -> Result<Command, String> {
         format,
         scale,
     })
+}
+
+pub(crate) fn run_export_opui_watch(
+    file: &str,
+    output: &str,
+    item_id: Option<&str>,
+    strict: bool,
+    raster_native: bool,
+    debounce_ms: u64,
+) -> Result<String, String> {
+    run_export_opui_watch_for(
+        file,
+        output,
+        item_id,
+        strict,
+        raster_native,
+        debounce_ms,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_export_opui_watch_for(
+    file: &str,
+    output: &str,
+    item_id: Option<&str>,
+    strict: bool,
+    raster_native: bool,
+    debounce_ms: u64,
+    max_updates: Option<usize>,
+) -> Result<String, String> {
+    println!(
+        "{}",
+        run_export_opui(file, output, item_id, strict, raster_native)?
+    );
+    let source = std::path::absolute(file)
+        .map_err(|error| format!("resolve watched source {file}: {error}"))?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| format!("watched source has no parent: {}", source.display()))?;
+    let (send, receive) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(send)
+        .map_err(|error| format!("create file watcher: {error}"))?;
+    watcher
+        .watch(parent, RecursiveMode::NonRecursive)
+        .map_err(|error| format!("watch {}: {error}", parent.display()))?;
+    let debounce = Duration::from_millis(debounce_ms);
+    let mut updates = 0;
+
+    loop {
+        let event = match receive.recv() {
+            Ok(Ok(event)) => event,
+            Ok(Err(error)) => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "watch_error",
+                        "source": source,
+                        "error": error.to_string(),
+                    })
+                );
+                continue;
+            }
+            Err(error) => return Err(format!("file watcher disconnected: {error}")),
+        };
+        let mut changed = event.paths.iter().any(|path| path == &source);
+        loop {
+            match receive.recv_timeout(debounce) {
+                Ok(Ok(event)) => {
+                    changed |= event.paths.iter().any(|path| path == &source);
+                }
+                Ok(Err(error)) => eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "watch_error",
+                        "source": source,
+                        "error": error.to_string(),
+                    })
+                ),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("file watcher disconnected".into());
+                }
+            }
+        }
+        if !changed {
+            continue;
+        }
+        match run_export_opui(file, output, item_id, strict, raster_native) {
+            Ok(message) => {
+                println!("{message}");
+                updates += 1;
+                if max_updates == Some(updates) {
+                    return Ok(serde_json::json!({
+                        "event": "watch_complete",
+                        "updates": updates,
+                    })
+                    .to_string());
+                }
+            }
+            Err(error) => eprintln!(
+                "{}",
+                serde_json::json!({
+                    "event": "export_failed",
+                    "source": source,
+                    "output": output,
+                    "error": error,
+                    "last_good_retained": true,
+                })
+            ),
+        }
+    }
 }
 
 pub(crate) fn run_export_opui(

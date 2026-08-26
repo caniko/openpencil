@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
+notify = "6"
 op-ai-skills = { path = "../op-ai-skills" }
 op-config-store = { path = "../op-config-store" }
 op-figma = { path = "../op-figma" }
@@ -26,3 +27,6 @@ serde_json = { workspace = true }
 [features]
 default = []
 opui-raster = ["dep:op-host-services"]
+
+[dev-dependencies]
+tempfile = "3"

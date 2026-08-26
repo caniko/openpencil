@@ -12,4 +12,5 @@ jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
 opui = { git = "https://github.com/caniko/opui.git", rev = "04fdda1c8a2dabd4fad3ee66dd9043f44ed8509c" }
 serde_json = { workspace = true }
 sha2 = "0.10"
+tempfile = "3"
 thiserror = { workspace = true }

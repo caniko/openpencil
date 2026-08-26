@@ -146,6 +146,8 @@ fn export_opui_maps_without_server() {
             output: "doc.opui".into(),
             strict: true,
             raster_native: false,
+            watch: false,
+            debounce_ms: 150,
         }
     );
 }
@@ -218,8 +220,70 @@ fn export_opui_raster_native_feature_gate() {
             output: "doc.opui".into(),
             strict: false,
             raster_native: true,
+            watch: false,
+            debounce_ms: 150,
         }
     );
+}
+
+#[test]
+fn export_opui_watch_parses_debounce() {
+    let parsed = parse_args(&args(&[
+        "export",
+        "--file",
+        "doc.op",
+        "--format",
+        "opui",
+        "--output",
+        "doc.opui",
+        "--watch",
+        "--debounce-ms",
+        "75",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        parsed.command,
+        Command::ExportOpui {
+            watch: true,
+            debounce_ms: 75,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn export_opui_watch_exports_a_settled_source_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("x.op");
+    let output = dir.path().join("x.opui");
+    std::fs::write(
+        &source,
+        r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"Before"}]}"#,
+    )
+    .unwrap();
+    let changed = source.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::write(
+            changed,
+            r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"After"}]}"#,
+        )
+        .unwrap();
+    });
+
+    export_cli::run_export_opui_watch_for(
+        source.to_str().unwrap(),
+        output.to_str().unwrap(),
+        None,
+        false,
+        false,
+        25,
+        Some(1),
+    )
+    .unwrap();
+    writer.join().unwrap();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(manifest["nodes"]["root"]["text"]["content"], "After");
 }
 
 #[cfg(feature = "opui-raster")]

@@ -4,6 +4,7 @@ mod fallback;
 mod map;
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use serde_json::Value;
@@ -95,21 +96,63 @@ pub fn export_file(
 }
 
 pub fn write_package(output: &Path, result: &ExportResult) -> Result<(), ExportError> {
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    fs::write(output, opui::canonical_bytes(&result.manifest))?;
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| ExportError::msg("output has no file name"))?;
+    let stage = tempfile::Builder::new()
+        .prefix(".openpencil-opui-")
+        .tempdir_in(parent)?;
+    let staged_output = stage.path().join(file_name);
+    let bytes = opui::canonical_bytes(&result.manifest);
+    fs::write(&staged_output, &bytes)?;
     if !result.sidecars.is_empty() {
-        let root = opui::asset_root_for(output);
+        let root = opui::asset_root_for(&staged_output);
         for sidecar in &result.sidecars {
             sidecar.write_under(&root)?;
         }
     }
-    let diags = opui::check_path(output, &opui::CheckOptions::for_path(output));
+    let diags = opui::check_path(
+        &staged_output,
+        &opui::CheckOptions::for_path(&staged_output),
+    );
     if diags.iter().any(|d| d.severity == "error") {
         return Err(ExportError::msg(opui::format_diagnostics(&diags)));
+    }
+    install_sidecars(
+        &opui::asset_root_for(&staged_output),
+        &opui::asset_root_for(output),
+    )?;
+    let mut manifest = tempfile::NamedTempFile::new_in(parent)?;
+    manifest.write_all(&bytes)?;
+    manifest.as_file().sync_all()?;
+    manifest
+        .persist(output)
+        .map_err(|error| ExportError::Io(error.error))?;
+    Ok(())
+}
+
+fn install_sidecars(source: &Path, destination: &Path) -> Result<(), ExportError> {
+    if !source.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            install_sidecars(&entry.path(), &target)?;
+        } else {
+            let mut temp = tempfile::NamedTempFile::new_in(destination)?;
+            std::io::copy(&mut fs::File::open(entry.path())?, temp.as_file_mut())?;
+            temp.as_file().sync_all()?;
+            temp.persist(&target)
+                .map_err(|error| ExportError::Io(error.error))?;
+        }
     }
     Ok(())
 }
@@ -308,6 +351,49 @@ mod tests {
                 source_dir: Path::new("."),
             },
         )
+    }
+
+    #[test]
+    fn package_promotion_keeps_last_good_output_on_validation_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("x.opui");
+        fs::write(&output, b"last-known-good").unwrap();
+        let mut result = export_src(
+            r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"Hello"}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        result.manifest["schema_version"] = serde_json::json!(99);
+
+        assert!(write_package(&output, &result).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"last-known-good");
+        assert!(!opui::asset_root_for(&output).exists());
+        assert!(fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".openpencil-opui-")));
+    }
+
+    #[test]
+    fn package_promotion_installs_sidecars_before_valid_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("x.opui");
+        let result = export_src(
+            r#"{"version":"0.8.1","children":[{"type":"text","id":"root","width":80,"height":40,"content":"Hello"}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+
+        write_package(&output, &result).unwrap();
+        assert!(
+            opui::check_path(&output, &opui::CheckOptions::for_path(&output))
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error")
+        );
+        assert!(opui::asset_root_for(&output).join("fonts").is_dir());
     }
 
     #[test]
@@ -665,6 +751,54 @@ mod tests {
             result.manifest["nodes"]["uuid-1"]["runtime_id"],
             "main_menu.play"
         );
+    }
+
+    #[test]
+    fn explicit_runtime_metadata_is_independent_from_display_name() {
+        let result = export_src(
+            r#"{"version":"0.8.1","runtimeEntrypoints":{"app":"app.root"},"children":[{"type":"frame","id":"uuid-root","name":"Designer display name","runtimeId":"app.root","role":"button","accessibilityLabel":"Play","tabIndex":2,"enabled":false,"visualStates":{"default":"app.root.default","hover":"app.root.hover"},"width":80,"height":40,"children":[{"type":"frame","id":"uuid-default","runtimeId":"app.root.default","width":80,"height":40},{"type":"frame","id":"uuid-hover","runtimeId":"app.root.hover","width":80,"height":40}]}]}"#,
+            None,
+            false,
+        )
+        .unwrap();
+        let root = &result.manifest["nodes"]["uuid-root"];
+        assert_eq!(root["runtime_id"], "app.root");
+        assert_eq!(root["name"], "Designer display name");
+        assert_eq!(result.manifest["entrypoints"]["app"], "uuid-root");
+        assert_eq!(
+            root["extensions"]["openpencil.runtime"],
+            serde_json::json!({
+                "role": "button",
+                "accessibility_label": "Play",
+                "tab_index": 2,
+                "enabled": false,
+                "visual_states": {
+                    "default": "app.root.default",
+                    "hover": "app.root.hover"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_metadata_fails_export() {
+        let invalid_id = export_src(
+            r#"{"version":"0.8.1","children":[{"type":"frame","id":"root","runtimeId":"has space","width":80,"height":40}]}"#,
+            None,
+            false,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert!(invalid_id.to_string().contains("invalid runtimeId"));
+
+        let missing_state = export_src(
+            r#"{"version":"0.8.1","children":[{"type":"frame","id":"root","runtimeId":"app.root","visualStates":{"hover":"missing.hover"},"width":80,"height":40}]}"#,
+            None,
+            false,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert!(missing_state.to_string().contains("missing runtimeId"));
     }
 
     #[test]

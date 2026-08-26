@@ -215,6 +215,7 @@ fn strip_children(doc: &PenDocument) -> PenDocument {
         logic_modules: doc.logic_modules.clone(),
         design_md: doc.design_md.clone(),
         conversion: doc.conversion.clone(),
+        runtime_entrypoints: doc.runtime_entrypoints.clone(),
     }
 }
 

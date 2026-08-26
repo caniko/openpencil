@@ -167,6 +167,7 @@ pub fn build_kit_document(
         logic_modules: None,
         design_md: None,
         conversion: None,
+        runtime_entrypoints: None,
     };
 
     // Copy referenced variables (TS export-side `collectNodeRefs` —
