@@ -71,6 +71,7 @@ impl EditorState {
         let mut taken = self.collect_node_ids();
         let originals = self.clipboard.clone();
         let anchor = self.selection.set.first().cloned();
+        let components = self.components.clone();
         let children = self.active_children_mut();
         // Resolve the paste target before any mutation.
         let (parent, mut insert_index): (Option<NodeId>, Option<usize>) = match anchor
@@ -110,6 +111,7 @@ impl EditorState {
                             next_id,
                             &mut taken,
                             offset_doc_px,
+                            &components,
                         ) {
                             new_ids.push(minted);
                             continue;
@@ -118,7 +120,11 @@ impl EditorState {
                 }
             }
             let mut clone = walkers::deep_clone_with_new_ids(original, next_id, &mut taken);
-            walkers::clear_runtime_identity(&mut clone);
+            walkers::clear_runtime_identity(&mut clone, &|id| {
+                components
+                    .find_by_id(&NodeId::new(id))
+                    .map(|component| component.root.clone())
+            });
             walkers::translate_subtree(&mut clone, offset_doc_px, offset_doc_px);
             let id = NodeId::new_opt(clone.id_str());
             if !walkers::insert_into_parent(children, parent.as_ref(), insert_index, clone) {

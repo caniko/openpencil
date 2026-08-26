@@ -2,6 +2,7 @@
 
 #![cfg(test)]
 
+use crate::components::ComponentLibrary;
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::test_support::{rect, state_with};
@@ -184,7 +185,10 @@ fn paste_reusable_component_mints_instance_next_to_component() {
     if let jian_ops_schema::node::PenNode::Frame(f) = &mut comp {
         f.reusable = Some(true);
     }
+    comp.base_mut().runtime_id = Some("button.primary".into());
+    comp.base_mut().role = Some("button".into());
     let mut s = state_with(vec![comp, rect("n1", "A", 300.0, 0.0, 10.0, 10.0)]);
+    s.components = ComponentLibrary::from_document(&s.doc);
     s.set_single_selection(NodeId::new("c1"));
     assert!(s.copy_selected());
     // Anchor somewhere else entirely — the instance must STILL land
@@ -201,6 +205,10 @@ fn paste_reusable_component_mints_instance_next_to_component() {
         matches!(minted, jian_ops_schema::node::PenNode::Ref(r) if r.target == "c1"),
         "pasting a reusable component mints a Ref instance"
     );
+    let resolved = crate::ref_resolve::resolve_refs_for_canvas(&s.doc);
+    let minted = find_node(&resolved.children, &new_ids[0]).unwrap();
+    assert_eq!(minted.base().runtime_id, None);
+    assert_eq!(minted.base().role.as_deref(), Some("button"));
 }
 
 #[test]

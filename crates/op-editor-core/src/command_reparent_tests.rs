@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 use crate::command::EditorCommand;
+use crate::components::ComponentLibrary;
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::test_support::{frame, rect, state_with};
@@ -142,6 +143,93 @@ fn copy_node_applies_root_overrides_without_overriding_fresh_id() {
     assert_eq!(clone.base().runtime_id, None);
     assert_eq!(clone.base().visual_states, None);
     assert_eq!(clone.base().role.as_deref(), Some("button"));
+}
+
+#[test]
+fn copy_node_clears_effective_component_runtime_identity() {
+    let mut child = rect("child", "Label", 0.0, 0.0, 10.0, 10.0);
+    child.base_mut().runtime_id = Some("menu.label".into());
+    child.base_mut().role = Some("label".into());
+    let mut nested_child = rect("nested-child", "Icon", 0.0, 0.0, 10.0, 10.0);
+    nested_child.base_mut().runtime_id = Some("menu.icon".into());
+    nested_child.base_mut().role = Some("img".into());
+    let mut nested_component = frame(
+        "nested-component",
+        "Icon",
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        vec![nested_child],
+    );
+    nested_component.base_mut().runtime_id = Some("menu.icon.root".into());
+    nested_component.base_mut().role = Some("group".into());
+    if let PenNode::Frame(frame) = &mut nested_component {
+        frame.reusable = Some(true);
+    }
+    let nested_reference: PenNode = serde_json::from_value(json!({
+        "type": "ref",
+        "id": "nested-instance",
+        "ref": "nested-component"
+    }))
+    .unwrap();
+    let mut component = frame(
+        "component",
+        "Menu",
+        0.0,
+        0.0,
+        100.0,
+        40.0,
+        vec![child, nested_reference],
+    );
+    component.base_mut().runtime_id = Some("menu.root".into());
+    component.base_mut().role = Some("menu".into());
+    if let PenNode::Frame(frame) = &mut component {
+        frame.reusable = Some(true);
+    }
+    let reference: PenNode = serde_json::from_value(json!({
+        "type": "ref",
+        "id": "instance",
+        "ref": "component",
+        "descendants": {
+            "component": {
+                "runtimeId": "menu.override",
+                "visualStates": {"hover": "menu.hover"}
+            }
+        }
+    }))
+    .unwrap();
+    let mut s = state_with(vec![nested_component, component, reference]);
+    s.components = ComponentLibrary::from_document(&s.doc);
+
+    assert!(s.apply(EditorCommand::CopyNode {
+        node_id: id("instance"),
+        target_parent: NodeId::NONE,
+        page_id: None,
+        overrides_json: None,
+    }));
+
+    let clone = s
+        .active_children()
+        .iter()
+        .find(|node| matches!(node, PenNode::Ref(r) if r.base.id != "instance"))
+        .expect("cloned instance");
+    let clone_id = id(clone.id_str());
+    let resolved = crate::ref_resolve::resolve_refs_for_canvas(&s.doc);
+    let display = find_node(&resolved.children, &clone_id).expect("resolved clone");
+    assert_eq!(display.base().runtime_id, None);
+    assert_eq!(display.base().visual_states, None);
+    assert_eq!(display.base().role.as_deref(), Some("menu"));
+    let children = display.children().unwrap();
+    let child = &children[0];
+    assert_eq!(child.base().runtime_id, None);
+    assert_eq!(child.base().role.as_deref(), Some("label"));
+    let nested = &children[1];
+    assert_eq!(nested.base().runtime_id, None);
+    assert_eq!(nested.base().role.as_deref(), Some("group"));
+    let nested_child = nested.children().unwrap().first().unwrap();
+    assert_eq!(nested_child.base().runtime_id, None);
+    assert_eq!(nested_child.base().role.as_deref(), Some("img"));
 }
 
 #[test]

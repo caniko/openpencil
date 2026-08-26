@@ -9,7 +9,8 @@
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use jian_ops_schema::node::PenNode;
-use std::collections::HashSet;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Direction for `reorder_selected` — picks which sibling the
 /// selected node swaps with in its parent's children vec.
@@ -327,12 +328,104 @@ pub fn deep_clone_with_new_ids(
 
 /// Runtime IDs are document-unique. Duplicate/paste callers clear them
 /// (and their ID-based visual-state links) while preserving semantic metadata.
-pub(crate) fn clear_runtime_identity(node: &mut PenNode) {
+pub(crate) fn clear_runtime_identity(
+    node: &mut PenNode,
+    resolve_component: &impl Fn(&str) -> Option<PenNode>,
+) {
     node.base_mut().runtime_id = None;
     node.base_mut().visual_states = None;
+    if let PenNode::Ref(reference) = node {
+        let descendants = reference.descendants.get_or_insert_with(Default::default);
+        clear_descendant_identity(descendants);
+        if let Some(component) = resolve_component(&reference.target) {
+            add_component_identity_overrides(
+                descendants,
+                &component,
+                resolve_component,
+                &mut BTreeSet::new(),
+            );
+        }
+        if descendants.is_empty() {
+            reference.descendants = None;
+        }
+    }
     if let Some(children) = node.children_mut() {
         for child in children {
-            clear_runtime_identity(child);
+            clear_runtime_identity(child, resolve_component);
+        }
+    }
+}
+
+fn clear_descendant_identity(descendants: &mut BTreeMap<String, Value>) {
+    for value in descendants.values_mut() {
+        clear_descendant_identity_value(value);
+    }
+}
+
+fn clear_descendant_identity_value(value: &mut Value) {
+    let Some(overrides) = value.as_object_mut() else {
+        return;
+    };
+    overrides.insert("runtimeId".into(), Value::Null);
+    overrides.insert("visualStates".into(), Value::Null);
+    if let Some(nested) = overrides
+        .get_mut("descendants")
+        .and_then(Value::as_object_mut)
+    {
+        for value in nested.values_mut() {
+            clear_descendant_identity_value(value);
+        }
+    }
+}
+
+fn add_component_identity_overrides(
+    descendants: &mut BTreeMap<String, Value>,
+    node: &PenNode,
+    resolve_component: &impl Fn(&str) -> Option<PenNode>,
+    visited: &mut BTreeSet<String>,
+) {
+    let value = descendants
+        .entry(node.id_str().to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !value.is_object() {
+        *value = Value::Object(Default::default());
+    }
+    let overrides = value.as_object_mut().unwrap();
+    overrides.insert("runtimeId".into(), Value::Null);
+    overrides.insert("visualStates".into(), Value::Null);
+
+    if let PenNode::Ref(reference) = node {
+        let mut nested = overrides
+            .remove("descendants")
+            .and_then(|value| match value {
+                Value::Object(map) => Some(map.into_iter().collect()),
+                _ => None,
+            })
+            .unwrap_or_else(|| reference.descendants.clone().unwrap_or_default());
+        clear_descendant_identity(&mut nested);
+        if visited.insert(reference.target.clone()) {
+            if let Some(component) = resolve_component(&reference.target) {
+                add_component_identity_overrides(
+                    &mut nested,
+                    &component,
+                    resolve_component,
+                    visited,
+                );
+            }
+            visited.remove(&reference.target);
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                add_component_identity_overrides(&mut nested, child, resolve_component, visited);
+            }
+        }
+        overrides.insert(
+            "descendants".into(),
+            Value::Object(nested.into_iter().collect()),
+        );
+    } else if let Some(children) = node.children() {
+        for child in children {
+            add_component_identity_overrides(descendants, child, resolve_component, visited);
         }
     }
 }

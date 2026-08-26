@@ -649,7 +649,11 @@ impl EditorState {
             let src = walkers::find_node(children, node_id).expect("validated");
             walkers::deep_clone_with_new_ids(src, &mut next_id, &mut taken)
         };
-        walkers::clear_runtime_identity(&mut clone);
+        walkers::clear_runtime_identity(&mut clone, &|id| {
+            self.components
+                .find_by_id(&NodeId::new(id))
+                .map(|component| component.root.clone())
+        });
         if !apply_copy_overrides(&mut clone, overrides_json) {
             return false;
         }

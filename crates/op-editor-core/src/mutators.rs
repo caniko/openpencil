@@ -409,12 +409,18 @@ impl EditorState {
         *next_id = (*next_id).max(safe);
         let mut taken = self.collect_node_ids();
         let targets = self.selection.set.clone();
+        let components = self.components.clone();
         let children = self.active_children_mut();
         let mut new_ids: Vec<NodeId> = Vec::with_capacity(targets.len());
         for target in &targets {
-            if let Some(new_id) =
-                duplicate_in_children(children, target, next_id, &mut taken, offset_doc_px)
-            {
+            if let Some(new_id) = duplicate_in_children(
+                children,
+                target,
+                next_id,
+                &mut taken,
+                offset_doc_px,
+                &components,
+            ) {
                 new_ids.push(new_id);
             }
         }
@@ -647,6 +653,7 @@ pub(crate) fn duplicate_in_children(
     next_id: &mut u64,
     taken: &mut HashSet<NodeId>,
     offset: f64,
+    components: &crate::components::ComponentLibrary,
 ) -> Option<NodeId> {
     if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
         // TS parity: duplicating a reusable component mints a Ref
@@ -659,7 +666,7 @@ pub(crate) fn duplicate_in_children(
                 let new_id = walkers::alloc_n_id(next_id, taken)?;
                 let x = frame.base.x.unwrap_or(0.0) + offset;
                 let y = frame.base.y.unwrap_or(0.0) + offset;
-                let instance: PenNode = serde_json::from_value(serde_json::json!({
+                let mut instance: PenNode = serde_json::from_value(serde_json::json!({
                     "type": "ref",
                     "id": new_id.as_str(),
                     "ref": frame.base.id,
@@ -667,6 +674,11 @@ pub(crate) fn duplicate_in_children(
                     "y": y,
                 }))
                 .ok()?;
+                walkers::clear_runtime_identity(&mut instance, &|id| {
+                    components
+                        .find_by_id(&NodeId::new(id))
+                        .map(|component| component.root.clone())
+                });
                 children.insert(idx + 1, instance);
                 return Some(new_id);
             }
@@ -674,7 +686,11 @@ pub(crate) fn duplicate_in_children(
         let size = walkers::subtree_size(&children[idx]);
         next_id.checked_add(size)?;
         let mut clone = walkers::deep_clone_with_new_ids(&children[idx], next_id, taken);
-        walkers::clear_runtime_identity(&mut clone);
+        walkers::clear_runtime_identity(&mut clone, &|id| {
+            components
+                .find_by_id(&NodeId::new(id))
+                .map(|component| component.root.clone())
+        });
         walkers::translate_subtree(&mut clone, offset, offset);
         let new_id = NodeId::new_opt(clone.id_str())?;
         children.insert(idx + 1, clone);
@@ -682,7 +698,9 @@ pub(crate) fn duplicate_in_children(
     }
     for child in children.iter_mut() {
         if let Some(grand) = child.children_mut() {
-            if let Some(new_id) = duplicate_in_children(grand, target, next_id, taken, offset) {
+            if let Some(new_id) =
+                duplicate_in_children(grand, target, next_id, taken, offset, components)
+            {
                 return Some(new_id);
             }
         }

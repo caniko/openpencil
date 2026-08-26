@@ -469,13 +469,17 @@ impl EditorState {
                 _ => return None,
             }
         }
-        let (template, label, kit_vars) = {
+        let (template, label, kit_vars, kit_components) = {
             let kit = self.ui_kits.iter().find(|k| k.id == kit_id)?;
             let comp = kit.components.iter().find(|c| c.id == component_id)?;
             (
                 comp.template.clone(),
                 comp.name.clone(),
                 kit.variables.clone(),
+                kit.components
+                    .iter()
+                    .map(|component| component.template.clone())
+                    .collect::<Vec<_>>(),
             )
         };
         let mut authored = template.clone();
@@ -514,7 +518,17 @@ impl EditorState {
         let mut next_id = self.max_node_id().checked_add(1)?;
         let mut taken = std::collections::HashSet::new();
         let mut clone = walkers::deep_clone_with_new_ids(&authored, &mut next_id, &mut taken);
-        walkers::clear_runtime_identity(&mut clone);
+        walkers::clear_runtime_identity(&mut clone, &|id| {
+            kit_components
+                .iter()
+                .find(|component| component.id_str() == id)
+                .cloned()
+                .or_else(|| {
+                    self.components
+                        .find_by_id(&NodeId::new(id))
+                        .map(|component| component.root.clone())
+                })
+        });
         // TS deletes the clone's root `reusable` flag so the inserted
         // instance is standalone (`component-browser-card.tsx:36-40`);
         // without this an instantiated imported-kit component would be
