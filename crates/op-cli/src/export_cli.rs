@@ -10,6 +10,182 @@ use crate::command_helpers::flag_value;
 use crate::mcp_http_cli::{post, tool_call_body};
 use crate::{Command, Flags};
 
+pub(crate) fn set_runtime_entrypoint(file: &str, entrypoint: &str) -> Result<String, String> {
+    let (name, runtime_id) = entrypoint
+        .split_once('=')
+        .filter(|(name, runtime_id)| is_runtime_id(name) && is_runtime_id(runtime_id))
+        .ok_or("--entrypoint must be NAME=RUNTIME_ID using OPUI identifier characters")?;
+    let path = Path::new(file);
+    let mut document = op_runtime_ui::load_document(path).map_err(|error| error.to_string())?;
+    document
+        .runtime_entrypoints
+        .get_or_insert_default()
+        .insert(name.into(), runtime_id.into());
+    op_runtime_ui::write_document(path, &document).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "event": "runtime_entrypoint_updated",
+        "file": file,
+        "name": name,
+        "runtime_id": runtime_id,
+    })
+    .to_string())
+}
+
+pub(crate) fn apply_runtime_metadata(file: &str, spec: &str) -> Result<String, String> {
+    let path = Path::new(file);
+    let document = op_runtime_ui::load_document(path).map_err(|error| error.to_string())?;
+    let mut value = serde_json::to_value(document).map_err(|error| error.to_string())?;
+    let spec: Value = serde_json::from_slice(
+        &std::fs::read(spec).map_err(|error| format!("read {spec}: {error}"))?,
+    )
+    .map_err(|error| format!("parse {spec}: {error}"))?;
+    let nodes = spec
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or("runtime metadata spec requires a nodes array")?;
+    for node in nodes {
+        let name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("runtime metadata node requires name")?;
+        let runtime_id = node
+            .get("runtimeId")
+            .and_then(Value::as_str)
+            .filter(|runtime_id| is_runtime_id(runtime_id))
+            .ok_or_else(|| format!("runtime metadata node `{name}` has invalid runtimeId"))?;
+        let node_type = node.get("type").and_then(Value::as_str);
+        let mut visual_states = serde_json::Map::new();
+        if let Some(states) = node.get("visualStates").and_then(Value::as_object) {
+            for (state, target_name) in states {
+                let target_name = target_name
+                    .as_str()
+                    .ok_or_else(|| format!("visual state `{state}` on `{name}` must be a name"))?;
+                let target_runtime_id = format!("{runtime_id}.{state}");
+                set_named_node_field(
+                    &mut value,
+                    target_name,
+                    Some("frame"),
+                    "runtimeId",
+                    Value::String(target_runtime_id.clone()),
+                )?;
+                visual_states.insert(state.clone(), Value::String(target_runtime_id));
+            }
+        }
+        set_named_node_field(
+            &mut value,
+            name,
+            node_type,
+            "runtimeId",
+            Value::String(runtime_id.into()),
+        )?;
+        for (source, target) in [
+            ("role", "role"),
+            ("accessibilityLabel", "accessibilityLabel"),
+            ("tabIndex", "tabIndex"),
+            ("enabled", "enabled"),
+        ] {
+            if let Some(field) = node.get(source) {
+                set_named_node_field(&mut value, name, node_type, target, field.clone())?;
+            }
+        }
+        if !visual_states.is_empty() {
+            set_named_node_field(
+                &mut value,
+                name,
+                node_type,
+                "visualStates",
+                Value::Object(visual_states),
+            )?;
+        }
+    }
+    if let Some(entrypoints) = spec.get("entrypoints") {
+        value["runtimeEntrypoints"] = entrypoints.clone();
+    }
+    let document = serde_json::from_value(value)
+        .map_err(|error| format!("runtime metadata does not match the .op schema: {error}"))?;
+    op_runtime_ui::write_document(path, &document).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "event": "runtime_metadata_updated",
+        "file": file,
+        "nodes": nodes.len(),
+    })
+    .to_string())
+}
+
+fn set_named_node_field(
+    document: &mut Value,
+    name: &str,
+    node_type: Option<&str>,
+    field: &str,
+    value: Value,
+) -> Result<(), String> {
+    let count = count_named_nodes(document, name, node_type);
+    if count != 1 {
+        return Err(format!(
+            "runtime metadata selector `{name}` matched {count} nodes; name/type selectors must be unique"
+        ));
+    }
+    let node = find_named_node_mut(document, name, node_type).expect("count proved one match");
+    node.insert(field.into(), value);
+    Ok(())
+}
+
+fn count_named_nodes(value: &Value, name: &str, node_type: Option<&str>) -> usize {
+    match value {
+        Value::Object(object) => {
+            usize::from(
+                object.get("type").is_some()
+                    && object.get("name").and_then(Value::as_str) == Some(name)
+                    && node_type.is_none_or(|node_type| {
+                        object.get("type").and_then(Value::as_str) == Some(node_type)
+                    }),
+            ) + object
+                .values()
+                .map(|value| count_named_nodes(value, name, node_type))
+                .sum::<usize>()
+        }
+        Value::Array(values) => values
+            .iter()
+            .map(|value| count_named_nodes(value, name, node_type))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn find_named_node_mut<'a>(
+    value: &'a mut Value,
+    name: &str,
+    node_type: Option<&str>,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    match value {
+        Value::Object(object) => {
+            if object.get("type").is_some()
+                && object.get("name").and_then(Value::as_str) == Some(name)
+                && node_type.is_none_or(|node_type| {
+                    object.get("type").and_then(Value::as_str) == Some(node_type)
+                })
+            {
+                return Some(object);
+            }
+            object
+                .values_mut()
+                .find_map(|value| find_named_node_mut(value, name, node_type))
+        }
+        Value::Array(values) => values
+            .iter_mut()
+            .find_map(|value| find_named_node_mut(value, name, node_type)),
+        _ => None,
+    }
+}
+
+fn is_runtime_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('A'..='Z' | 'a'..='z'))
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '/' | '-')
+        })
+}
+
 pub(crate) fn map_export(flags: &Flags) -> Result<Command, String> {
     let item_id = flag_value(flags, "item");
     let selection = flags.contains_key("selection");

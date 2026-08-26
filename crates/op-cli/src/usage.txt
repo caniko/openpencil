@@ -24,9 +24,14 @@ COMMON COMMANDS:
                                           export a page, arbitrary node, or the
                                           current Live Canvas selection; omitting
                                           --item is equivalent to --selection
-  op export --file PATH.op --format opui --output NAME.opui [--item ID] [--strict] [--raster-native]
-                                           file-backed OPUI v1 package (no server);
-                                           --raster-native needs `op` built with --features opui-raster
+  op export --file PATH.op --format opui --output NAME.opui [--item ID] [--strict] [--raster-native] [--watch]
+                                            file-backed OPUI v1 package (no server);
+                                            --raster-native needs `op` built with --features opui-raster
+  op runtime-ui:entrypoint --file PATH.op --entrypoint NAME=RUNTIME_ID
+                                            author a stable named runtime entrypoint
+  op runtime-ui:metadata --file PATH.op --spec metadata.json
+                                            author typed runtime ids, button states,
+                                            accessibility, and entrypoints by unique name/type
   op get [--type T] [--name N] [--id ID] [--depth N] [--parent P]
   op selection                            get current selection
   op insert <json|@file|-> [--parent P] [--page PAGE] [--post-process]

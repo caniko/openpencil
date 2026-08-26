@@ -147,6 +147,12 @@ fn run(args: &[String]) -> Result<String, String> {
                 )?
             }
         }
+        Command::RuntimeUiEntrypoint { file, entrypoint } => {
+            export_cli::set_runtime_entrypoint(&file, &entrypoint)?
+        }
+        Command::RuntimeUiMetadata { file, spec } => {
+            export_cli::apply_runtime_metadata(&file, &spec)?
+        }
     };
     Ok(if pretty { pretty_json(&out) } else { out })
 }
@@ -211,6 +217,14 @@ enum Command {
         raster_native: bool,
         watch: bool,
         debounce_ms: u64,
+    },
+    RuntimeUiEntrypoint {
+        file: String,
+        entrypoint: String,
+    },
+    RuntimeUiMetadata {
+        file: String,
+        spec: String,
     },
 }
 
@@ -334,6 +348,15 @@ fn command_from_positionals(positionals: &[String], flags: &Flags) -> Result<Com
         }
         "stop" => Ok(Command::StopMcp),
         "export" => export_cli::map_export(flags),
+        "runtime-ui:entrypoint" => Ok(Command::RuntimeUiEntrypoint {
+            file: flag_value(flags, "file").ok_or("--file is required")?,
+            entrypoint: flag_value(flags, "entrypoint")
+                .ok_or("--entrypoint NAME=RUNTIME_ID is required")?,
+        }),
+        "runtime-ui:metadata" => Ok(Command::RuntimeUiMetadata {
+            file: flag_value(flags, "file").ok_or("--file is required")?,
+            spec: flag_value(flags, "spec").ok_or("--spec is required")?,
+        }),
         "skill:export" => Ok(Command::SkillExport {
             name: required_pos(
                 positionals,

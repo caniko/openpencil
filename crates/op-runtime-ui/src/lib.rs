@@ -61,6 +61,27 @@ pub fn load_document(input: &Path) -> Result<jian_ops_schema::PenDocument, Expor
         .map_err(|e| ExportError::msg(e.to_string()))
 }
 
+pub fn write_document(
+    output: &Path,
+    document: &jian_ops_schema::PenDocument,
+) -> Result<(), ExportError> {
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut bytes =
+        serde_json::to_vec_pretty(document).map_err(|error| ExportError::msg(error.to_string()))?;
+    bytes.push(b'\n');
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(output)
+        .map_err(|error| ExportError::Io(error.error))?;
+    Ok(())
+}
+
 pub fn prepare_export(
     input: &Path,
     output: &Path,

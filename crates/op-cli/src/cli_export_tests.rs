@@ -286,6 +286,55 @@ fn export_opui_watch_exports_a_settled_source_change() {
     assert_eq!(manifest["nodes"]["root"]["text"]["content"], "After");
 }
 
+#[test]
+fn runtime_ui_entrypoint_is_authored_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.op");
+    std::fs::write(&source, r#"{"version":"0.8.1","name":"App","children":[]}"#).unwrap();
+
+    export_cli::set_runtime_entrypoint(source.to_str().unwrap(), "app=app.root").unwrap();
+    let document = op_runtime_ui::load_document(&source).unwrap();
+    assert_eq!(document.name.as_deref(), Some("App"));
+    assert_eq!(document.runtime_entrypoints.unwrap()["app"], "app.root");
+    assert!(
+        export_cli::set_runtime_entrypoint(source.to_str().unwrap(), "bad name=app.root").is_err()
+    );
+}
+
+#[test]
+fn runtime_ui_metadata_is_authored_and_schema_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("app.op");
+    let spec = dir.path().join("runtime.json");
+    std::fs::write(
+        &source,
+        r#"{"version":"0.8.1","children":[{"type":"frame","id":"play","name":"Play","width":100,"height":40,"children":[{"type":"frame","id":"play-default","name":"Play default","width":100,"height":40},{"type":"text","id":"play-label","name":"Play","width":100,"height":40,"content":"Play"},{"type":"frame","id":"play-hover","name":"Play hover","width":100,"height":40}]}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &spec,
+        r#"{"entrypoints":{"app":"main.play"},"nodes":[{"name":"Play","type":"frame","runtimeId":"main.play","role":"button","accessibilityLabel":"Play game","tabIndex":0,"visualStates":{"default":"Play default","hover":"Play hover"}}]}"#,
+    )
+    .unwrap();
+
+    export_cli::apply_runtime_metadata(source.to_str().unwrap(), spec.to_str().unwrap()).unwrap();
+    let document = op_runtime_ui::load_document(&source).unwrap();
+    let value = serde_json::to_value(document).unwrap();
+    assert_eq!(value["runtimeEntrypoints"]["app"], "main.play");
+    assert_eq!(value["children"][0]["runtimeId"], "main.play");
+    assert_eq!(value["children"][0]["role"], "button");
+    assert_eq!(value["children"][0]["accessibilityLabel"], "Play game");
+    assert_eq!(value["children"][0]["tabIndex"], 0);
+    assert_eq!(
+        value["children"][0]["visualStates"]["hover"],
+        "main.play.hover"
+    );
+    assert_eq!(
+        value["children"][0]["children"][2]["runtimeId"],
+        "main.play.hover"
+    );
+}
+
 #[cfg(feature = "opui-raster")]
 #[test]
 fn export_opui_raster_native_writes_fallback_png() {

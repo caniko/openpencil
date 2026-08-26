@@ -126,6 +126,7 @@ fn kit_to_persisted(kit: &UIKit) -> PersistedKit {
             logic_modules: None,
             design_md: None,
             conversion: None,
+            runtime_entrypoints: None,
         },
         components: kit
             .components
