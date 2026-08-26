@@ -288,18 +288,18 @@ impl EditorState {
     /// ids. The inserted clone is standalone, so any reusable marker
     /// on the prototype root is cleared.
     pub fn instantiate_component(&mut self, component_id: &NodeId) -> Option<NodeId> {
-        let (template, name) = {
+        let (fallback, name) = {
             let component = self.components.find_by_id(component_id)?;
             (component.root.clone(), component.name.clone())
         };
+        let template = crate::ref_resolve::find_component_node(&self.doc, component_id.as_str())
+            .unwrap_or(fallback);
         let snap = self.snapshot_for_history();
         let mut next_id = self.next_node_id_seed()?;
         let mut taken = self.collect_node_ids();
         let mut clone = walkers::deep_clone_with_new_ids(&template, &mut next_id, &mut taken);
         walkers::clear_runtime_identity(&mut clone, &|id| {
-            self.components
-                .find_by_id(&NodeId::new(id))
-                .map(|component| component.root.clone())
+            crate::ref_resolve::find_component_node(&self.doc, id)
         });
         set_reusable(&mut clone, false);
         walkers::translate_subtree(&mut clone, 20.0, 20.0);

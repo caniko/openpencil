@@ -151,7 +151,6 @@ fn copy_node_clears_effective_component_runtime_identity() {
     child.base_mut().runtime_id = Some("menu.label".into());
     child.base_mut().role = Some("label".into());
     let mut nested_child = rect("nested-child", "Icon", 0.0, 0.0, 10.0, 10.0);
-    nested_child.base_mut().runtime_id = Some("menu.icon".into());
     nested_child.base_mut().role = Some("img".into());
     let mut nested_component = frame(
         "nested-component",
@@ -162,7 +161,6 @@ fn copy_node_clears_effective_component_runtime_identity() {
         10.0,
         vec![nested_child],
     );
-    nested_component.base_mut().runtime_id = Some("menu.icon.root".into());
     nested_component.base_mut().role = Some("group".into());
     if let PenNode::Frame(frame) = &mut nested_component {
         frame.reusable = Some(true);
@@ -182,7 +180,6 @@ fn copy_node_clears_effective_component_runtime_identity() {
         40.0,
         vec![child, nested_reference],
     );
-    component.base_mut().runtime_id = Some("menu.root".into());
     component.base_mut().role = Some("menu".into());
     if let PenNode::Frame(frame) = &mut component {
         frame.reusable = Some(true);
@@ -201,6 +198,18 @@ fn copy_node_clears_effective_component_runtime_identity() {
     .unwrap();
     let mut s = state_with(vec![nested_component, component, reference]);
     s.components = ComponentLibrary::from_document(&s.doc);
+    find_node_mut(s.active_children_mut(), &id("component"))
+        .unwrap()
+        .base_mut()
+        .runtime_id = Some("menu.root".into());
+    find_node_mut(s.active_children_mut(), &id("nested-component"))
+        .unwrap()
+        .base_mut()
+        .runtime_id = Some("menu.icon.root".into());
+    find_node_mut(s.active_children_mut(), &id("nested-child"))
+        .unwrap()
+        .base_mut()
+        .runtime_id = Some("menu.icon".into());
 
     assert!(s.apply(EditorCommand::CopyNode {
         node_id: id("instance"),

@@ -523,11 +523,7 @@ impl EditorState {
                 .iter()
                 .find(|component| component.id_str() == id)
                 .cloned()
-                .or_else(|| {
-                    self.components
-                        .find_by_id(&NodeId::new(id))
-                        .map(|component| component.root.clone())
-                })
+                .or_else(|| crate::ref_resolve::find_component_node(&self.doc, id))
         });
         // TS deletes the clone's root `reusable` flag so the inserted
         // instance is standalone (`component-browser-card.tsx:36-40`);

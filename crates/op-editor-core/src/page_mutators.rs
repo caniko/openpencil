@@ -243,9 +243,7 @@ impl EditorState {
             .map(|c| {
                 let mut clone = walkers::deep_clone_with_new_ids(c, &mut next_id, &mut taken);
                 walkers::clear_runtime_identity(&mut clone, &|id| {
-                    self.components
-                        .find_by_id(&NodeId::new(id))
-                        .map(|component| component.root.clone())
+                    crate::ref_resolve::find_component_node(&self.doc, id)
                 });
                 clone
             })
