@@ -2,6 +2,7 @@
   description = "Reproducible OpenPencil native renderer and raster exporter";
 
   inputs = {
+    self.submodules = true;
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -26,11 +27,20 @@
       };
       rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+      rc2ExcludedSources = [
+        "crates/op-host-web/pkg-ck"
+        "crates/op-host-web/pkg-webgl"
+        "screenshot"
+      ];
       src = pkgs.lib.cleanSourceWith {
         src = ./.;
-        filter = path: type:
+        filter = path: type: let
+          relative = pkgs.lib.removePrefix "${toString ./.}/" (toString path);
+          excluded = prefix: relative == prefix || pkgs.lib.hasPrefix "${prefix}/" relative;
+        in
           pkgs.lib.cleanSourceFilter path type
-          && !builtins.elem (baseNameOf path) [".nix-target" "result"];
+          && !builtins.elem (baseNameOf path) [".nix-target" "node_modules" "result" "target"]
+          && !builtins.any excluded rc2ExcludedSources;
       };
       skiaBinaries = pkgs.fetchurl {
         url = "https://github.com/rust-skia/skia-binaries/releases/download/0.97.2/skia-binaries-da8fc6731fc439bc3b6a-x86_64-unknown-linux-gnu-jpegd-jpege-pdf-textlayout.tar.gz";

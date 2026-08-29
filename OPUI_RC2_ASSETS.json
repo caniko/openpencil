@@ -1,0 +1,135 @@
+{
+  "format_version": 1,
+  "openpencil_baseline": "4c2a37e3d6632c89530f0edcfd7aec184e38383f",
+  "closure_targets": [
+    "op-cli OPUI export",
+    "op-cli --features opui-raster",
+    "op-runtime-ui",
+    "op-reference-renderer",
+    "Nix reference-renderer",
+    "Nix op-cli-raster"
+  ],
+  "required_assets": {
+    "iconify_core": {
+      "path": "crates/op-editor-ui/assets/iconify-catalog-core.json",
+      "sha256": "3812cf9693ab223ed1fab949a3300df619cd60391cf29401d68f3dfe575d0631",
+      "generator": "packages/scripts/generate-iconify-catalog.mjs",
+      "generated_icon_counts": {
+        "lucide": 1755,
+        "feather": 286
+      },
+      "inputs": [
+        {
+          "package": "@iconify-json/feather",
+          "version": "1.2.1",
+          "tarball": "https://registry.npmjs.org/@iconify-json/feather/-/feather-1.2.1.tgz",
+          "tarball_sha256": "5a343c089795a131ace427cb7467ccd32fdd8400abbbfe28d59e418e04598348",
+          "integrity": "sha512-gURNg2TJYuO1U7DoOGCylm9TwkMfzjOH2BHdWsE0IXLXj/MNkFIJu56Wu1xRws27M8hzDzUDt/biGUa/LfAjdg==",
+          "license": "MIT",
+          "license_source": "https://raw.githubusercontent.com/feathericons/feather/a299aad93bffe2b85ad49d49aa04aff735d52a65/LICENSE",
+          "license_sha256": "308028e93fcf84972523cdf6e616f73168546b4953895f516d01287f16fe7bee"
+        },
+        {
+          "package": "@iconify-json/lucide",
+          "version": "1.2.101",
+          "tarball": "https://registry.npmjs.org/@iconify-json/lucide/-/lucide-1.2.101.tgz",
+          "tarball_sha256": "9efaa026981fe29f94a8d5869235628953414880021567c92dd56a89e98f1fff",
+          "integrity": "sha512-JUN7uuSLRG3GK/9c5b8cK9e7sL6EAWDaASIwBOd0zUeKS0ACcokJubo2RMQHyVUVpd8mYkrR3Zd2mkH9ghhw1Q==",
+          "license": "ISC AND MIT",
+          "license_source": "https://raw.githubusercontent.com/lucide-icons/lucide/e715245d62667c800e7f54c94b1b023692e900a3/LICENSE",
+          "license_sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+        }
+      ],
+      "license_notice": "crates/op-editor-ui/assets/ICONIFY-LICENSES.md"
+    },
+    "iconify_brands": {
+      "path": "crates/op-editor-ui/assets/iconify-catalog-brands.json",
+      "sha256": "b39c4cee52cc54959a0e23f23b277e2911e31ab7f5ff7633f154577492a81bbd",
+      "generator": "packages/scripts/generate-iconify-catalog.mjs",
+      "generated_icon_counts": {
+        "simple-icons": 3693
+      },
+      "inputs": [
+        {
+          "package": "@iconify-json/simple-icons",
+          "version": "1.2.77",
+          "icon_set_version": "16.15.0",
+          "tarball": "https://registry.npmjs.org/@iconify-json/simple-icons/-/simple-icons-1.2.77.tgz",
+          "tarball_sha256": "88c103fa0ec4b72dca024ff5380a8d6e5107fa290f391614af443413d54f9fa8",
+          "integrity": "sha512-oaENvo6C3BkAEWMlcQA3XemxU9v2SFOTlApSUCODAkIu1haeLCjzrmH3HgmGqjRnJjM+LevO8sA+MgdMHBFBDA==",
+          "license": "CC0-1.0",
+          "license_source": "https://raw.githubusercontent.com/simple-icons/simple-icons/03a4a38d87e98cfb272de25f63b4c26d0b40a2be/LICENSE.md",
+          "license_sha256": "9046848b63a5c92bff14e4accca80bd987e0623b74adf9226ce5198d312b79d5"
+        }
+      ],
+      "license_notice": "crates/op-editor-ui/assets/ICONIFY-LICENSES.md"
+    },
+    "roboto": {
+      "path": "crates/op-host-native/assets/Roboto-Regular.ttf",
+      "sha256": "466989fd178ca6ed13641893b7003e5d6ec36e42c2a816dee71f87b775ea097f",
+      "bytes": 35408,
+      "version": "2.137; 2017",
+      "source": "https://fonts.gstatic.com/s/roboto/v18/KFOmCnqEu92Fr1Mu4mxP.ttf",
+      "archived_source": "https://web.archive.org/web/20180208174957id_/https://fonts.gstatic.com/s/roboto/v18/KFOmCnqEu92Fr1Mu4mxP.ttf",
+      "source_byte_identical": true,
+      "license": "Apache-2.0",
+      "license_path": "crates/op-host-native/assets/Roboto-Regular.LICENSE-APACHE-2.0.txt",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "license_source": "https://raw.githubusercontent.com/googlefonts/roboto-2/v2.138/LICENSE"
+    },
+    "renderer_fonts": {
+      "license": "OFL-1.1",
+      "license_path": "crates/op-host-desktop/assets/fonts/LICENSE-OFL-1.1.txt",
+      "license_sha256": "8eea8287e5876b539670cadb82e99f9a7afddec6f6730811be1daf25d2e9bcfd",
+      "license_source": "https://raw.githubusercontent.com/spdx/license-list-data/b8d6af45ad2fcfed61bb85a8ad068aa4a77eadf9/text/OFL-1.1.txt",
+      "files": [
+        { "path": "crates/op-host-desktop/assets/fonts/CormorantGaramond-VF.ttf", "sha256": "b20b7d9626dd956b2c5e558692ad328b1f19e3275e2782db4fa07670d83f35e0" },
+        { "path": "crates/op-host-desktop/assets/fonts/DMMono-Medium.ttf", "sha256": "fd327daf461db87b44a87def475d251bf03b997f7c07d9680592d75dbbfaad0b" },
+        { "path": "crates/op-host-desktop/assets/fonts/DMMono-Regular.ttf", "sha256": "55b4c98f123daebb3ed27947ba47b2af00554fc6284d639a540bcef5e6258ad2" },
+        { "path": "crates/op-host-desktop/assets/fonts/DMSans-VF.ttf", "sha256": "8cd08d97e89c24d0aa92edd2f0f4c8ee6195eee9b7c9f154865a58b02f0c1c0d" },
+        { "path": "crates/op-host-desktop/assets/fonts/DMSerifDisplay-Regular.ttf", "sha256": "8cc3643535edf039aa5d95440a8542735e9197e4f4b8d9303e980fefbf5ab616" },
+        { "path": "crates/op-host-desktop/assets/fonts/InstrumentSerif-Regular.ttf", "sha256": "498efd461f6ddfcb7a111bf9a565709d2085d48201d501ead960d93e84ffbb88" },
+        { "path": "crates/op-host-desktop/assets/fonts/Inter-VF.ttf", "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031" },
+        { "path": "crates/op-host-desktop/assets/fonts/JetBrainsMono-VF.ttf", "sha256": "48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda" },
+        { "path": "crates/op-host-desktop/assets/fonts/Manrope-VF.ttf", "sha256": "d0639be45d0af36e798172419d7bd173c4bd4f29e2b76cbb69db1d11bf8b0a40" },
+        { "path": "crates/op-host-desktop/assets/fonts/Outfit-VF.ttf", "sha256": "fc7287273e66929776e2ba54f144fe699080bec29f61bf649d70d871468aeade" },
+        { "path": "crates/op-host-desktop/assets/fonts/SpaceGrotesk-VF.ttf", "sha256": "acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72" }
+      ]
+    }
+  },
+  "verified_outside_rc2_closure": {
+    "canvaskit": {
+      "package": "canvaskit-wasm@0.40.0",
+      "tarball_sha256": "41e3cf79e3b5d566a8d5a5c4649dfd083d08451158e4d70ff6525e38182b5073",
+      "files": {
+        "crates/op-host-web/assets/canvaskit/canvaskit.js": "b2556106b80c5ff3041f3888d55e602636e1812c98cf77a72e7c328c8036c838",
+        "crates/op-host-web/assets/canvaskit/canvaskit.wasm": "2abfa191f92f0aee6e0c8e3ff9612294a7721a40761216867c1c059e7993c9d3",
+        "crates/op-host-web/assets/canvaskit/LICENSE": "d27678cba0d529e77201e2d2a053628143e986aad8f1e77f7039ad4366c8f978"
+      },
+      "license": "BSD-3-Clause"
+    }
+  },
+  "excluded_from_rc2_closure": [
+    {
+      "path": "crates/op-host-web/pkg-ck/**",
+      "classification": "generated and not required by RC2",
+      "reason": "No Cargo, runtime, test, package, or documentation reference; live web builds use pkg/ instead."
+    },
+    {
+      "path": "crates/op-host-web/pkg-webgl/**",
+      "classification": "generated and not required by RC2",
+      "reason": "Retired webgl output with no reachable RC2 reference."
+    },
+    {
+      "path": "screenshot/**",
+      "classification": "unrelated OpenPencil application/editor asset",
+      "reason": "Marketing and general application README images only; not exporter usage documentation or build/runtime input."
+    }
+  ],
+  "nix_source_exclusions": [
+    "crates/op-host-web/pkg-ck",
+    "crates/op-host-web/pkg-webgl",
+    "screenshot"
+  ],
+  "unresolved_required_assets": []
+}
