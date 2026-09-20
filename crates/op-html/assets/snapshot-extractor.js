@@ -186,12 +186,12 @@
     }
   }
 
-  function buildImage(element, computed, rect) {
+  function buildImage(element, computed, rect, tag) {
     if (!takeNode()) return null;
     var captured;
-    if (element.tagName === "IMG") captured = rasterizeImage(element);
-    else if (element.tagName === "SVG") captured = encodeSvg(element);
-    else if (element.tagName === "CANVAS") captured = captureCanvas(element);
+    if (tag === "IMG") captured = rasterizeImage(element);
+    else if (tag === "SVG") captured = encodeSvg(element);
+    else if (tag === "CANVAS") captured = captureCanvas(element);
     else captured = captureVideo(element);
     var result = {
       kind: "image",
@@ -205,17 +205,15 @@
   }
 
   function buildElement(element) {
-    if (SKIP_TAGS[element.tagName]) return null;
+    // SVG-namespace elements report lowercase tagName ("svg", "style");
+    // normalize before comparing so inline SVG is encoded, not traversed.
+    var tag = (element.tagName || "").toUpperCase();
+    if (SKIP_TAGS[tag]) return null;
     var computed = window.getComputedStyle(element);
     var rect = element.getBoundingClientRect();
     if (!visibleElement(element, computed, rect)) return null;
-    if (
-      element.tagName === "IMG" ||
-      element.tagName === "SVG" ||
-      element.tagName === "CANVAS" ||
-      element.tagName === "VIDEO"
-    ) {
-      return buildImage(element, computed, rect);
+    if (tag === "IMG" || tag === "SVG" || tag === "CANVAS" || tag === "VIDEO") {
+      return buildImage(element, computed, rect, tag);
     }
     if (!takeNode()) return null;
     var children = [];
