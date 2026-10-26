@@ -16,6 +16,8 @@ on:
       - 'tools/check-jian-boundaries.sh'
       - 'tools/check-web-server-headless.sh'
       - 'tools/check-widget-boundary.sh'
+      - 'simit.toml'
+      - '.github/workflows/ci.yaml'
       - '.github/workflows/rust-check.yml'
   push:
     branches: ['**']
@@ -30,6 +32,8 @@ on:
       - 'tools/check-jian-boundaries.sh'
       - 'tools/check-web-server-headless.sh'
       - 'tools/check-widget-boundary.sh'
+      - 'simit.toml'
+      - '.github/workflows/ci.yaml'
       - '.github/workflows/rust-check.yml'
 
 jobs:

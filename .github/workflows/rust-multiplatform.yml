@@ -18,6 +18,8 @@ on:
       - 'vendor/agent/**'
       - 'rust-toolchain.toml'
       - 'deny.toml'
+      - 'simit.toml'
+      - '.github/workflows/ci.yaml'
       - '.github/workflows/rust-multiplatform.yml'
   pull_request:
     paths:
@@ -27,6 +29,8 @@ on:
       - 'vendor/jian/**'
       - 'vendor/casement/**'
       - 'vendor/agent/**'
+      - 'simit.toml'
+      - '.github/workflows/ci.yaml'
       - '.github/workflows/rust-multiplatform.yml'
   workflow_dispatch:
 
