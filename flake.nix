@@ -11,18 +11,18 @@
     };
 
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk";
+      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
       inputs.crane.follows = "crane";
       inputs.rust-overlay.follows = "rust-overlay";
     };
     py-harbor = {
-      url = "git+https://codeberg.org/caniko/py-harbor.git?ref=trunk";
+      url = "git+https://github.com/caniko/harbor-py.git?ref=trunk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     js-harbor = {
-      url = "git+https://codeberg.org/caniko/js-harbor.git?ref=trunk";
+      url = "git+https://github.com/caniko/harbor-js.git?ref=trunk";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
     };
@@ -30,7 +30,7 @@
     nix-appimage.url = "github:ralismark/nix-appimage";
 
     nix-pklx = {
-      url = "git+https://codeberg.org/caniko/nix-pklx.git";
+      url = "git+https://github.com/caniko/nix-pklx.git";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
