@@ -32,6 +32,14 @@
     nix-pklx = {
       url = "git+https://github.com/caniko/nix-pklx.git";
       inputs.nixpkgs.follows = "nixpkgs";
+      # nix-pklx's plinth pins its own nix-pklx, whose lock fetches harbor-rs
+      # over GitHub SSH; use HTTPS at the same revision so cold fetches work.
+      inputs.plinth.inputs.nix-pklx.inputs.rs-harbor = {
+        url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
+        inputs.nixpkgs.follows = "nix-pklx/plinth/nix-pklx/nixpkgs";
+        inputs.crane.follows = "nix-pklx/plinth/nix-pklx/crane";
+        inputs.rust-overlay.follows = "nix-pklx/plinth/nix-pklx/rust-overlay";
+      };
     };
 
     agent = {
